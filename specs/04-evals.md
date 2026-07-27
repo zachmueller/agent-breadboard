@@ -20,9 +20,11 @@ Each circuit may define a rubric (`config/circuits/<slug>/rubric.yaml`). A rubri
 
 ```yaml
 schema: breadboard/rubric@v1
-circuit: lit-review
+circuit: 01J8CIRCUIT0LITREV00   # circuit config UID ([01] §6.2); editor displays the slug
 judge:
-  subagent: eval-judge          # evaluator subagent used for LLM-scored dimensions
+  subagent: 01J8SUBAG0EVALJUDGE0  # evaluator subagent UID, used for LLM-scored dimensions
+  model_id: anthropic.claude-sonnet-5   # judge model pinned to an EXPLICIT model ID, never a tier;
+                                        # changing it starts a new comparison baseline (§10)
 dimensions:
   - key: coverage
     type: numeric               # numeric | ordinal | boolean | programmatic
@@ -79,9 +81,9 @@ An eval run executes one circuit version against fixtures and scores results.
 ```sql
 CREATE TABLE eval_runs (
   eval_run_id    char(24) PRIMARY KEY,
-  circuit_slug   text NOT NULL,
-  circuit_commit char(40) NOT NULL,
-  rubric_commit  char(40) NOT NULL,
+  circuit_uid    char(20) NOT NULL,       -- config UID ([01] §6.2)
+  circuit_commit text NOT NULL,           -- text, not char(40): SHA-256 git repos use 64-char hashes
+  rubric_commit  text NOT NULL,
   model_overrides jsonb,                 -- preset/model substitutions for comparison runs
   judge_model_id text NOT NULL,
   fixture_tags   text[],
@@ -108,7 +110,7 @@ CREATE TABLE eval_results (
 The evaluator LLM captures findings in a standardized, structured fashion so results aggregate cleanly (e.g., as models change or circuit designs are revised). This is exposed as a small MCP tool surface available to evaluator Subagents:
 
 - `record_score({eval_run_id, fixture_id, dimension, value, rationale})` — validated against the rubric's dimension type before persisting.
-- `get_rubric({circuit_slug})`, `get_fixture_output({eval_run_id, fixture_id})` — read-side helpers.
+- `get_rubric({circuit_uid})`, `get_fixture_output({eval_run_id, fixture_id})` — read-side helpers.
 
 The same tools back both in-Breadboard eval runs and (future) external harnesses that want to score against a Breadboard rubric.
 
@@ -137,7 +139,9 @@ AI-proposed configuration changes (circuits, prompts, tools — [01](01-data-mod
 
 **Out (future):** scheduled eval sweeps (nightly); statistical significance testing on score deltas; human-labeling queues for judge calibration; cross-circuit composite scorecards; external-harness eval federation.
 
-## 10. Open questions
+## 10. Resolved questions
 
-1. **Judge stability.** Judge model changes shift scores. Recommendation: pin the judge subagent's preset to an explicit model ID (not a tier) in `rubric.yaml`'s `judge` block, and treat judge-model changes like rubric changes (new comparison baseline).
-2. **Routing-decision scoring.** Routing is recorded per [03](03-circuits.md) §5; v1 exposes it to programmatic dimensions (assert the path taken). A dedicated routing-accuracy dimension type is future work.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Judge stability.** **Decided:** the judge is pinned to an explicit model ID (not a tier) in `rubric.yaml`'s `judge` block (§2), and judge-model changes are treated like rubric changes — a new comparison baseline.
+2. **Routing-decision scoring.** **Decided:** v1 exposes routing to programmatic dimensions (assert the path taken). A dedicated routing-accuracy dimension type is future work.

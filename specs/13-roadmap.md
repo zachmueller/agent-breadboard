@@ -18,20 +18,20 @@ Repo scaffolding (TS monorepo: `server`, `ui`, `shared`), Fastify server, Postgr
 **Accept:** `docker compose up` serves a hello UI against Postgres; CI green.
 
 ### Phase 1 — Data model & config plane ([01](01-data-model.md))
-Nodes/revisions/edges/yjs_updates schema + DAL; UID generation; link indexer → `references` edges; `GraphQueries` (lineage CTEs with guards); config git repo init + read/commit/propose/merge/revert service; schema validation for `breadboard/*@v1` files; core REST for nodes/edges/config ([11](11-api-mcp.md) §3).
+Identity tables (teams/users/roles/role_memberships) + nodes/revisions/edges/yjs_updates schema + DAL; UID generation; link indexer → `references` edges (derived-index semantics); `GraphQueries` (lineage CTEs with guards); config git repo init + read/commit/propose/merge/revert service with the UID→path index; schema validation for `breadboard/*@v1` files (incl. UID reference resolution); core REST for nodes/edges/config ([11](11-api-mcp.md) §3).
 **Accept:** create/link/revise nodes via API; lineage queries answer up/down; config proposals round-trip branch→diff→merge with commit-hash reads.
 
 ### Phase 2 — Orchestrator core & Sessions ([02](02-sessions-orchestrator.md))
-Event log + checkpoints + replay; dispatcher with the three capacity controls; retry/suspend; hard gates + structured decisions; sub-sessions with budget draw-down; cost capture at turn level; sessions REST + SSE topics; model gateway with Bedrock provider + presets/fallback ([12](12-security-deployment.md) §7, [05](05-subagents.md) §4).
-**Accept:** a hand-authored two-step circuit (LLM + code stub) runs end-to-end, checkpoints, survives server restart mid-run, suspends at a gate, resumes on decision, records cost and commit hash.
+Event log + checkpoints + replay (turns derived from events); dispatcher with the three capacity controls; retry/suspend; hard gates with targeted-reviewer verdicts + auto-resolution; sub-sessions with budget draw-down; cost capture at turn level; sessions REST + scope-filtered SSE topics; model gateway with Bedrock provider (v1's only adapter) + presets/fallback ([12](12-security-deployment.md) §7, [05](05-subagents.md) §4).
+**Accept:** a hand-authored two-step circuit (LLM + code stub) runs end-to-end, checkpoints, survives server restart mid-run, suspends at a gate, resumes on verdict completion, records cost and commit hash.
 
 ### Phase 3 — Subagents & Toolbox ([05](05-subagents.md), [06](06-toolbox.md))
 Subagent schema + resolution (tenets injection, `{{knowledge:…}}` deferred-stub until Phase 5, grants); Docker sandbox with warm pools/limits/egress policy; idempotency journal; credential broker (capabilities, `ctx.fetch`, audit); Breadboard primitives; MCP onboarding; MCP server with core catalog; `spawn-harness` with Claude Code adapter; tool CI on proposals.
 **Accept:** an LLM step runs a Subagent that calls a custom TS tool and a Python tool in sandboxes, fetches through a broker capability, and emits an explicit edge; egress off-allowlist is blocked and observable.
 
 ### Phase 4 — Circuits & Evals ([03](03-circuits.md), [04](04-evals.md))
-`circuit@v1` full validation (closed exits, reachability, schemas); all four step kinds wired; ambient channel; routing capture; circuit inventory + editor (React Flow, YAML round-trip, backlinks, version history); designer chat panel pattern ([10](10-ui.md) §4) for circuits; rubric/fixture schemas; eval runs + results store + the five analysis views; run-evals-on-branch; fixture promotion.
-**Accept:** design a three-step circuit in the editor via the designer chat, merge, run it; promote a session to a fixture; change the model preset and see a regression comparison.
+`circuit@v1` full validation (declared circuit exits, closed step-exit graph, reachability, schemas, UID reference resolution); all four step kinds wired; ambient channel; routing capture; circuit inventory + editor (React Flow, YAML round-trip, backlinks, version history); **designer chat panel pattern ([10](10-ui.md) §4) built once and applied to all three config editors — circuit, tool, and subagent** (tool/subagent config exists from Phase 3; their editors + chats land here); rubric/fixture schemas; eval runs + results store + the five analysis views; run-evals-on-branch; fixture promotion.
+**Accept:** design a three-step circuit in the editor via the designer chat, merge, run it; make a tool edit and a subagent edit through their designer chats; promote a session to a fixture; change the model preset and see a regression comparison.
 
 ### Phase 5 — Knowledge ([07](07-knowledge.md))
 Block-structured Y.Doc format; Hocuspocus sync in the monolith; update-log persistence + compaction; the reconcile write path with typed failures; pre-ai-edit revisions + attribution map + AI-edit revert; wipeout guardrails; Domains + grants; deterministic injection; `{{knowledge:…}}` live injection (un-stub Phase 3); FTS + pgvector search; Note editor on the shared editor infrastructure; contradiction-pushback shipped pattern.
@@ -53,8 +53,8 @@ The authoritative in/out lists live in each spec's cutline section; this is the 
 |---|---|
 | Stakeholder intake view (priority tiering UX, separate capacity pool, promotion flows) | [08](08-intake.md) §9 |
 | Auto-pitch intake circuits | [08](08-intake.md) §9 |
-| Breadboard-to-breadboard federation (incoming access permissions — blanket or scoped by circuit list/tags; connected-Breadboards UI) | [11](11-api-mcp.md) §7, note §Misc |
-| Purely-local Breadboards (local storage + orchestration, user-chosen LLM incl. local models) wiring into team Breadboards | note §Misc |
+| Breadboard-to-breadboard federation (incoming access permissions — blanket or scoped by circuit list/tags; connected-Breadboards UI) | [11](11-api-mcp.md) §7, §4 below |
+| Purely-local Breadboards (local storage + orchestration, user-chosen LLM incl. local models) wiring into team Breadboards | §4 below |
 | Gate escalation policies (v1: indefinite wait, pull-based queue) | [02](02-sessions-orchestrator.md) §9 |
 | Dedicated graph store (seam behind `GraphQueries`) | [01](01-data-model.md) §9 |
 | Write-back knowledge connectors; additional connector adapters | [07](07-knowledge.md) §11 |
@@ -68,7 +68,7 @@ The authoritative in/out lists live in each spec's cutline section; this is the 
 
 ## 4. Post-v1 themes (direction, not commitment)
 
-1. **Federation** — Breadboard-to-Breadboard access: Team A's circuits automatically gathering required inputs from stakeholder Team B's Breadboard; per-team incoming-access grants (blanket or scoped to circuit subsets by list/tags); minor UI showing which Breadboards this one can reach and with what access.
+1. **Federation** — Breadboard-to-Breadboard access: Team A's circuits automatically gathering required inputs from stakeholder Team B's Breadboard; per-team incoming-access grants (blanket or scoped to circuit subsets by list/tags); minor UI showing which Breadboards this one can reach and with what access. The v1 seams that keep this open without migration: named capability scopes on service tokens ([11](11-api-mcp.md) §2) as the grant substrate, the multi-team-ready identity schema ([01](01-data-model.md) §8), and the reserved `external` scope ([01](01-data-model.md) §3.4). The full federation design will be written post-v1 when it is actionable.
 2. **Local Breadboards** — individual, fully-local instances (storage + orchestration local; LLM = user's choice of local or API) that wire into team Breadboards. The one-deployment-one-Breadboard model and API-first design are the enablers.
 3. **Meta-operation depth** — subagents that watch eval trends and need-input rates and proactively propose config improvements (all plumbing exists: proposals + evals-on-branch + metrics).
 4. **Scale-out** — orchestrator worker pool, CRDT authority sharding, graph store — each behind an already-documented seam.

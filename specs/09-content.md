@@ -22,7 +22,7 @@ Artifacts are the `artifact`-typed subset of Content — **content produced by S
 
 ### 2.2 Authorship parity
 
-Content comes from users, Subagents, and code steps alike. **A code step summarizing an analysis programmatically produces a first-class Artifact no different from an LLM-written report.** `created_by` records the actor (`user | subagent | code-step | system`); lineage edges let users understand the source and evolution of any node.
+Content comes from users, Subagents, and code steps alike. **A code step summarizing an analysis programmatically produces a first-class Artifact no different from an LLM-written report.** `created_by` records the actor (`user | subagent | code-step | service` — the single system-wide taxonomy, [11](11-api-mcp.md) §2; server-internal writes like connector syncs record `service`); lineage edges let users understand the source and evolution of any node.
 
 ### 2.3 Body formats
 
@@ -32,21 +32,25 @@ Markdown (CRDT treatment when collaboratively editable) or structured JSON (plai
 
 How an agent signals it wants direction or review — attached to a **specific Artifact**, optionally with context or questions for what the review should focus on.
 
-- **Lightweight and non-blocking:** users get to their review items when they want. This is entirely distinct from hard gates in [Circuits](03-circuits.md), which are an orchestrator-level mechanism — though gates often flag `need-input` on the Artifacts they produce, and **reviewing all gating Artifacts is what unblocks a gated session** ([02](02-sessions-orchestrator.md) §5.4).
-- **Structure** (stored as a structured tag + properties entry):
+- **Lightweight and non-blocking:** users get to their review items when they want. This is entirely distinct from hard gates in [Circuits](03-circuits.md), which are an orchestrator-level mechanism — though gates create `need-input` requests on their gating Artifacts (one per targeted reviewer), and those requests resolve via **gate verdicts** ([02](02-sessions-orchestrator.md) §5.4): when every gating request has a verdict, the gate auto-resolves.
+- **Multi-request:** an Artifact may carry **several concurrent `need-input` requests** (e.g., a scientist reviewing methodology while legal reviews claims). Each request gets a **server-minted request ID** and its own target and note. Structure (stored as a structured tag + a `need-input` properties array):
   ```json
   {
-    "need-input": {
-      "role": "scientist",          // who should answer: team-defined role slugs (e.g. scientist, bie, manager)
-      "username": null,              // optionally target a specific team member instead/in addition
-      "prompt": "Is the cohort definition in §2 acceptable?",   // optional focus for the review
-      "requested_by": {"kind": "subagent", "slug": "research-writer", "session_id": "ses_…"},
-      "requested_at": "…"
-    }
+    "need-input": [
+      {
+        "request_id": "nir_01J8FQ2ZK7XW9MBT4PVN",   // server-minted; the resolve selector
+        "role": "scientist",          // who should answer: team-defined role slugs (roles/role_memberships tables, [01] §8)
+        "username": null,              // optionally target a specific team member instead/in addition
+        "prompt": "Is the cohort definition in §2 acceptable?",   // optional focus for the review
+        "requested_by": {"kind": "subagent", "uid": "01J8SUBAG0RSRCHWRITE0", "session_id": "ses_…"},
+        "requested_at": "…",
+        "gate": null                   // set when the request was created by a gate: {session_id, step_id}
+      }
+    ]
   }
   ```
   `role` routes review to the right kind of person; `username` targets a specific user. Both optional; untargeted requests appear in everyone's queue.
-- **Resolution:** a reviewer marks the request resolved (optionally after commenting/editing). Resolution is recorded (who, when) and clears the tag; if the Artifact gates a suspended session, resolution feeds the gate-unblock check.
+- **Resolution:** a reviewer resolves a **specific request by its `request_id`** (optionally after commenting/editing; gate-created requests resolve via the gate-verdict action, which requires the reviewer to match the request's target). Resolution is recorded (who, when) and moves the entry to `need-input-history`; for gate-created requests it feeds the gate's verdict tally ([02](02-sessions-orchestrator.md) §5.4).
 
 ### 3.1 Health metric
 
@@ -68,7 +72,7 @@ Comments are a special kind of Content node letting users and Subagents attach d
 
 Searchable/filterable list, **defaulting to deliverable Artifacts**. Filters on type, tag, `need-input`/`role`, originating circuit, and date.
 
-- **Review queue** — a built-in filter within this view: nodes with `need-input` tags relevant to the current user (matched on `role` membership or `username`), **including Artifacts gating suspended sessions** (those are badged with the blocked Session so reviewers see the stakes). This is the pull-based queue that gate review relies on ([02](02-sessions-orchestrator.md) §5.4).
+- **Review queue** — a built-in filter within this view: nodes with open `need-input` requests relevant to the current user (matched on `role` membership or `username`), **including Artifacts gating suspended sessions** (those are badged with the blocked Session so reviewers see the stakes, and offer the approve/request-changes verdict actions). This is the pull-based queue that gate review relies on ([02](02-sessions-orchestrator.md) §5.4).
 - Entry point into the Content viewer.
 
 ### 5.2 Content viewer
@@ -78,15 +82,17 @@ Renders the node under its human-readable title:
 - **Lineage navigation up** — into the Session chat or code log behind it (via `produces`/`updates` edges) — **and down** — where it's been consumed (`derived-from` referents, `references` backlinks).
 - **Comments rail** — anchored comments beside the content, stale section at bottom, inline add-comment on text selection.
 - **Jump into the Editor** ([10 — UI](10-ui.md) §3) for editable nodes.
-- `need-input` banner with the request prompt and resolve action when applicable.
+- `need-input` banner listing each open request (prompt + target) with per-request resolve — or approve/request-changes verdict for gate-created requests — when applicable.
 
 ## 6. v1 cutline
 
-**In:** Artifact model with intermediate/deliverable tagging; authorship parity; `need-input` with role/username routing, resolution, and the health metric; Comments with revision+quote anchoring and staleness handling; inventory with Review queue; Content viewer with lineage nav.
+**In:** Artifact model with intermediate/deliverable tagging; authorship parity; multi-request `need-input` with role/username routing, per-request resolution, and the health metric; Comments with revision+quote anchoring and staleness handling; inventory with Review queue (incl. gate verdicts); Content viewer with lineage nav.
 
 **Out (future):** artifact merge tooling (multi-parent `derived-from` UX); reactions/acknowledgments on comments; per-role review SLAs; digest notifications (v1 is pull-based only).
 
-## 7. Open questions
+## 7. Resolved questions
 
-1. **Role registry.** Where do `role` slugs live? Recommendation: declared in `config/breadboard.yaml` (`roles:` with user membership), so review-queue matching is config-driven.
-2. **Resolved need-input history.** Keep resolved requests queryable for the health metric — recommendation: move the structured entry to a `need-input-history` array in properties on resolution rather than deleting.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Role registry.** **Decided:** roles and memberships live in **team-scoped DB tables** (`roles`, `role_memberships` — [01](01-data-model.md) §8), managed via API/UI; OIDC groups may map into them at login ([12](12-security-deployment.md) §3). The config repo stays about behavior, not people. (Supersedes the earlier `breadboard.yaml` recommendation.)
+2. **Resolved need-input history.** **Decided:** resolution moves the structured entry to a `need-input-history` array in properties rather than deleting — keeping resolved requests queryable for the health metric.

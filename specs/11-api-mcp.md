@@ -15,7 +15,8 @@
 ## 2. Conventions
 
 - Base path `/api/v1`. JSON bodies; `snake_case` fields.
-- **Auth:** `Authorization: Bearer <token>` — user tokens via OIDC session, service tokens for API callers, internal actor tokens for sandbox/tool calls ([12](12-security-deployment.md) §3). Every request resolves to an **actor** (`user | subagent | code-step | service`) recorded on all writes.
+- **Auth:** `Authorization: Bearer <token>` — user tokens via OIDC session, service tokens for API callers, internal actor tokens for sandbox/tool calls ([12](12-security-deployment.md) §3). Every request resolves to an **actor** (`user | subagent | code-step | service`) recorded on all writes. This is the **single actor taxonomy** system-wide: `created_by`/authorship fields use the same four kinds ([09](09-content.md) §2.2 aligns to this; `service` replaces the earlier `system` label — server-internal writes such as connector syncs record `service` with the internal component as the ID).
+- **Service-token scoping:** service tokens carry **named capability scopes** (OAuth-style strings: `tasks:write`, `sessions:read`, `config:propose`, `mcp:call`, …), enforced by a middleware map of endpoint → required scope. Scopes are human-readable in the admin UI and are the designated substrate for future federation grants (e.g., `federation:incoming` scoped by circuit tags) — no endpoint-pattern grammar needed.
 - **Pagination:** cursor-based (`?cursor=…&limit=…`, default 50, max 200); responses carry `next_cursor`.
 - **Filtering:** query params per resource (documented per endpoint); repeated params OR within a field, distinct params AND across fields.
 - **Errors:** `{error: {code, message, detail?}}` with stable machine-readable `code`s (e.g. `grant-denied`, `base-revision-too-old`, `validation-failed`). Typed failure codes match the ones named in component specs.
@@ -37,9 +38,11 @@ GET    /nodes/:uid/lineage           ?direction=up|down&depth=  (guarded travers
 POST   /edges                        emit explicit edge (derived-from|attached-to|blocks|depends-on|references)
 DELETE /edges/:id                    tombstone
 POST   /nodes/:uid/comments          create comment (body, anchor?)
-POST   /nodes/:uid/need-input        tag {role?, username?, prompt?}
-POST   /nodes/:uid/need-input/resolve
-GET    /review-queue                 current user's queue (need-input + gating artifacts)
+POST   /nodes/:uid/need-input        create request {role?, username?, prompt?} → {request_id}  (multi-request, [09] §3)
+POST   /nodes/:uid/need-input/:request_id/resolve
+POST   /nodes/:uid/gate-verdict      {request_id, verdict: approve|request-changes, comment?, edits?}
+                                     (targeted reviewer only; gate auto-resolves when verdicts complete, [02] §5.4)
+GET    /review-queue                 current user's queue (open need-input requests + gating artifacts)
 ```
 
 ### Knowledge ([07](07-knowledge.md))
@@ -49,7 +52,9 @@ GET    /knowledge/:uid               rendered markdown + base_revision   (the re
 POST   /knowledge/:uid/edits         the propose_note_edit reconcile path: {base_revision, markdown}
                                      → {applied, had_concurrent_edits, merged_markdown, new_head_revision}
 POST   /knowledge/:uid/revert-ai-edit  {pre_ai_edit_revision}
-WS     /sync                         Yjs sync endpoint (editor clients)
+WS     /sync                         Yjs sync endpoint (editor clients). Auth: opening a document requires
+                                     the same read grant as GET /nodes/:uid (scope + domain checks evaluated
+                                     at doc-open; write ops additionally require edit rights) — [12] §4.
 ```
 
 ### Tasks & intake ([08](08-intake.md))
@@ -66,15 +71,16 @@ GET    /sessions                     ?state=&kind=&circuit=&task=&created_after=
 GET    /sessions/:id                 summary (incl. cost aggregates, parent/children)
 GET    /sessions/:id/events          ?after_seq=
 GET    /sessions/:id/steps/:step/turns
-POST   /sessions/:id/gate-resolution {decision, comment?, edits?}
 POST   /sessions/:id/retry | cancel | resume
 POST   /sessions/:id/promote-fixture {fixture_title}
 ```
 
 ### Configuration plane ([03](03-circuits.md), [05](05-subagents.md), [06](06-toolbox.md))
 ```
-GET    /config/tree                  ?ref=commit|branch      list definitions
-GET    /config/circuits/:slug        parsed + validated definition (same shape for subagents, tools, mcp, presets, tenets)
+GET    /config/tree                  ?ref=commit|branch      list definitions (uid, slug, path, title per entry)
+GET    /config/search                ?q=          search definitions by slug/title (backs global search, [10] §2)
+GET    /config/definitions/:uid      parsed + validated definition, resolved via the UID→path index
+                                     ([01] §6.2; same shape for circuits, subagents, tools, mcp, presets, tenets)
 POST   /config/proposals             {changes: [{path, content}], message}  → branch + proposal id
 GET    /config/proposals/:id         diff, validation results, eval results
 POST   /config/proposals/:id/merge | discard
@@ -101,7 +107,7 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 | `create_artifact`, `update_artifact` | Content production |
 | `add_comment` | Comments w/ anchor resolution (typed failures) |
 | `emit_edge` | Explicit lineage ([01](01-data-model.md) §4.3) |
-| `tag_need_input`, `resolve_need_input` | Review signaling |
+| `tag_need_input`, `resolve_need_input` | Review signaling (per-request IDs, [09](09-content.md) §3) |
 | `query_knowledge`, `read_note`, `propose_note_edit` | Knowledge incl. the reconcile path ([07](07-knowledge.md) §5) |
 | `run_circuit`, `get_session_summary` | Session composition (grant-gated) |
 | `record_score`, `get_rubric` | Evals MCP ([04](04-evals.md) §5) |
@@ -117,7 +123,8 @@ Push channel for state changes (the UI's live updates and teams' automation hook
 
 - **SSE** `GET /api/v1/events?topics=…` (UI, simple consumers) and **webhooks** (`config/breadboard.yaml` registrations with HMAC signing) for server-to-server.
 - Topics: `session.state` (queued/running/suspended-gate/suspended-error/completed/cancelled transitions — gate suspensions are the flagship use), `task.status`, `need-input.tagged` / `need-input.resolved`, `config.committed`, `eval.run-completed`.
-- Payloads carry IDs + minimal summary; consumers fetch detail via REST. Delivery is at-least-once; consumers dedupe on event id.
+- **Scope-filtered per subscriber:** SSE events are filtered against the subscriber's visibility before delivery — events about `session`-scoped nodes or Sessions the subscriber can't read are not delivered, consistent with "scope enforced on every read path" ([12](12-security-deployment.md) §4). Webhook registrations are admin-configured and receive team-visible events only.
+- Payloads carry IDs + minimal summary; consumers fetch detail via REST (where grants are enforced again). Delivery is at-least-once; consumers dedupe on event id.
 
 ## 6. Versioning policy
 

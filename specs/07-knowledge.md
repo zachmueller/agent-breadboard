@@ -77,7 +77,7 @@ Failure modes are typed and instructive (the AI must be able to self-correct): `
 
 ### 5.3 Attribution & revert
 
-- **Server-authoritative attribution.** Every Yjs transaction carries an origin; AI writes are tagged with `{kind: subagent, slug, session_id}` **by the server** — clients are never trusted to self-report authorship. Origins are persisted per update in the `yjs_updates` log ([01](01-data-model.md) §8) and stamped per changed block into a sibling attribution map (`Y.Map`: block ID → `{actor, at}`) so the editor can render per-block authorship.
+- **Server-authoritative attribution.** Every Yjs transaction carries an origin; AI writes are tagged with `{kind: subagent, uid, session_id}` **by the server** (the subagent's config UID; display slug resolvable from it) — clients are never trusted to self-report authorship. Origins are persisted per update in the `yjs_updates` log ([01](01-data-model.md) §8) and stamped per changed block into a sibling attribution map (`Y.Map`: block ID → `{actor, at}`) so the editor can render per-block authorship.
 - **Users can see and revert AI edits:** the editor renders AI-attributed spans/blocks distinctly (toggleable), and each AI write's `pre-ai-edit` revision enables one-click revert of that write (revert = server-computed reverse delta applied as a new transaction — history is never rewritten).
 
 ### 5.4 Comment/quote anchoring for AI
@@ -132,8 +132,10 @@ Connectors let Breadboard read and ingest context from knowledge sources teams a
 
 **Out (future):** write-back connectors; multi-node document authority; per-Domain embedding models; knowledge graph auto-extraction; scheduled knowledge-gardening circuits (AI proposing prunes/merges of stale Notes — composes from existing pieces, deferred as a shipped pattern).
 
-## 12. Open questions
+## 12. Resolved questions
 
-1. **Block segmentation rule.** What is "a block" for reconcile purposes? Recommendation: top-level Markdown blocks (paragraph, heading, list item group, code fence, table) per CommonMark AST — deterministic and matches editor structure.
-2. **Same-block conflict UX.** CRDT character merge within a block can interleave awkwardly. Recommendation: accept for v1 (rare in practice), rely on attribution highlighting + revisions for recovery.
-3. **Embedding model choice.** Gateway-served embeddings (Bedrock Titan/Cohere reference) vs. local. Recommendation: route through the model gateway like everything else; local option post-v1.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Block segmentation rule.** **Decided:** a "block" for reconcile purposes is a top-level Markdown block (paragraph, heading, list item group, code fence, table) per CommonMark AST — deterministic and matches editor structure.
+2. **Same-block conflict UX.** **Decided:** accept CRDT character-level interleave within a block for v1 (rare in practice); rely on attribution highlighting + revisions for recovery.
+3. **Embedding model choice.** **Decided:** embeddings route through the model gateway like everything else (Bedrock reference); local option post-v1.

@@ -23,14 +23,15 @@ A circuit is a directory in the config repo (`config/circuits/<slug>/`, [01](01-
 ```yaml
 # config/circuits/lit-review/circuit.yaml
 schema: breadboard/circuit@v1
-slug: lit-review
+uid: 01J8CIRCUIT0LITREV00        # permanent config UID ([01] §6.2); minted at creation, never changes
+slug: lit-review                 # display/file-layout only; renames never break references
 title: Literature review
 description: Survey prior art for a research question and produce an annotated summary.
 tags: [research]
 
 budget:                      # per-run defaults; overridable per-Task at creation
   max_cost_usd: 15
-  max_tokens: 2_000_000
+  max_tokens: 2000000
 
 input:                       # typed input schema (JSON Schema subset)
   type: object
@@ -39,20 +40,27 @@ input:                       # typed input schema (JSON Schema subset)
     question: { type: string }
     depth:    { type: string, enum: [quick, thorough], default: quick }
 
-output:
-  type: object
-  required: [summary_artifact]
-  properties:
-    summary_artifact: { $ref: "#/defs/artifact-ref" }
+exits:                       # the circuit's PUBLIC INTERFACE: named exits, each with an
+  - name: done               # optional output schema. Internal step names stay private.
+    output:
+      type: object
+      required: [summary_artifact]
+      properties:
+        summary_artifact: { $ref: "#/defs/artifact-ref" }
+  - name: empty              # distinct exit for the no-sources path — its own (empty) payload,
+    output:                  # so it doesn't have to fake conformance to the `done` schema
+      type: object
+      properties:
+        note: { type: string }
 
 entry: gather                # step id where execution begins
 
 steps:
   - id: gather
     kind: llm
-    subagent: research-scout            # subagent slug (05-subagents.md)
+    subagent: 01J8SUBAG0RSRCHSCOUT0     # subagent config UID (editor displays/edits by slug: research-scout)
     prompt: prompts/gather.md           # template, interpolated with input + ambient
-    tools_override: []                  # optional narrowing of the subagent's toolset for this step
+    tools_override: []                  # [] = no tools for this step; omit the key entirely for "no override"
     output:
       type: object
       required: [sources]
@@ -67,8 +75,9 @@ steps:
 
   - id: summarize
     kind: llm
-    subagent: research-writer
-    prompt: prompts/summarize.md
+    subagent: 01J8SUBAG0RSRCHWRITE0     # research-writer
+    prompt: prompts/summarize.md        # may reference $steps.quality-check.output — empty on first
+                                        # visit, populated with findings after a fail loop-back (§5)
     output:
       type: object
       required: [summary_artifact]
@@ -80,40 +89,50 @@ steps:
 
   - id: quality-check
     kind: code
-    tool: check-citations                # tool extension slug (06-toolbox.md)
+    tool: 01J8TOOL0CHKCITATION0         # tool extension config UID (check-citations)
     input_map:                           # explicit wiring from prior outputs/ambient
       artifact: $steps.summarize.output.summary_artifact
     exits:
       - name: pass
         to: quality-gate
       - name: fail
-        to: summarize                    # loop back with the checker's findings in scope
+        to: summarize                    # loop back; re-entered step re-interpolates with the
+                                         # checker's latest findings in $steps.quality-check.output (§5)
 
   - id: quality-gate
     kind: gate
     review:                              # artifacts presented for review at this gate
       artifacts: [$steps.summarize.output.summary_artifact]
-      tag_need_input: { role: scientist }   # gates often flag need-input on gating artifacts
-    exits:
+      reviewers: { role: scientist }     # targeting, need-input grammar ([09] §3); one request per reviewer
+    output:                              # gate output = reviewed artifact refs (pass-through) + collected
+      type: object                       # feedback; reviewer `edits` validate against this schema, and it
+      required: [summary_artifact]       # must conform to any $exit the gate routes to (here: done)
+      properties:
+        summary_artifact: { $ref: "#/defs/artifact-ref" }
+        feedback: { type: array, items: { type: string } }
+    exits:                               # gates MUST declare both: approve + changes ([02] §5.4)
       - name: approve
-        to: $end
-      - name: revise
+        to: $exit.done
+      - name: changes
         to: summarize
 
   - id: report-empty
     kind: code
-    tool: emit-empty-report
+    tool: 01J8TOOL0EMPTYREPORT0          # emit-empty-report
     exits:
       - name: done
-        to: $end
+        to: $exit.empty
 ```
 
 Normative rules:
 
 - `schema` is versioned; the server validates every commit against the schema version it declares.
-- Every step `id` is unique within the circuit; `entry` names exactly one step; `$end` is the sole terminal pseudo-target (the step whose exit routes to `$end` must produce output conforming to the circuit's `output` schema).
-- The exit graph must be **closed**: every declared exit routes to an existing step or `$end`; unreachable steps are a validation error (warning-level for work-in-progress branches saved on non-main branches).
-- Cycles are allowed (loops like `quality-check → summarize` above); the per-run budget is the loop bound.
+- Every config definition carries a permanent `uid` ([01](01-data-model.md) §6.2). All cross-references — step→subagent, step→tool, step→sub-circuit — are **by UID**; slugs are display metadata the editor resolves for authoring convenience. Commit validation resolves every referenced UID against the tree's UID→path index and rejects dangling references.
+- **Declared circuit exits are the public interface.** The top-level `exits:` block names the circuit's terminal exits, each with an optional per-exit `output` schema. Internal steps terminate by routing to `$exit.<name>`; the step's output at that boundary must conform to that exit's schema. Internal step names and exit names stay private — parents bind only to the declared interface, so internal refactors never break callers. (This replaces the earlier bare-`$end` + single-`output`-schema design.)
+- Every step `id` is unique within the circuit; `entry` names exactly one step; every declared circuit exit must be routable-to from some step.
+- The exit graph must be **closed**: every declared step exit routes to an existing step or a declared `$exit.<name>`; unreachable steps are a validation error (warning-level for work-in-progress branches saved on non-main branches).
+- Cycles are allowed (loops like `quality-check → summarize` above), bounded by per-run budget **and** per-step `max_visits` (default 25; exceeding it suspends the run as `suspended-error`).
+- Every `gate` step must declare both an `approve` and a `changes` exit ([02](02-sessions-orchestrator.md) §5.4).
 
 ## 3. Step types
 
@@ -129,15 +148,27 @@ An invocation of a [Toolbox](06-toolbox.md) tool extension in the sandbox. Input
 
 ### 3.3 Sub-circuit steps
 
-`kind: circuit` with `circuit: <slug>`. Input wired like a code step; the child's circuit-level `output` becomes the step output; the child's terminal exit name is surfaced as the step's exit. Runs as its own Session ([02](02-sessions-orchestrator.md) §5.5).
+`kind: circuit` with `circuit: <uid>`. Input wired like a code step. The child's **declared exits are the contract**: the parent step's exits map 1:1 to the child circuit's declared exit names, and the child's per-exit output payload becomes the step output. Commit validation checks the parent's declared exits against the child's interface. Internal child step names never leak. Runs as its own Session ([02](02-sessions-orchestrator.md) §5.5).
 
 ### 3.4 Gate steps
 
-`kind: gate` — the hard-gate mechanism specified in [02 — Sessions & Orchestrator](02-sessions-orchestrator.md) §5.4. The circuit declares which artifacts are presented for review and which exits the reviewer chooses among. Gate resolution `{decision, comment?, edits?}` selects the exit; `edits` merge into the gate's output payload.
+`kind: gate` — the hard-gate mechanism specified in [02 — Sessions & Orchestrator](02-sessions-orchestrator.md) §5.4. The circuit declares which artifacts are presented for review and who reviews them (`reviewers:` targeting via the `need-input` grammar, [09](09-content.md) §3). Targeted reviewers record per-artifact `approve`/`request-changes` verdicts; the gate auto-resolves through its `approve` exit (all approved) or its `changes` exit (any changes requested), with the collected feedback as the gate's output payload. Reviewer `edits` are validated against the gate's declared `output` schema before merging — the typed-boundary rule (§4) applies to human input too.
 
 ## 4. Step I/O & ambient context
 
 - Each step declares **typed input/output schemas** (JSON Schema subset). Typed boundaries make circuits genuinely composable and double as structured-output specs and eval assertion targets ([04](04-evals.md)).
+- **`#/defs/artifact-ref`** is a system-provided schema definition available to every circuit:
+
+  ```yaml
+  artifact-ref:
+    type: object
+    required: [uid, revision_id]
+    properties:
+      uid:         { type: string }   # content node UID
+      revision_id: { type: integer }  # pinned revision ([01] §3.3)
+  ```
+
+  Artifact refs are **revision-pinned**: downstream steps, evals, and replays see the exact snapshot the producing step cut — aligning with provenance-binds-to-revisions ([01](01-data-model.md) §4.2) and making eval fixtures and deterministic replay reproducible. Steps and tools that genuinely need the live head (e.g., after a gate applied human edits) dereference the UID explicitly through a Toolbox read primitive; the ref itself always pins.
 - Every step additionally has read access to a **closed, system-defined ambient context channel**: `$ambient.task` (triggering Task ref), `$ambient.session_id`, `$ambient.budget` (remaining), `$ambient.artifacts` (accumulated artifact refs produced so far in this Session). Steps cannot write arbitrary ambient keys — anything a step wants to pass forward goes through its typed output or an Artifact.
 - Validation failures at a boundary are step failures (consume a retry attempt) — never silent coercion.
 
@@ -146,6 +177,7 @@ An invocation of a [Toolbox](06-toolbox.md) tool extension in the sandbox. Input
 - Each step declares a **closed set of named exits**; LLM steps return the exit as a structured-output enum, code steps return it programmatically.
 - The orchestration layer executes routing: a mix of code (following the declared edge) with the *decision* made inside the step (LLM choice or code logic). There is no separate "router LLM" — the graph edge is deterministic once the exit is chosen.
 - Every routing decision is recorded (`step-exited` event with `exit_name`) and scoreable by evals.
+- **Loop re-entry (fresh re-interpolation).** When a cycle routes back into a step, the re-entered step runs as a **brand-new attempt**: its prompt template (or `input_map`) is re-interpolated from scratch, and `$steps.<id>.output` resolves to each step's **latest completed visit** in this Session (unvisited steps resolve to nothing — templates guard with `{{#if}}`). There is no conversation continuation across visits. This is how "loop back with the checker's findings in scope" works: the re-entered `summarize` step's template reads `$steps.quality-check.output`, which now holds the newest findings. Stateless, replay-friendly, no additional syntax.
 
 ## 6. Versioning & provenance
 
@@ -171,11 +203,13 @@ A searchable list of all circuits (slug, title, tags, last-modified, eval status
 
 ## 9. v1 cutline
 
-**In:** the `circuit@v1` schema and all four step kinds; typed I/O + ambient channel; named-exit routing; retry policies; cycles-with-budget-bounds; sub-circuit composition; validation on commit; inventory + editor with designer chat and backlinks.
+**In:** the `circuit@v1` schema and all four step kinds; declared circuit exits with per-exit output schemas; typed I/O (revision-pinned artifact refs) + ambient channel; named-exit routing with fresh re-interpolation on loop re-entry; retry policies; cycles bounded by budget + `max_visits`; sub-circuit composition against declared interfaces; UID-based cross-references; validation on commit; inventory + editor with designer chat and backlinks.
 
 **Out (future):** parallel fan-out/join steps (v1 flows are single-token; parallelism happens inside a step via tools or sub-harnesses); conditional edge expressions (all branching is via named exits); circuit templates/marketplace; auto-generated circuit drafts from Task descriptions.
 
-## 10. Open questions
+## 10. Resolved questions
 
-1. **Loop-guard beyond budget.** Should a step declare `max_visits` to catch infinite loops before budget burn? Recommendation: yes, optional `max_visits` with default 25, failing to `suspended-error`.
-2. **Prompt template language.** Recommendation: minimal `{{path.to.value}}` interpolation + `{{#if}}`/`{{#each}}` (Handlebars subset); no arbitrary expressions — logic belongs in code steps.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Loop-guard beyond budget.** **Decided:** steps may declare `max_visits`, default 25; exceeding it fails the run to `suspended-error`. Now normative in §2.
+2. **Prompt template language.** **Decided:** minimal `{{path.to.value}}` interpolation + `{{#if}}`/`{{#each}}` (Handlebars subset); no arbitrary expressions — logic belongs in code steps.

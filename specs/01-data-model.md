@@ -47,6 +47,7 @@ Every content-plane object is a **node** with this common shape.
 | Field | Definition |
 |---|---|
 | **UID** | 20-character [Crockford base32](https://www.crockford.com/base32.html) string (uppercase canonical form, e.g. `01J8FQ2ZK7XW9MBT4PVN`). Immutable. The primary key. Generated server-side from 100 random bits (no embedded timestamp — UIDs must not leak creation ordering). |
+| **Team** | The owning team (`team_id`). v1 deployments operate a single team, but the column exists from day one so multi-team and federation need no schema migration (see §8 identity tables). |
 | **Title** | Human-readable; stored in the node's frontmatter/properties; may change freely without breaking links (links use UID). |
 | **Type** | One of `task` \| `artifact` \| `comment` \| `knowledge`. The set is extensible (future: `workstream`, `project`, `idea`, …); extensions register a type name and optional JSON Schema for type-specific properties. |
 | **Tags** | Arbitrary string labels. Also the mechanism for type-specific flags — e.g. `need-input`, `intermediate`, `deliverable` are tags, not columns. Structured tags use `key:value` form (e.g. `need-input:role=scientist`); see [09 — Content](09-content.md) §3 for the `need-input` grammar. |
@@ -72,7 +73,7 @@ References between nodes — in bodies, properties, comments, anywhere — use O
 
 Each node pairs a **stable identity** (the UID and its mutable, CRDT-edited head) with **immutable named revisions**.
 
-- A revision is a full snapshot of the node (properties + body) at a moment, with: `revision_id` (monotonic integer per node), `label` (the trigger that cut it), `created_at`, `created_by` (user, subagent, or system), and for CRDT bodies the encoded Yjs state + state vector.
+- A revision is a full snapshot of the node (properties + body) at a moment, with: `revision_id` (monotonic integer per node), `labels` (the trigger(s) that cut it — an array, since dedup can attach later triggers to an existing revision), `created_at`, `created_by` (user, subagent, or system), and for CRDT bodies the encoded Yjs state + state vector.
 - Revisions are cut at **meaningful boundaries**, not on every keystroke:
   - `step-completion` — an orchestrator step that produced or updated the node finished (cut automatically; this is what `produces`/`updates` edges bind to).
   - `gate-resolution` — a hard gate involving this node was resolved.
@@ -80,13 +81,13 @@ Each node pairs a **stable identity** (the UID and its mutable, CRDT-edited head
   - `pre-ai-edit` — cut automatically immediately before an AI write is merged into a CRDT body (this is both the merge base and the one-click "revert the AI edit" target; see [07 — Knowledge](07-knowledge.md) §5).
   - `intake` — a Task was accepted into the queue.
 - CRDT live collaboration always operates on the **mutable head**; revisions give lineage something permanent to point at.
-- Revisions are content-deduplicated: if the node state is byte-identical to the latest revision, no new revision is written (the trigger is recorded on the existing one).
+- Revisions are content-deduplicated: if the node state is byte-identical to the latest revision, no new revision is written — the new trigger is appended to the existing revision's `labels` array.
 
 ### 3.4 Scope / visibility
 
 Scope answers "who/what can see this node." v1 keeps it deliberately small:
 
-- `team` (default) — visible to all members of the owning team and all Subagents.
+- `team` (default) — visible to all members of the owning team (the node's `team_id`) and all Subagents.
 - `session` — intra-run scratch; visible within the producing Session (and its parent/child Sessions) and to team members inspecting that Session, but excluded from cross-session search/RAG surfaces.
 - `external` — reserved marker for future stakeholder-visible content (unused in v1 behavior; stored so data doesn't need migration when the stakeholder view lands).
 
@@ -122,6 +123,7 @@ Each edge is **typed, directional, first-class, and queryable both ways**.
 - `derived-from`, `attached-to`, `blocks`/`depends-on`, and explicit `references` are emitted by **Subagents' tool calls via a Toolbox primitive** (`emit_edge`; see [06 — Toolbox](06-toolbox.md) §7 and [11 — API & MCP](11-api-mcp.md)) or by users via the UI/API.
 - Implicit `references` edges are materialized by the server's link indexer (§3.2).
 - Edges are never deleted by ordinary operations; retracting a mistake writes a tombstone (`retracted_at`, `retracted_by`), and queries exclude tombstoned edges by default.
+- **Exception — indexer-owned `references` edges.** Link-indexer-materialized `references` edges are a **derived index** of body content, not provenance: the indexer may true-delete/upsert them on re-index (every revision cut would otherwise tombstone-and-recreate them, bloating the table without adding information). Nothing is lost — historical link state is always recoverable from the immutable revisions the links were extracted from. Explicitly-emitted `references` edges (via `emit_edge` or the UI) and all other edge types keep the tombstone-only rule.
 
 ### 4.4 What edges power
 
@@ -186,10 +188,19 @@ config/
     <slug>.yaml              # onboarded MCP server config (endpoint, auth capability ref, tool allowlist)
 ```
 
-### 6.2 Versioning & provenance rules
+### 6.2 Config UIDs & cross-references
+
+Every config definition (subagent, circuit, tool, MCP onboarding, model preset) is minted a **permanent UID** at creation — same 20-char Crockford base32 generator as content nodes — stored in a `uid:` field in its YAML. **All cross-references use the UID**, never the slug or path:
+
+- step → sub-circuit, step → subagent, subagent grants → tools/circuits/knowledge domains, `breadboard.yaml` → triage circuit, MCP onboarding → credential capabilities;
+- content-plane references to config (a Task's `target_circuit`, Session rows' circuit/subagent identifiers) likewise store the UID.
+
+Slugs and file paths are **display and file-layout metadata only** — renames and directory moves never break references. The server maintains a UID→path index per commit (rebuilt on commit validation); commit validation rejects a change that would delete or duplicate a UID in the tree.
+
+### 6.3 Versioning & provenance rules
 
 - Every mutation is a **commit** authored either by a user (via UI editors) or by the AI through **propose-review-commit**: AI writes to a branch, the change surfaces as a reviewable diff, a human merges. CI/evals may run against proposed changes before merge ([06 — Toolbox](06-toolbox.md) §6, [04 — Evals](04-evals.md) §7).
-- Every Session records, at start and at any mid-run config resolution, the **commit hash** of the config tree it resolved definitions from. Historical runs are exactly reproducible in configuration terms.
+- Every Session records, at start and at any mid-run config resolution, the **commit hash** of the config tree it resolved definitions from (stored as `text`, not `char(40)` — SHA-256 git repos produce 64-char hashes). Historical runs are exactly reproducible in configuration terms. Mid-run re-resolutions are recorded as session events ([02](02-sessions-orchestrator.md) §4), not extra columns.
 - Version control covers the *design* of each definition: input/output shapes, flow and connections, step code/context/prompt templates, associated eval details. It does **not** cover run state or content (that's the content plane).
 - Reverting a regression = `git revert` surfaced as a first-class "revert to this version" action in the editors.
 
@@ -199,7 +210,7 @@ config/
 
 Defined fully in [02 — Sessions & Orchestrator](02-sessions-orchestrator.md). For the data model, the contract is:
 
-- Every Session row records: the triggering Task UID (if any), the circuit slug + **config commit hash**, per-step subagent slugs + the same hash, model IDs actually used, and cost.
+- Every Session row records: the triggering Task UID (if any), the circuit UID + **config commit hash**, per-step subagent UIDs + the same hash, model IDs actually used, and cost (slugs may be denormalized alongside for display, but the UID is authoritative; see §6.2).
 - Every step boundary automatically writes `produces`/`updates` edges from `(session_id, step_id)` to the node **revisions** it created/modified.
 - Sub-circuit invocations create child Sessions linked by parent→child association in the session store *and* navigable both directions.
 
@@ -210,9 +221,51 @@ Defined fully in [02 — Sessions & Orchestrator](02-sessions-orchestrator.md). 
 Names are normative; exact column tuning is implementation detail. All timestamps are `timestamptz`.
 
 ```sql
+-- Identity ---------------------------------------------------------------
+-- v1 deployments run a single team, but the schema is multi-team-ready from
+-- day one so multi-team/federation needs no migration. Local-dev static users
+-- ([12] §3) are ordinary rows in `users`.
+CREATE TABLE teams (
+  team_id        char(20) PRIMARY KEY,           -- Crockford base32, same generator as node UIDs
+  name           text NOT NULL,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE users (
+  user_id        char(20) PRIMARY KEY,
+  team_id        char(20) NOT NULL REFERENCES teams(team_id),
+  handle         text NOT NULL,                  -- login/display handle
+  display_name   text NOT NULL DEFAULT '',
+  oidc_subject   text,                           -- NULL for local-dev static users
+  is_admin       boolean NOT NULL DEFAULT false,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  deactivated_at timestamptz,
+  UNIQUE (team_id, handle)
+);
+
+-- Review roles ([09] §3, gate reviewer targeting): team-scoped DB records
+-- managed via API/UI, not config-repo entries. OIDC groups may map into
+-- role memberships at login ([12] §3). This supersedes the earlier
+-- breadboard.yaml roles registry idea.
+CREATE TABLE roles (
+  role_id        char(20) PRIMARY KEY,
+  team_id        char(20) NOT NULL REFERENCES teams(team_id),
+  slug           text NOT NULL,                  -- e.g. 'scientist'; referenced by need-input/gate targeting
+  description    text NOT NULL DEFAULT '',
+  UNIQUE (team_id, slug)
+);
+
+CREATE TABLE role_memberships (
+  role_id        char(20) NOT NULL REFERENCES roles(role_id),
+  user_id        char(20) NOT NULL REFERENCES users(user_id),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (role_id, user_id)
+);
+
 -- Content plane ---------------------------------------------------------
 CREATE TABLE nodes (
   uid            char(20) PRIMARY KEY,          -- Crockford base32
+  team_id        char(20) NOT NULL REFERENCES teams(team_id),
   type           text NOT NULL,                 -- task|artifact|comment|knowledge|...
   title          text NOT NULL DEFAULT '',
   properties     jsonb NOT NULL DEFAULT '{}',   -- frontmatter head (mirror of Y.Map)
@@ -222,7 +275,7 @@ CREATE TABLE nodes (
   tags           text[] NOT NULL DEFAULT '{}',
   scope          text NOT NULL DEFAULT 'team',   -- team|session|external
   created_at     timestamptz NOT NULL DEFAULT now(),
-  created_by     jsonb NOT NULL,                 -- actor: {kind: user|subagent|code-step|system, id}
+  created_by     jsonb NOT NULL,                 -- actor: {kind: user|subagent|code-step|service, id} ([11] §2 taxonomy)
   updated_at     timestamptz NOT NULL DEFAULT now(),
   deleted_at     timestamptz                     -- soft delete only
 );
@@ -234,7 +287,8 @@ CREATE INDEX nodes_fts_idx   ON nodes USING gin (to_tsvector('english', coalesce
 CREATE TABLE node_revisions (
   uid            char(20) NOT NULL REFERENCES nodes(uid),
   revision_id    integer  NOT NULL,              -- monotonic per node
-  label          text     NOT NULL,              -- step-completion|gate-resolution|publish|pre-ai-edit|intake
+  labels         text[]   NOT NULL,              -- trigger(s): step-completion|gate-resolution|publish|pre-ai-edit|intake
+                                                 -- array: content-dedup appends later triggers to the existing revision (§3.3)
   properties     jsonb    NOT NULL,
   body           jsonb,
   body_text      text,
@@ -262,7 +316,7 @@ CREATE TABLE edges (
   type           text NOT NULL,                  -- produces|updates|derived-from|attached-to|blocks|depends-on|references
   -- Source: either a content node or a session step (provenance edges)
   src_uid        char(20) REFERENCES nodes(uid),
-  src_session_id char(20),                       -- with src_step_id for produces/updates
+  src_session_id char(24) REFERENCES sessions(session_id),  -- 'ses_' + 20 chars ([02] §4); with src_step_id for produces/updates
   src_step_id    text,
   dst_uid        char(20) NOT NULL REFERENCES nodes(uid),
   dst_revision   integer,                        -- set for provenance edges (revision-bound)
@@ -301,7 +355,7 @@ All traversal endpoints enforce depth and row limits and return a truncation fla
 
 ## 9. v1 cutline
 
-**In v1:** everything above — four node types, seven edge types, revisions with the five trigger labels, scope with propagation checks, JSONB + edges + Yjs-update-log schema, config git repo with propose-review-commit, link indexer, `GraphQueries` seam.
+**In v1:** everything above — four node types, seven edge types, revisions with the five trigger labels, scope with propagation checks, identity tables (multi-team-ready schema, single-team UI), JSONB + edges + Yjs-update-log schema, config git repo with propose-review-commit and UID-based cross-references, link indexer, `GraphQueries` seam.
 
 **Explicitly out (future work):**
 - Additional node types (`workstream`, `project`, `idea`) — schema supports registration; none ship in v1.
@@ -309,8 +363,10 @@ All traversal endpoints enforce depth and row limits and return a truncation fla
 - Dedicated graph store (seam documented; adopt only if recursive-CTE traversal becomes a measured bottleneck).
 - Cross-Breadboard edges (federation; see [13 — Roadmap](13-roadmap.md)).
 
-## 10. Open questions
+## 10. Resolved questions
 
-1. **Per-block vs per-document Y.Doc granularity.** v1 recommendation: one Y.Doc per node (body array + properties map inside it) — simplest sync unit; revisit if very large Notes strain update-log compaction.
-2. **UID collision policy.** 100 random bits makes collision negligible; the insert path still retries once on primary-key conflict. No further mitigation planned.
-3. **`body_text` mirror freshness.** Recommendation: refresh on revision cut and on a debounced (≤10 s) head-change listener; search may lag the live head by that much.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Per-block vs per-document Y.Doc granularity.** **Decided:** one Y.Doc per node (body array + properties map inside it) — simplest sync unit; revisit if very large Notes strain update-log compaction.
+2. **UID collision policy.** **Decided:** 100 random bits makes collision negligible; the insert path retries once on primary-key conflict. No further mitigation.
+3. **`body_text` mirror freshness.** **Decided:** refresh on revision cut and on a debounced (≤10 s) head-change listener; search may lag the live head by that much.

@@ -18,7 +18,7 @@ The Intake is a **queue of new Tasks**, filled by the owning team (and, in futur
 
 A Task is a `task`-type content node ([01](01-data-model.md) §5):
 
-- **Properties:** `title`, `priority` (`p0`–`p3`, default `p2`), `origin` (`{kind: user|subagent|api, id}`), `status` (`draft | queued | triaging | active | gated | done | rejected`), optional `target_circuit` (triage bypass, §4), optional per-task `budget` override ([02](02-sessions-orchestrator.md) §5.1).
+- **Properties:** `title`, `priority` (`p0`–`p3`, default `p2`), `origin` (`{kind: user|subagent|api, id}`), `status` (`draft | queued | triaging | active | gated | done | rejected`), optional `target_circuit` (the target circuit's **config UID**, [01](01-data-model.md) §6.2 — triage bypass, §3.2), optional per-task `budget` override ([02](02-sessions-orchestrator.md) §5.1).
 - **Body:** the shaped pitch — problem statement, context, desired outcome, links (`[[UID|title]]`) to related Tasks/Artifacts/Notes gathered during shaping.
 - **Tags:** origin/status surfacing (e.g., `origin:stakeholder` in future, `origin:ai`); dedup findings (`possible-dup-of:<UID>` plus a `references` edge).
 - An `intake` revision is cut when the Task is accepted into the queue ([01](01-data-model.md) §3.3).
@@ -34,13 +34,16 @@ draft ──(accept)──▶ queued ──(dispatch)──▶ triaging ──�
 
 `draft` exists during idea shaping; `queued` Tasks are eligible for auto-dispatch; `triaging`/`active`/`gated` mirror the state of the Task's Sessions; terminal states are `done` and `rejected`. Status transitions are written by the orchestrator (not by hand) except accept/discard/reject, which are human or Intake-Subagent actions.
 
+- **Discard** maps to the node soft-delete (`DELETE /nodes/:uid`, [11](11-api-mcp.md) §3) — a discarded draft is a soft-deleted `task` node, recoverable until retention expires (§10).
+- **Triage bypass and states:** a Task with `target_circuit` skips the `triaging` state as well as the triage circuits — it dispatches `queued → active` directly into the target circuit. `triaging` only describes Tasks actually inside a triage circuit.
+
 ## 3. Dispatch
 
 By default, **every new Task flows through a top-level triage circuit** that routes it to the appropriate handling circuit, automatically as capacity allows ([02](02-sessions-orchestrator.md) §5.1).
 
 ### 3.1 Hierarchical triage
 
-Breadboards quickly grow too complex for a single triage circuit to know every circuit. Triage is **hierarchical**: the initial triage circuit routes into follow-on, more specialized triage circuits based on the broad category of the Task; those route onward to handling circuits (or deeper triage). Mechanically this is nothing special — triage circuits are ordinary circuits ([03](03-circuits.md)) whose steps classify (LLM step with named exits per category) and whose exits are sub-circuit steps. The top-level triage circuit slug is set in `config/breadboard.yaml` (`intake.triage_circuit`).
+Breadboards quickly grow too complex for a single triage circuit to know every circuit. Triage is **hierarchical**: the initial triage circuit routes into follow-on, more specialized triage circuits based on the broad category of the Task; those route onward to handling circuits (or deeper triage). Mechanically this is nothing special — triage circuits are ordinary circuits ([03](03-circuits.md)) whose steps classify (LLM step with named exits per category) and whose exits are sub-circuit steps. The top-level triage circuit is set in `config/breadboard.yaml` (`intake.triage_circuit`, by config UID).
 
 ### 3.2 Triage bypass
 
@@ -102,7 +105,9 @@ Visibility into **all Tasks captured throughout the infrastructure**:
 - **Stakeholder intake view.** A separate dedicated view for stakeholders when the owning team opts in: stakeholder-created Tasks automatically get a lower priority tier than team-created ones; the team may action the stakeholder queue via a separate AI capacity pool or rely on prioritization ordering; team members may **promote** a stakeholder Task to higher priority or to team-created handling. The v1 origin/priority model and the `external` scope marker are designed so this lands without migration.
 - **Auto-pitch circuits.** The owning team constructs Circuits that automatically pitch new Intake Tasks based on reviewing Content or as part of intermediate work — optionally with human-gated review before the Task becomes available in the queue for the AI to work. (Composes entirely from existing pieces: a circuit + `create_task` with `draft` status + a gate.)
 
-## 10. Open questions
+## 10. Resolved questions
 
-1. **Draft retention.** How long do abandoned `draft` Tasks live? Recommendation: 30-day auto-archive (soft delete), surfaced in a "drafts" filter until then.
-2. **Dedup threshold.** When is similarity high enough to block vs. merely warn? Recommendation: never block — always create with `possible-dup-of` tags and let humans merge; blocking creates worse failure modes than duplication.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Draft retention.** **Decided:** abandoned `draft` Tasks auto-archive (soft delete) after 30 days; surfaced in a "drafts" filter until then.
+2. **Dedup threshold.** **Decided:** never block on similarity — always create with `possible-dup-of` tags and let humans merge; blocking creates worse failure modes than duplication.
