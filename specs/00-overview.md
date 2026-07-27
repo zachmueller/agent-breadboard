@@ -53,9 +53,9 @@ Everything else — dispatch, execution, retries, checkpointing, lineage trackin
                          │  Subagents · Content · Sessions             │
                          └───────────────┬─────────────────────────────┘
                                          │ REST + WebSocket (Yjs sync)
-┌────────────────────────────────────────┴────────────────────────────────────┐
-│                        Breadboard Server (TypeScript/Node)                  │
-│                                                                             │
+┌────────────────────────────────────────┴───────────────────────────────────┐
+│                        Breadboard Server (TypeScript/Node)                 │
+│                                                                            │
 │  ┌───────────┐  ┌────────────────┐  ┌───────────────┐  ┌────────────────┐  │
 │  │  Intake   │  │  Orchestrator  │  │  Knowledge    │  │  Toolbox       │  │
 │  │  service  │─▶│  (Sessions,    │◀─│  service      │  │  runtime       │  │
@@ -66,15 +66,15 @@ Everything else — dispatch, execution, retries, checkpointing, lineage trackin
 │  │  Content  │◀─────────┴──────────▶│  Model        │  │  Credential    │  │
 │  │  + Edges  │                      │  gateway      │  │  broker        │  │
 │  └───────────┘                      └───────────────┘  └────────────────┘  │
-│                                                                             │
+│                                                                            │
 │  ┌──────────────────────┐  ┌─────────────────────┐  ┌───────────────────┐  │
-│  │  Postgres             │  │  Config git repo    │  │  Object storage  │  │
-│  │  (content plane,      │  │  (configuration     │  │  (large blobs,   │  │
-│  │  edges, sessions,     │  │  plane: circuits,   │  │  optional)       │  │
-│  │  eval results,        │  │  subagents, tools,  │  └───────────────────┘  │
-│  │  Yjs update log)      │  │  presets, tenets)   │                         │
+│  │  Postgres            │  │  Config git repo    │  │  Object storage   │  │
+│  │  (content plane,     │  │  (configuration     │  │  (large blobs,    │  │
+│  │  edges, sessions,    │  │  plane: circuits,   │  │  optional)        │  │
+│  │  eval results,       │  │  subagents, tools,  │  └───────────────────┘  │
+│  │  Yjs update log)     │  │  presets, tenets)   │                         │
 │  └──────────────────────┘  └─────────────────────┘                         │
-└─────────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────────────────┘
           │                                     │
           ▼                                     ▼
    LLM providers (Bedrock reference,     External MCP servers,
