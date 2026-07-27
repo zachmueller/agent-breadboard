@@ -39,16 +39,16 @@ Out of scope v1 (documented): multi-tenant isolation (single-team deployments), 
 
 ## 3. Identity & authentication
 
-- **OIDC-pluggable:** any standard OIDC provider (Okta, Entra, Google, Keycloak, Cognito). The server consumes `sub`/`email`/`name` and maintains its own user records; group→role mapping is configurable.
-- **Local-dev mode:** static user list in `breadboard.yaml` (name + token) — no OIDC required to run the stack locally. Clearly banner-marked in the UI.
-- **Token kinds** ([11](11-api-mcp.md) §2): user session tokens (OIDC-derived), long-lived **service tokens** (admin-issued, for team pipelines/API callers, scoped to allowed endpoints), and short-lived **internal actor tokens** minted by the orchestrator for sandbox executions (scoped to the calling Subagent's grants, TTL = execution).
+- **OIDC-pluggable:** any standard OIDC provider (Okta, Entra, Google, Keycloak, Cognito). The server consumes `sub`/`email`/`name` and maintains its own user records (`users` table, [01](01-data-model.md) §8). Group mapping is configurable at two levels: OIDC groups → the `admin`/`member` permission role, and OIDC groups → review-role memberships (`role_memberships` table) applied at login. Review roles themselves live in the DB, managed via API/UI — not in the config repo.
+- **Local-dev mode:** static user list in `breadboard.yaml` (name + token) — no OIDC required to run the stack locally. Static users are **real `users` rows** (created at startup), so the identity schema is exercised identically in dev and prod; OIDC is a login-method swap. Clearly banner-marked in the UI.
+- **Token kinds** ([11](11-api-mcp.md) §2): user session tokens (OIDC-derived), long-lived **service tokens** (admin-issued, for team pipelines/API callers, carrying **named capability scopes** — [11](11-api-mcp.md) §2), and short-lived **internal actor tokens** minted by the orchestrator for sandbox executions (scoped to the calling Subagent's grants, TTL = execution).
 
 ## 4. Authorization model
 
 v1 is deliberately coarse — one team, high trust:
 
-- **Roles:** `admin` (instance settings, broker credentials, service tokens, user management) and `member` (everything else). Review-routing `role` slugs ([09](09-content.md) §7) are orthogonal labels, not permissions.
-- **Scope enforcement:** node `scope` ([01](01-data-model.md) §3.4) is enforced on every read path (REST, search, RAG, MCP) — `session`-scoped nodes only surface in their session context.
+- **Roles:** `admin` (instance settings, broker credentials, service tokens, user management) and `member` (everything else). Review-routing `role` slugs ([09](09-content.md) §7, DB-backed) are orthogonal labels, not permissions — they route review work and gate verdicts, never grant or deny data access.
+- **Scope enforcement:** node `scope` ([01](01-data-model.md) §3.4) is enforced on every read path — REST, search, RAG, MCP, **the SSE event stream (per-subscriber filtering, [11](11-api-mcp.md) §5), and the CRDT `WS /sync` channel (doc-open requires the same read grant as `GET /nodes/:uid`)**. `session`-scoped nodes only surface in their session context.
 - **Subagent grants are the real permission system for AI:** tools, MCP allowlists, knowledge domains, circuit read/execute — all enforced server-side at the API layer regardless of how the call arrived ([05](05-subagents.md) §2).
 - Config-plane merges: any `member` may merge (v1); a per-directory required-reviewers rule (CODEOWNERS-like) is a future hook.
 
@@ -63,7 +63,9 @@ The broker is a module inside the server process (v1) with a strict internal bou
 
 ## 6. Sandbox posture
 
-Per [06 — Toolbox](06-toolbox.md) §4, restated as security requirements: per-execution containers (never reused after running user code); non-root, read-only root filesystem, tmpfs workdir; CPU/memory/pids limits from the manifest; **default-deny egress** via per-container network policy with the manifest allowlist compiled to it; only implicit destinations are the broker and the Breadboard API (with the short-lived actor token); host Docker socket never mounted into tool containers.
+Per [06 — Toolbox](06-toolbox.md) §4, restated as security requirements: per-execution containers (never reused after running user code); non-root, read-only root filesystem, tmpfs workdir; CPU/memory/pids limits from the manifest; **default-deny egress via an egress proxy** — tool containers attach to an internal-only Docker network with no external route; the only way out is an HTTP(S) forward proxy that enforces the per-execution allowlist (compiled from the tool manifest's `egress.allow`) and logs every call. Non-HTTP protocols are blocked by construction. Only implicit destinations are the broker and the Breadboard API (with the short-lived actor token); host Docker socket never mounted into tool containers.
+
+Runtime tier: **plain Docker in v1** with the posture above (self-hosted, single-team trust); gVisor (`runsc`) is documented as the drop-in hardening step for lower risk appetites — the runner takes a configurable OCI runtime, so no architectural change is needed.
 
 ## 7. Model gateway
 
@@ -78,7 +80,7 @@ interface ModelProvider {
 }
 ```
 
-- **Reference provider: AWS Bedrock** (Converse API; SigV4 via standard AWS credential chain). Additional adapters (Anthropic API, OpenAI, local/OpenAI-compatible) implement the same interface — presets already support cross-provider fallback lists ([05](05-subagents.md) §4).
+- **Reference provider: AWS Bedrock** (Converse API; SigV4 via standard AWS credential chain). **v1 ships Bedrock only**; additional adapters (Anthropic API, OpenAI, local/OpenAI-compatible) are post-v1 and implement the same interface — presets already support cross-provider fallback lists ([05](05-subagents.md) §4), and the `ModelProvider` seam is the documented extension point.
 - The gateway owns: preset resolution + fallback walking (skipping entries whose `capabilities` don't meet the request's `requires`), retry/backoff on provider throttles, token usage extraction, cost computation, and per-call logging to Session turns.
 - Embeddings ([07](07-knowledge.md) §9) route through the same interface.
 
@@ -103,7 +105,9 @@ Internal-only code lives in a separate adapter package, not in the OSS tree.
 
 **Out (future):** broker as a separate service; per-directory config review requirements; SSO-provisioned user lifecycle (SCIM); secrets rotation automation; network policy beyond the host (service mesh); the Amazon adapter package itself (documented here, built when needed).
 
-## 10. Open questions
+## 10. Resolved questions
 
-1. **Sandbox runtime hardening tier.** Plain Docker vs gVisor/Firecracker. Recommendation: plain Docker with the §6 posture for v1 (self-hosted, single-team trust); document gVisor as the drop-in hardening step.
-2. **Broker request signing.** Should sandbox→broker calls be signed beyond the actor token? Recommendation: actor token + per-execution nonce is sufficient at v1's trust level.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Sandbox runtime hardening tier.** **Decided:** plain Docker with the §6 posture (egress proxy) for v1; gVisor documented as the drop-in hardening step (§6).
+2. **Broker request signing.** **Decided:** actor token + per-execution nonce is sufficient at v1's trust level.

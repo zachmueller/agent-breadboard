@@ -20,7 +20,8 @@ One file per Subagent: `config/subagents/<slug>.yaml`.
 
 ```yaml
 schema: breadboard/subagent@v1
-slug: research-scout
+uid: 01J8SUBAG0RSRCHSCOUT0               # permanent config UID ([01] §6.2)
+slug: research-scout                     # display/file-layout only
 title: Research scout
 description: Finds and qualifies prior art for a research question.
 
@@ -32,17 +33,17 @@ system_prompt: |
 model_preset: medium                     # tier name; resolved via config/presets/models.yaml
 
 tools:                                   # Toolbox access (default: none — explicit allow)
-  - tool: search-scholarly               # tool extension slug
-  - tool: query_knowledge
+  - tool: 01J8TOOL0SCHOLARLY00           # tool extension UID (search-scholarly)
+  - tool: 01J8TOOL0QRYKNOWLEDGE          # query_knowledge
     settings:                            # per-tool overrides / hidden restrictions
       domains: [glossary, prior-art]     # narrower than the tool's full capability
-  - mcp: internal-search                 # onboarded MCP server slug
+  - mcp: 01J8MCP00INTSEARCH00            # onboarded MCP server UID (internal-search)
     allow: [search, read_document]       # tool allowlist within the server
 
 circuits:                                # circuit visibility (default: none)
-  - circuit: cite-check
+  - circuit: 01J8CIRCUIT0CITECHK00       # cite-check
     access: execute                      # read | execute
-  - circuit: lit-review
+  - circuit: 01J8CIRCUIT0LITREV00        # lit-review
     access: read                         # may inspect the definition, not invoke
 
 knowledge:                               # Knowledge Domain access (default: none)
@@ -93,9 +94,11 @@ presets:
     - { provider: bedrock, model_id: anthropic.claude-sonnet-5 }
     - { provider: bedrock, model_id: anthropic.claude-haiku-4-5 }
   large:
-    - { provider: bedrock, model_id: anthropic.claude-opus-5 }
+    - { provider: bedrock, model_id: anthropic.claude-opus-5, requires: [structured-output, tool-use] }
     - { provider: openai,  model_id: gpt-5.5 }      # cross-provider fallback
 ```
+
+Preset entries may declare `requires: [<capability>...]` (e.g., `structured-output`, `tool-use`); during fallback the gateway **skips entries that don't satisfy the step's required capabilities** rather than failing mid-conversation.
 
 Purpose is two-fold: **(1) simplicity** — Subagent authors pick a tier, not a model ID; **(2) robustness** — each preset is an **ordered fallback list**, so if the preferred model is unavailable (deprecated, throttled, region outage) the gateway falls back automatically to the next entry (e.g., if `opus-4-6` were the primary `large` and deprecated before the definition was updated, calls fall back to the next configured option). Fallback events are logged on the Session turn and surfaced as a Breadboard health warning.
 
@@ -118,7 +121,7 @@ Like all configuration, Subagents can be edited by AI (e.g., a meta-operating su
 - **Subagents inventory:** searchable list of all Subagents (slug, title, model preset, tool count, last modified). Primarily a means of finding a Subagent and opening the editor.
 - **Subagent editor:** per-Subagent view showing the configuration components (system prompt, tools, circuits, knowledge, preset). Users click into any item to jump into the relevant editor (e.g., a granted tool → Tool editor; an injected Knowledge Note → Note editor).
   - **Designer chat panel** — always visible: conversations with Subagent-designer Subagents equipped with built-in Subagent-editing tools, following the shared propose-review-commit pattern ([10 — UI](10-ui.md) §4) so users can evolve configurations without hand-editing YAML.
-  - Validation inline: unknown tool slugs, unreadable knowledge refs, preset typos surface as commit-blocking errors.
+  - Validation inline: unknown tool UIDs, unreadable knowledge refs, preset typos surface as commit-blocking errors.
 
 ## 8. v1 cutline
 
@@ -126,7 +129,9 @@ Like all configuration, Subagents can be edited by AI (e.g., a meta-operating su
 
 **Out (future):** per-Subagent temperature/sampling profiles (v1: gateway defaults); Subagent inheritance/composition ("extends"); auto-tuning prompts from eval results; per-Subagent budget multipliers.
 
-## 9. Open questions
+## 9. Resolved questions
 
-1. **Tenet injection position.** Top of system prompt (recommended, most authoritative) vs. bottom (most recent). v1: top, revisit with evidence.
-2. **Preset capability mismatch on fallback.** A fallback model may lack capabilities the primary has (e.g., structured output quality). Recommendation: preset entries may declare `requires: [structured-output, tool-use]` and the gateway skips non-conforming entries rather than failing mid-conversation.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Tenet injection position.** **Decided:** top of the system prompt (most authoritative); revisit with evidence.
+2. **Preset capability mismatch on fallback.** **Decided:** preset entries may declare `requires: [structured-output, tool-use]` and the gateway skips non-conforming entries rather than failing mid-conversation (§4).

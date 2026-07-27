@@ -21,7 +21,7 @@ The orchestrator executes [Circuits](03-circuits.md) and records every execution
 - **Session** — the recorded execution of one circuit run *or* one Intake idea-shaping conversation ([08 — Intake](08-intake.md)). ID: `ses_` + 20-char Crockford base32.
 - **Step** — one executed circuit step within a Session. ID: the circuit-definition step ID plus an attempt counter (`plan-draft#2` = second attempt of step `plan-draft`). Unique within the Session.
 - **Turn** — one message in an LLM step's conversation. ID: `trn_` + 20-char Crockford base32, unique globally. For user↔AI chats (e.g., Intake), the user's username is mapped into the conversation history on their turns.
-- **Run states:** `queued → running → (suspended-gate | suspended-error | completed | cancelled)`. Suspended runs return to `running` on resolution/resume.
+- **Run states:** `queued → running → (suspended-gate | suspended-error | completed | cancelled)`. Suspended runs return to **`queued`** on resolution/resume — they re-enter the dispatch queue and pass the §5.1 capacity checks again before running (a resumed run must not bypass admission control).
 
 ## 3. Session records
 
@@ -29,7 +29,7 @@ What gets captured depends on step type:
 
 - **LLM steps** log the full chat conversation: every turn (system, user, assistant, tool calls + results), with per-turn model ID, token counts, latency, and cost. Prompt templates are logged post-interpolation (with a ref back to the template path + commit).
 - **Code steps** store the logs produced by the code — log level and content are up to the tool author. Stdout/stderr are captured with a size cap (overflow to object storage).
-- **Config provenance:** at Session start the orchestrator resolves the circuit from the config repo and records the **commit hash**; each step records the subagent slug, tool versions, and model IDs actually used (after preset fallback resolution). See [01 — Data Model](01-data-model.md) §6.2.
+- **Config provenance:** at Session start the orchestrator resolves the circuit from the config repo (by config UID, [01](01-data-model.md) §6.2) and records the **commit hash**; each step records the subagent UID, tool versions, and model IDs actually used (after preset fallback resolution). Mid-run re-resolutions (e.g., retry after a config edit, §5.3) are recorded as `config-resolved` events — the `sessions.config_commit` column holds only the initial hash; the event log is authoritative for which commit each step ran against. See [01 — Data Model](01-data-model.md) §6.3.
 - **Lineage:** at every step boundary the orchestrator automatically emits `produces`/`updates` edges from `(session_id, step_id)` to the node revisions the step created/modified ([01](01-data-model.md) §4.3).
 
 ### 3.1 Intermediate Content
@@ -41,9 +41,11 @@ Steps pass summarized context forward as intermediate **Artifacts** (the canonic
 ```sql
 CREATE TABLE sessions (
   session_id     char(24) PRIMARY KEY,            -- 'ses_' + uid
+  team_id        char(20) NOT NULL REFERENCES teams(team_id),
   kind           text NOT NULL,                   -- circuit-run | intake-conversation | eval-run
-  circuit_slug   text,                            -- null for pure conversations
-  config_commit  char(40),                        -- git commit hash resolved at start
+  circuit_uid    char(20),                        -- config UID ([01] §6.2); null for pure conversations
+  config_commit  text,                            -- git commit hash resolved at start (initial only;
+                                                  -- mid-run re-resolutions are config-resolved events)
   task_uid       char(20) REFERENCES nodes(uid),  -- triggering Task, if any
   parent_session char(24) REFERENCES sessions(session_id),
   parent_step_id text,
@@ -59,9 +61,9 @@ CREATE INDEX sessions_state_idx ON sessions (state, created_at);
 CREATE TABLE session_events (                      -- append-only event log (source of truth)
   session_id     char(24) NOT NULL REFERENCES sessions(session_id),
   seq            bigint  NOT NULL,                 -- per-session monotonic
-  event_type     text    NOT NULL,                 -- session-started|step-started|turn|tool-call|tool-result|
+  event_type     text    NOT NULL,                 -- session-started|config-resolved|step-started|turn|tool-call|tool-result|
                                                    -- step-exited|step-failed|retry-scheduled|checkpoint|
-                                                   -- gate-suspended|gate-resolved|budget-exceeded|
+                                                   -- gate-suspended|gate-verdict|gate-resolved|budget-exceeded|
                                                    -- session-completed|session-cancelled
   step_id        text,
   payload        jsonb   NOT NULL,
@@ -84,7 +86,10 @@ CREATE TABLE step_checkpoints (                    -- derived, for cheap recover
   PRIMARY KEY (session_id, step_id, attempt)
 );
 
-CREATE TABLE session_turns (                       -- LLM chat logs (queryable; payloads may spill to object storage)
+CREATE TABLE session_turns (                       -- DERIVED: projection of `turn` events for cost/chat queries,
+                                                   -- rebuildable from session_events like step_checkpoints.
+                                                   -- The turn event is authoritative; large payloads spill to
+                                                   -- object storage ([12] §1) with a content ref in the event.
   turn_id        char(24) PRIMARY KEY,
   session_id     char(24) NOT NULL REFERENCES sessions(session_id),
   step_id        text NOT NULL,
@@ -133,22 +138,21 @@ Every routing decision is a recorded value — evals can score routing ([04 — 
 Each step carries a retry policy (`{max_attempts, backoff: exponential(base, cap)}`, circuit-definable, default `3 attempts, 5s base, 5m cap`). Failures (model errors, tool crashes, schema-validation failures, invalid exits) consume an attempt. When retries exhaust:
 
 - The run suspends as **`suspended-error`** (state persisted, no capacity held) and appears in the **review queue**.
-- A human may: retry the step (fresh attempt, optionally after editing config — the Session records the new commit hash from that point forward), skip to a chosen exit (recorded as a manual routing decision), or cancel the Session.
+- A human may: retry the step (fresh attempt, optionally after editing config — a `config-resolved` event records the new commit hash from that point forward), skip to a chosen exit (recorded as a manual routing decision), or cancel the Session.
 
 ### 5.4 Hard gates
 
 Hard gates are an **orchestrator-level mechanism encoded directly in the circuit flow** — entirely distinct from `need-input` tagging on content (circuits often flag `need-input` on the artifacts produced at a gate, but the gating itself is separate; see [09 — Content](09-content.md) §3).
 
 - At a gate step, the run suspends (`suspended-gate`): state persisted, **no capacity held**. The Session is marked gated so the Breadboard surfaces the blocked status.
-- The gate declares which Artifacts it presents for review; those are typically tagged `need-input` and enter reviewers' queues.
-- **Unblocking:** when all Artifacts gating the session have been reviewed, the gate can resolve. Resolution produces a structured decision object:
-
-  ```json
-  { "decision": "<one of the gate's declared exits>", "comment": "optional", "edits": { "optional": "structured amendments merged into the gate's output payload" } }
-  ```
-
-  The reviewer is choosing an edge in the flow — e.g., proceed to next steps, or punt back to a prior step. The decision is written as a `gate-resolved` event (with the resolving user), a `gate-resolution` revision is cut on the gated artifacts, and the run re-enters the dispatch queue.
-- **v1:** gated runs wait indefinitely; users find pending reviews via the in-app review queue (pull-based). Escalation policies (notifications, timeouts, delegation) are future work.
+- The gate declares which Artifacts it presents for review and **who reviews them**: reviewer targeting by `role` and/or `username`, using the same grammar as `need-input` ([09 — Content](09-content.md) §3). Each gating artifact gets a `need-input` request per targeted reviewer (requests are multi-instance with server-minted IDs, [09](09-content.md) §3); only targeted users may record a verdict.
+- **Verdicts:** each targeted reviewer records a per-artifact verdict — **`approve`** or **`request-changes`** (with optional comment and structured `edits`). Each verdict is written as a `gate-verdict` event and resolves that reviewer's `need-input` request.
+- **Auto-resolution:** the gate resolves itself from the verdicts; there is no separate decision object or decision API.
+  - All targeted reviewers approve every gating artifact → the gate resolves through its declared **`approve` exit**.
+  - Any reviewer requests changes → the gate resolves through its declared **`changes` exit**, with the collected feedback (comments + edits, per artifact and reviewer) as the gate step's output — downstream or looped-back steps see it via `$steps.<gate-id>.output` under the fresh re-interpolation rule ([03](03-circuits.md) §3.2). `edits` are validated against the gate's declared output schema before merging.
+  - Every gate step **must declare both exits** (`approve` and `changes`); circuit validation rejects gates missing either.
+  - Resolution writes a `gate-resolved` event (recording the verdicts that triggered it), cuts a `gate-resolution` revision on the gated artifacts, and the run re-enters the dispatch queue.
+- **v1:** gated runs wait indefinitely; targeted reviewers find pending reviews via the in-app review queue (pull-based). Escalation policies (notifications, timeouts, delegation) are future work.
 
 ### 5.5 Sub-circuits & composability
 
@@ -160,15 +164,15 @@ Every circuit run gets **its own Session ID** — whether initiated top-level, t
 
 ## 6. Cost tracking
 
-- Every LLM call records tokens in/out and computed cost on its turn row; step checkpoints aggregate turns; Sessions aggregate steps.
-- **No double counting rule:** cost is *stored* only at the turn level (the leaf); step and session figures are materialized aggregates of leaf rows, and a parent Session's reported "total including children" is always computed by walking the session tree at query time — never stored denormalized.
+- Every LLM call records tokens in/out and computed cost on its `turn` event (projected into `session_turns` rows, §4); step checkpoints aggregate turns; Sessions aggregate steps.
+- **No double counting rule:** cost is *authoritative* only at the turn level (the leaf); step and session figures are materialized aggregates of leaf rows, and a parent Session's reported "total including children" is always computed by walking the session tree at query time — never stored denormalized.
 - **v1 scope:** only LLM costs (i.e., model-provider spend via the gateway, Bedrock reference) are captured first-class. Sandbox compute, storage, etc. are future work.
 - Purpose: support cost-vs-performance analysis (e.g., trying different model presets on the same circuit — joins against eval results, [04 — Evals](04-evals.md) §6).
 
 ## 7. API surface (summary — full contract in [11 — API & MCP](11-api-mcp.md))
 
 - `GET /sessions` (filter: state, kind, circuit, task, date), `GET /sessions/:id`, `GET /sessions/:id/events`, `GET /sessions/:id/steps/:stepId/turns`
-- `POST /sessions/:id/gate-resolution` (the structured decision object)
+- `POST /nodes/:uid/gate-verdict` (per-artifact `{verdict: approve|request-changes, comment?, edits?}` from a targeted reviewer; gate auto-resolves when verdicts complete — §5.4)
 - `POST /sessions/:id/retry`, `POST /sessions/:id/cancel`, `POST /sessions/:id/resume` (post-budget-raise)
 - Event stream: session state changes and gate suspensions are published on the Breadboard event stream (webhooks/SSE).
 
@@ -182,11 +186,13 @@ Every circuit run gets **its own Session ID** — whether initiated top-level, t
 
 ## 9. v1 cutline
 
-**In:** everything above — event-sourced orchestrator, auto-dispatch with the three capacity mechanisms, retry/suspend semantics, hard gates with structured decisions (pull-based queue, indefinite wait), sub-sessions with budget draw-down, LLM-only cost tracking, both UI views.
+**In:** everything above — event-sourced orchestrator (turns derived from events), auto-dispatch with the three capacity mechanisms, retry/suspend semantics, hard gates with targeted-reviewer verdicts and auto-resolution (pull-based queue, indefinite wait), sub-sessions with budget draw-down, LLM-only cost tracking, both UI views.
 
 **Out (future):** gate escalation policies; scheduled/cron dispatch; multi-worker orchestrator scale-out (v1 = one process; the event log is designed so a worker pool can be added without schema change); non-LLM cost capture; pausing/resuming individual steps mid-flight.
 
-## 10. Open questions
+## 10. Resolved questions
 
-1. **Mid-conversation checkpointing for very long LLM steps.** v1 checkpoints only at step boundaries; a crashed 40-turn step replays from its start. Recommendation: accept for v1; revisit with turn-level checkpoint markers if long steps prove common.
-2. **Priority aging.** Should long-queued low-priority Tasks age upward? Recommendation: no aging in v1; surface queue-age in the Task inventory instead.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Mid-conversation checkpointing for very long LLM steps.** **Decided:** v1 checkpoints only at step boundaries; a crashed 40-turn step replays from its start. Revisit with turn-level checkpoint markers if long steps prove common.
+2. **Priority aging.** **Decided:** no aging in v1; surface queue-age in the Task inventory instead.

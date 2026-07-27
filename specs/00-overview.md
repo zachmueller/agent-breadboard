@@ -182,7 +182,7 @@ Terms are used with exactly these meanings across all specs.
 - **Deliverable** — An Artifact intended for user consumption (vs. intermediate). A default UI filter distinction, not a structural one.
 - **Edge** — A typed, directional, first-class, bidirectionally-queryable link between nodes: `produces`, `updates`, `derived-from`, `attached-to`, `blocks`, `depends-on`, `references`.
 - **Eval / Rubric / Fixture** — An eval grades circuit outputs. A rubric defines typed scoring dimensions. A fixture is a pinned input (usually promoted from a production Session) that eval runs execute the circuit against.
-- **Gate (hard gate)** — An orchestrator-level circuit step at which a run suspends (state persisted, no capacity held) until a human resolves it with a structured decision `{decision, comment?, edits?}` choosing one of the gate's declared exits.
+- **Gate (hard gate)** — An orchestrator-level circuit step at which a run suspends (state persisted, no capacity held) until its targeted reviewers record per-artifact `approve`/`request-changes` verdicts; the gate then auto-resolves through its declared `approve` or `changes` exit ([02](02-sessions-orchestrator.md) §5.4).
 - **Intake** — The queue of new Tasks plus the machinery (conversations, API, MCP) that fills it.
 - **Knowledge Domain** — A named, arbitrary subset of the team's Knowledge Notes; the unit of access scoping for Subagents and Circuits.
 - **Knowledge Note / Note** — A durable, human-curated Markdown document, live-collaboratively editable by users and AI via CRDT.

@@ -22,7 +22,8 @@ A tool extension is a directory in the config repo: `config/tools/<slug>/` with 
 ```yaml
 # config/tools/check-citations/tool.yaml
 schema: breadboard/tool@v1
-slug: check-citations
+uid: 01J8TOOL0CHKCITATION0      # permanent config UID ([01] §6.2)
+slug: check-citations           # display/file-layout only
 title: Citation checker
 description: Verifies that every citation in an artifact resolves to a content node.
 language: typescript            # typescript | python
@@ -81,7 +82,7 @@ def handler(input: dict, ctx: BreadboardContext) -> dict
 
 ### 2.2 Composability
 
-Tools are highly composable: within their logic they may call **circuits** (`ctx.runCircuit(slug, input)` → child Session, subject to grants) or **other tools** (`ctx.runTool(slug, input)` → nested sandboxed execution, sharing the parent execution's budget). Cycles are cut by a nesting-depth cap (default 8).
+Tools are highly composable: within their logic they may call **circuits** (`ctx.runCircuit(uid, input)` → child Session, subject to grants) or **other tools** (`ctx.runTool(uid, input)` → nested sandboxed execution, sharing the parent execution's budget). References are by config UID ([01](01-data-model.md) §6.2). Cycles are cut by a nesting-depth cap (default 8).
 
 ## 3. Pre-packaged tools
 
@@ -97,14 +98,14 @@ Breadboard ships with built-in tool extensions (same manifest format, maintained
 
 ## 4. Execution runtime
 
-- **Per-execution containers with warm pools.** Each tool execution gets a fresh container (Docker in v1); warm pools per language image keep latency acceptable. No state persists between executions except through Breadboard primitives.
+- **Per-execution containers with warm pools.** Each tool execution gets a fresh container (Docker in v1); warm pools per language image keep latency acceptable — pools hold **pre-started but never-used** containers only; a container is never returned to the pool after executing user code. No state persists between executions except through Breadboard primitives.
 - **Resource limits enforced by the runtime, declared in the manifest:** wall-clock timeout, memory cap, and a per-run aggregate execution budget (`max_cost_units` contributions are summed per Session against a circuit-configurable ceiling).
-- **Network egress is default-deny** with the per-tool allowlist applied at the container network layer. The broker endpoint and the Breadboard API are the only implicit destinations.
+- **Network egress is default-deny, enforced via an egress proxy** ([12](12-security-deployment.md) §6): containers sit on an internal-only network whose sole route out is an HTTP(S) proxy that enforces the per-execution allowlist compiled from the tool manifest, logging every call. Non-HTTP protocols are simply blocked. The broker endpoint and the Breadboard API are the only implicit destinations.
 - **No credentials in the container** — see §5.
 
 ### 4.4 Idempotency journal
 
-Every tool execution is journaled (`tool_executions` table: execution key = `session_id + step_id + attempt + call-index`, tool slug + commit, input hash, status, output ref). On orchestrator replay ([02](02-sessions-orchestrator.md) §5.2), a completed execution key returns its journaled output instead of re-executing — making step replay safe for side-effecting tools.
+Every tool execution is journaled (`tool_executions` table: execution key = `session_id + step_id + attempt + call-index`, tool UID + commit, input hash, status, output ref). On orchestrator replay ([02](02-sessions-orchestrator.md) §5.2), a completed execution key returns its journaled output instead of re-executing — making step replay safe for side-effecting tools.
 
 ## 5. Credential broker
 
@@ -147,7 +148,9 @@ Central onboarding simplifies configuration: each distinct MCP server is onboard
 
 **Out (future):** additional languages; long-running/daemon tools; tool-level caching layer; per-tool telemetry dashboards; harness adapters beyond Claude Code.
 
-## 12. Open questions
+## 12. Resolved questions
 
-1. **Warm-pool poisoning.** Warm containers must be provably unmodified; recommendation: pools hold *pre-started but unused* containers only — a container is never returned to the pool after executing.
-2. **`max_cost_units` calibration.** Units are abstract in v1 (1 unit ≈ 1 CPU-minute guidance); real metering is future work.
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Warm-pool poisoning.** **Decided:** pools hold *pre-started but unused* containers only — a container is never returned to the pool after executing (§4).
+2. **`max_cost_units` calibration.** **Decided:** units stay abstract in v1 (1 unit ≈ 1 CPU-minute guidance); real metering is future work.
