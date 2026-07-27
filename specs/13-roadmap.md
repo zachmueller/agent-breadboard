@@ -11,6 +11,8 @@ Dependencies drive the order: the data model underlies everything; the orchestra
 
 Each phase ends **demonstrable** — a runnable increment with its acceptance criteria met — so course-correction happens between phases, not after a big bang.
 
+**Tracer bullet before phase completion (§6).** Implementation begins with a deliberately thin end-to-end slice cutting across the Phase 1–4 territory — minimal data model, config-repo read/commit, orchestrator stepping + restart recovery, model gateway (mock + Bedrock), and one hand-authored two-step circuit, API-only — to de-risk the architectural joints early. Phases are then completed to their acceptance criteria in order, back-filling what the tracer stubbed. The tracer's code is the seed, not a throwaway.
+
 ## 2. Phases
 
 ### Phase 0 — Skeleton
@@ -53,8 +55,8 @@ The authoritative in/out lists live in each spec's cutline section; this is the 
 |---|---|
 | Stakeholder intake view (priority tiering UX, separate capacity pool, promotion flows) | [08](08-intake.md) §9 |
 | Auto-pitch intake circuits | [08](08-intake.md) §9 |
-| Breadboard-to-breadboard federation (incoming access permissions — blanket or scoped by circuit list/tags; connected-Breadboards UI) | [11](11-api-mcp.md) §7, §4 below |
-| Purely-local Breadboards (local storage + orchestration, user-chosen LLM incl. local models) wiring into team Breadboards | §4 below |
+| Breadboard-to-breadboard federation (incoming access permissions — blanket or scoped by circuit list/tags; connected-Breadboards UI) | [11](11-api-mcp.md) §7, §5 below |
+| Purely-local Breadboards (local storage + orchestration, user-chosen LLM incl. local models) wiring into team Breadboards | §5 below |
 | Gate escalation policies (v1: indefinite wait, pull-based queue) | [02](02-sessions-orchestrator.md) §9 |
 | Dedicated graph store (seam behind `GraphQueries`) | [01](01-data-model.md) §9 |
 | Write-back knowledge connectors; additional connector adapters | [07](07-knowledge.md) §11 |
@@ -66,9 +68,26 @@ The authoritative in/out lists live in each spec's cutline section; this is the 
 | Additional node types (`workstream`, `project`, `idea`) | [01](01-data-model.md) §9 |
 | Amazon adapter package | [12](12-security-deployment.md) §9 |
 
-## 4. Post-v1 themes (direction, not commitment)
+## 4. Deployment milestone: internal pilot
+
+The first real deployment target is an **Amazon-internal team pilot**, stood up as soon as Phase 6's acceptance criteria pass (not waiting for Phase 7):
+
+- **Scope is minimal:** internal container hosting + RDS Postgres + internal Bedrock account. Auth remains local-dev static users (banner-marked, [12](12-security-deployment.md) §3) for the pilot; OIDC lands on the normal Phase 7 schedule. No internal knowledge connectors or broker capabilities are pulled forward.
+- **Pilot workload is deliberately undecided:** the tracer bullet and phase work stay workload-neutral (the lit-review reference circuit from [03](03-circuits.md) §2 is the running example); the team picks the first dogfood workload when onboarding is imminent.
+- The Amazon adapter package proper ([12](12-security-deployment.md) §8) remains post-v1; the pilot uses only configuration, not internal-only code.
+
+## 5. Post-v1 themes (direction, not commitment)
 
 1. **Federation** — Breadboard-to-Breadboard access: Team A's circuits automatically gathering required inputs from stakeholder Team B's Breadboard; per-team incoming-access grants (blanket or scoped to circuit subsets by list/tags); minor UI showing which Breadboards this one can reach and with what access. The v1 seams that keep this open without migration: named capability scopes on service tokens ([11](11-api-mcp.md) §2) as the grant substrate, the multi-team-ready identity schema ([01](01-data-model.md) §8), and the reserved `external` scope ([01](01-data-model.md) §3.4). The full federation design will be written post-v1 when it is actionable.
 2. **Local Breadboards** — individual, fully-local instances (storage + orchestration local; LLM = user's choice of local or API) that wire into team Breadboards. The one-deployment-one-Breadboard model and API-first design are the enablers.
 3. **Meta-operation depth** — subagents that watch eval trends and need-input rates and proactively propose config improvements (all plumbing exists: proposals + evals-on-branch + metrics).
 4. **Scale-out** — orchestrator worker pool, CRDT authority sharding, graph store — each behind an already-documented seam.
+
+## 6. Resolved questions
+
+*(Decided 2026-07-28; formerly open.)*
+
+1. **Build sequencing.** **Decided:** tracer bullet first (§1), then phases 1→7 each completed to its acceptance criteria.
+2. **v1 scope trims.** **Decided:** none — v1 ships exactly the per-spec cutlines. Python tool runtime, `spawn-harness`, and the designer chat panels all stay in.
+3. **First deployment.** **Decided:** internal team pilot early, per §4 — minimal binding (hosting + Bedrock), static-user auth until Phase 7 OIDC.
+4. **First dogfood workload.** **Decided:** deferred — tracer and phase work stay workload-neutral; chosen at pilot onboarding (§4).

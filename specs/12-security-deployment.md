@@ -82,6 +82,7 @@ interface ModelProvider {
 
 - **Reference provider: AWS Bedrock** (Converse API; SigV4 via standard AWS credential chain). **v1 ships Bedrock only**; additional adapters (Anthropic API, OpenAI, local/OpenAI-compatible) are post-v1 and implement the same interface — presets already support cross-provider fallback lists ([05](05-subagents.md) §4), and the `ModelProvider` seam is the documented extension point.
 - The gateway owns: preset resolution + fallback walking (skipping entries whose `capabilities` don't meet the request's `requires`), retry/backoff on provider throttles, token usage extraction, cost computation, and per-call logging to Session turns.
+- **Structured output:** LLM steps end via a **forced finish-tool** compiled from the step's output schema + exit enum ([03](03-circuits.md) §10) — portable across all providers/models. The gateway may substitute a provider-native structured-output mode when `capabilities(modelId)` reports support; the step contract is identical either way.
 - Embeddings ([07](07-knowledge.md) §9) route through the same interface.
 
 ## 8. Amazon adapter (appendix)

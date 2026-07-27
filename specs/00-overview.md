@@ -122,7 +122,7 @@ Breadboard is opinionated about its stack so implementation can start immediatel
 | API framework | **Fastify** | REST API + WebSocket upgrade handling. |
 | Database | **PostgreSQL 16+** | The only required stateful dependency. Content plane (JSONB), edges, orchestrator event log, sessions, eval results, Yjs update log. A dedicated graph store is a documented future seam if edge-traversal performance demands it. |
 | CRDT | **Yjs** | Knowledge Notes and other collaboratively-edited content. Sync via **Hocuspocus** server embedded in the monolith; browser clients use `@hocuspocus/provider`. Persistence = Yjs update log in Postgres with periodic snapshot compaction. |
-| Config plane | **Git** (repo managed by the server; `isomorphic-git` or shelling to system git) | Circuits, Subagents, Tools, presets, tenets. Commit-hash provenance. |
+| Config plane | **Git** (repo managed by the server; system git binary behind a `ConfigRepo` seam — [01](01-data-model.md) §10) | Circuits, Subagents, Tools, presets, tenets. Commit-hash provenance. |
 | Tool sandbox | **Docker** (per-execution containers, warm pools) | Runtime seam: any OCI runtime. Resource limits + default-deny egress enforced here. |
 | Tool languages | **TypeScript and Python** | Tool extensions may be written in either. |
 | Model access | **Model gateway abstraction**; **AWS Bedrock** is the reference provider | Provider interface (`invoke`, `stream`, structured output, token/cost reporting). Additional providers (Anthropic API, OpenAI, local) implement the same interface. |
