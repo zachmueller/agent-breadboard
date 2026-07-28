@@ -16,7 +16,7 @@ Circuit evaluation is a **first-class pattern** in Breadboard, not an afterthoug
 
 ## 2. Rubrics
 
-Each circuit may define a rubric (`config/circuits/<slug>/rubric.yaml`). A rubric encodes how to grade or score the outputs of that circuit.
+Each circuit may define a rubric (`config/circuits/<uid>/rubric.yaml`). A rubric encodes how to grade or score the outputs of that circuit.
 
 ```yaml
 schema: breadboard/rubric@v1

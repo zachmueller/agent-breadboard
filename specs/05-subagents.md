@@ -16,12 +16,13 @@ Each **Subagent** is a configuration — custom system prompt, access configurat
 
 ## 2. Subagent configuration schema
 
-One file per Subagent: `config/subagents/<slug>.yaml`.
+One file per Subagent: `config/subagents/<uid>.yaml`.
 
 ```yaml
+# config/subagents/01J8SUBAG0RSRCHSCOUT0.yaml
 schema: breadboard/subagent@v1
-uid: 01J8SUBAG0RSRCHSCOUT0               # permanent config UID ([01] §6.2)
-slug: research-scout                     # display/file-layout only
+uid: 01J8SUBAG0RSRCHSCOUT0               # permanent config UID ([01] §6.2); names the file
+slug: research-scout                     # display metadata only; renames never move files
 title: Research scout
 description: Finds and qualifies prior art for a research question.
 

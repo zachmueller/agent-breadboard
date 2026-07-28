@@ -17,13 +17,13 @@ The Toolbox equips Subagents across the Breadboard with a mix of **tool extensio
 
 ## 2. Tool extensions
 
-A tool extension is a directory in the config repo: `config/tools/<slug>/` with a `tool.yaml` manifest and `src/`.
+A tool extension is a directory in the config repo: `config/tools/<uid>/` with a `tool.yaml` manifest and `src/`.
 
 ```yaml
-# config/tools/check-citations/tool.yaml
+# config/tools/01J8TOOL0CHKCITATION0/tool.yaml
 schema: breadboard/tool@v1
-uid: 01J8TOOL0CHKCITATION0      # permanent config UID ([01] §6.2)
-slug: check-citations           # display/file-layout only
+uid: 01J8TOOL0CHKCITATION0      # permanent config UID ([01] §6.2); names the directory
+slug: check-citations           # display metadata only; renames never move files
 title: Citation checker
 description: Verifies that every citation in an artifact resolves to a content node.
 language: typescript            # typescript | python
@@ -133,7 +133,7 @@ Each tool extension may **opt in** (`exposure.external_mcp: true`) to being expo
 
 ## 9. MCP server onboarding
 
-Central onboarding simplifies configuration: each distinct MCP server is onboarded **once** per Breadboard (`config/mcp/<slug>.yaml` — endpoint/command, transport, auth via a broker capability, default tool allowlist). Access then propagates to Subagents via their config grants ([05](05-subagents.md) §2.2), optionally narrowed per grant. MCP tool calls are logged in Session turns like any tool call; MCP servers run outside the sandbox but their credentials still live in the broker.
+Central onboarding simplifies configuration: each distinct MCP server is onboarded **once** per Breadboard (`config/mcp/<uid>.yaml` — endpoint/command, transport, auth via a broker capability, default tool allowlist). Access then propagates to Subagents via their config grants ([05](05-subagents.md) §2.2), optionally narrowed per grant. MCP tool calls are logged in Session turns like any tool call; MCP servers run outside the sandbox but their credentials still live in the broker.
 
 ## 10. UI
 

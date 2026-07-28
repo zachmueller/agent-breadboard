@@ -18,13 +18,13 @@ Circuits are core to the Breadboard: **user-designed flows of LLM and code steps
 
 ## 2. Circuit definition format
 
-A circuit is a directory in the config repo (`config/circuits/<slug>/`, [01](01-data-model.md) §6.1) whose core is `circuit.yaml`. Reference example:
+A circuit is a directory in the config repo (`config/circuits/<uid>/`, [01](01-data-model.md) §6.1) whose core is `circuit.yaml`. Reference example:
 
 ```yaml
-# config/circuits/lit-review/circuit.yaml
+# config/circuits/01J8CIRCUIT0LITREV00/circuit.yaml
 schema: breadboard/circuit@v1
-uid: 01J8CIRCUIT0LITREV00        # permanent config UID ([01] §6.2); minted at creation, never changes
-slug: lit-review                 # display/file-layout only; renames never break references
+uid: 01J8CIRCUIT0LITREV00        # permanent config UID ([01] §6.2); minted at creation, never changes; names the directory
+slug: lit-review                 # display metadata only; renaming never moves files or breaks references
 title: Literature review
 description: Survey prior art for a research question and produce an annotated summary.
 tags: [research]
@@ -127,7 +127,7 @@ steps:
 Normative rules:
 
 - `schema` is versioned; the server validates every commit against the schema version it declares.
-- Every config definition carries a permanent `uid` ([01](01-data-model.md) §6.2). All cross-references — step→subagent, step→tool, step→sub-circuit — are **by UID**; slugs are display metadata the editor resolves for authoring convenience. Commit validation resolves every referenced UID against the tree's UID→path index and rejects dangling references.
+- Every config definition carries a permanent `uid` ([01](01-data-model.md) §6.2). All cross-references — step→subagent, step→tool, step→sub-circuit — are **by UID**; slugs are display metadata the editor resolves for authoring convenience. Commit validation resolves every referenced UID by direct path construction against the tree (paths are UID-derived, [01](01-data-model.md) §6.1) and rejects dangling references.
 - **Declared circuit exits are the public interface.** The top-level `exits:` block names the circuit's terminal exits, each with an optional per-exit `output` schema. Internal steps terminate by routing to `$exit.<name>`; the step's output at that boundary must conform to that exit's schema. Internal step names and exit names stay private — parents bind only to the declared interface, so internal refactors never break callers. (This replaces the earlier bare-`$end` + single-`output`-schema design.)
 - Every step `id` is unique within the circuit; `entry` names exactly one step; every declared circuit exit must be routable-to from some step.
 - The exit graph must be **closed**: every declared step exit routes to an existing step or a declared `$exit.<name>`; unreachable steps are a validation error (warning-level for work-in-progress branches saved on non-main branches).
