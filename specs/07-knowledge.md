@@ -108,13 +108,13 @@ Connectors let Breadboard read and ingest context from knowledge sources teams a
   list(cursor) -> [{external_id, title, updated_at}]     # incremental enumeration
   fetch(external_id) -> {markdown, metadata}             # content normalized to Markdown
   ```
-- **Sync model:** per-connector schedule (default: 6h incremental). Fetched documents are materialized as `knowledge` nodes tagged `connector:<slug>` and `read-only`, in Domains configured per connector, with `external_id`/`source_url` in properties. Re-sync updates the node (server-origin transaction); local edits to connector-owned Notes are blocked in the editor and via `propose_note_edit` (typed failure `read-only-source`).
+- **Sync model:** per-connector schedule (default: 6h incremental). Fetched documents are materialized as `knowledge` nodes tagged `connector:<uid>` (the connector's config UID, per [01](01-data-model.md) §6.2; UI renders the slug) and `read-only`, in Domains configured per connector, with `external_id`/`source_url` in properties. Re-sync updates the node (server-origin transaction); local edits to connector-owned Notes are blocked in the editor and via `propose_note_edit` (typed failure `read-only-source`).
 - Connector-sourced Notes participate fully in search, RAG, deterministic injection, and linking.
 - **v1 ships one reference connector** (generic: a Git-repo-of-Markdown connector — covers wikis-as-repos and docs-as-code) plus the interface for building more (Confluence/SharePoint/Quip-style connectors are future adapters).
 
 ## 9. Search
 
-- **Text search:** Postgres FTS over title + `body_text` ([01](01-data-model.md) §8), filtered by Domain grants.
+- **Text search:** Postgres FTS over title + aliases + `body_text` ([01](01-data-model.md) §3.1, §8), filtered by Domain grants.
 - **RAG-style querying:** embedding index (pgvector) over Note chunks, same grant filtering; `query_knowledge` exposes `mode: text | semantic | hybrid`. Embedding refresh piggybacks on the `body_text` mirror refresh.
 
 ## 10. UI

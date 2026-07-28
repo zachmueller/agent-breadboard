@@ -32,7 +32,9 @@ The mutation models differ deliberately:
 - Content-plane node bodies: JSONB + Yjs update log tables.
 - Edge graph: a typed `edges` table queried with recursive CTEs.
 - Orchestrator state, session logs, eval results: relational tables (see [02](02-sessions-orchestrator.md), [04](04-evals.md)).
-- Configuration plane: a git repository on the server's filesystem (bare repo + working checkouts), managed by the Breadboard server.
+- Configuration plane: a git repository on the server's filesystem (bare repo + a commit-addressed materialization cache; see §6.3), managed by the Breadboard server.
+
+Postgres itself may be co-located with the server or external: the server reaches it only through connection config (`DATABASE_URL` + TLS/IAM-auth options), so a managed instance (AWS RDS — the recommended production default) and a local container (dev/quickstart) are interchangeable deployment choices ([12 — Security & Deployment](12-security-deployment.md) §1).
 
 Rationale: a single stateful dependency keeps self-hosting trivial; JSONB + recursive CTEs comfortably cover v1 graph workloads (lineage chains are shallow — typically < 20 hops). A dedicated graph store is a **documented future seam**: all graph access goes through a `GraphQueries` module in the server codebase so a later swap doesn't touch callers. This supersedes the earlier idea of a separate document store + graph store.
 
@@ -49,6 +51,7 @@ Every content-plane object is a **node** with this common shape.
 | **UID** | 20-character [Crockford base32](https://www.crockford.com/base32.html) string (uppercase canonical form, e.g. `01J8FQ2ZK7XW9MBT4PVN`). Immutable. The primary key. Generated server-side from 100 random bits (no embedded timestamp — UIDs must not leak creation ordering). |
 | **Team** | The owning team (`team_id`). v1 deployments operate a single team, but the column exists from day one so multi-team and federation need no schema migration (see §8 identity tables). |
 | **Title** | Human-readable; stored in the node's frontmatter/properties; may change freely without breaking links (links use UID). |
+| **Aliases** | Optional list of alternate titles (`aliases` key in the properties map, same CRDT regime as title). Included in full-text search and link/mention autocomplete alongside the title. Display/search convenience only — no uniqueness guarantees, and links still use the UID. |
 | **Type** | One of `task` \| `artifact` \| `comment` \| `knowledge`. The set is extensible (future: `workstream`, `project`, `idea`, …); extensions register a type name and optional JSON Schema for type-specific properties. |
 | **Tags** | Arbitrary string labels. Also the mechanism for type-specific flags — e.g. `need-input`, `intermediate`, `deliverable` are tags, not columns. Structured tags use `key:value` form (e.g. `need-input:role=scientist`); see [09 — Content](09-content.md) §3 for the `need-input` grammar. |
 | **Scope / visibility** | Who/what can see the node. See §3.4. |
@@ -66,6 +69,7 @@ References between nodes — in bodies, properties, comments, anywhere — use O
 ```
 
 - The UID is authoritative; the display title is cosmetic and may go stale without breaking the link.
+- Link/mention autocomplete matches on both the node's title and its aliases (§3.1); whichever the author picked, the stored target is the UID.
 - The server maintains a link index: whenever a node revision is cut or the head is persisted, `[[…]]` targets are extracted and materialized as `references` edges (§4), replacing that node's previously-materialized `references` edges.
 - Rendering resolves the UID to the node's current title; broken links (UID not found) render distinctly.
 
@@ -167,26 +171,29 @@ One git repository per Breadboard, managed by the server (users never need direc
 
 ```
 config/
+  INDEX.md                   # auto-generated slug/title → path listing (server-maintained on every merge; informational only)
   breadboard.yaml            # instance settings: capacity, budgets, scope defaults
   tenets.md                  # system-wide tenets (strictly size-limited)
   presets/
     models.yaml              # model presets: tier -> ordered fallback list
   subagents/
-    <slug>.yaml              # one file per subagent
+    <uid>.yaml               # one file per subagent
   circuits/
-    <slug>/
+    <uid>/
       circuit.yaml           # declarative flow: steps, connections, exits, gates
       prompts/               # prompt templates referenced by steps
         <step-id>.md
       rubric.yaml            # optional eval rubric
       fixtures.yaml          # fixture manifest (fixture inputs pinned by content ref)
   tools/
-    <slug>/
+    <uid>/
       tool.yaml              # manifest: language, entrypoint, limits, egress, capabilities
       src/                   # tool source (TS or Python)
   mcp/
-    <slug>.yaml              # onboarded MCP server config (endpoint, auth capability ref, tool allowlist)
+    <uid>.yaml               # onboarded MCP server config (endpoint, auth capability ref, tool allowlist)
 ```
+
+File and directory names for definitions are the definition's **UID** (§6.2), so the repo layout is a pure function of identity. Human readability inside the raw repo comes from `INDEX.md` and from each file's `slug`/`title` metadata; users normally see resolved display names in the UI, never raw paths.
 
 ### 6.2 Config UIDs & cross-references
 
@@ -195,12 +202,13 @@ Every config definition (subagent, circuit, tool, MCP onboarding, model preset) 
 - step → sub-circuit, step → subagent, subagent grants → tools/circuits/knowledge domains, `breadboard.yaml` → triage circuit, MCP onboarding → credential capabilities;
 - content-plane references to config (a Task's `target_circuit`, Session rows' circuit/subagent identifiers) likewise store the UID.
 
-Slugs and file paths are **display and file-layout metadata only** — renames and directory moves never break references. The server maintains a UID→path index per commit (rebuilt on commit validation); commit validation rejects a change that would delete or duplicate a UID in the tree.
+Because file paths are UID-derived (§6.1), **a reference resolves by direct path construction** — `subagents/<uid>.yaml`, `circuits/<uid>/circuit.yaml`, etc. — with no lookup index to maintain. The `slug` is **display metadata only**, stored inside the YAML: renaming a definition is a metadata edit that never moves files and never breaks references. Commit validation rejects a change that would delete a UID from the tree (outside an explicit delete operation), introduce a file whose name doesn't match its `uid:` field, or duplicate a UID; duplicate slugs are rejected as a display collision.
 
 ### 6.3 Versioning & provenance rules
 
 - Every mutation is a **commit** authored either by a user (via UI editors) or by the AI through **propose-review-commit**: AI writes to a branch, the change surfaces as a reviewable diff, a human merges. CI/evals may run against proposed changes before merge ([06 — Toolbox](06-toolbox.md) §6, [04 — Evals](04-evals.md) §7).
 - Every Session records, at start and at any mid-run config resolution, the **commit hash** of the config tree it resolved definitions from (stored as `text`, not `char(40)` — SHA-256 git repos produce 64-char hashes). Historical runs are exactly reproducible in configuration terms. Mid-run re-resolutions are recorded as session events ([02](02-sessions-orchestrator.md) §4), not extra columns.
+- **On-disk materialization is commit-addressed:** the `ConfigRepo` seam (§10) exposes `materializeTree(commitHash)`, backed by detached git worktrees cached by commit hash and garbage-collected by LRU/age. Everything that needs a filesystem view of the config tree — definition reads, sandbox mounts of tool source, eval runs — asks for a commit, never a branch checkout. This also makes **branch execution** free: to test a proposed change before merge (AI or human), resolve the proposal branch to its head commit and run against that materialized tree; Sessions already pin the commit hash, so provenance is identical to a main-line run.
 - Version control covers the *design* of each definition: input/output shapes, flow and connections, step code/context/prompt templates, associated eval details. It does **not** cover run state or content (that's the content plane).
 - Reverting a regression = `git revert` surfaced as a first-class "revert to this version" action in the editors.
 
@@ -282,7 +290,9 @@ CREATE TABLE nodes (
 CREATE INDEX nodes_type_idx  ON nodes (type) WHERE deleted_at IS NULL;
 CREATE INDEX nodes_tags_idx  ON nodes USING gin (tags);
 CREATE INDEX nodes_props_idx ON nodes USING gin (properties jsonb_path_ops);
-CREATE INDEX nodes_fts_idx   ON nodes USING gin (to_tsvector('english', coalesce(title,'') || ' ' || coalesce(body_text,'')));
+CREATE INDEX nodes_fts_idx   ON nodes USING gin (to_tsvector('english',
+  coalesce(title,'') || ' ' || coalesce(properties->>'aliases','') || ' ' || coalesce(body_text,'')));
+  -- FTS covers title + aliases (§3.1) + body text
 
 CREATE TABLE node_revisions (
   uid            char(20) NOT NULL REFERENCES nodes(uid),
@@ -370,4 +380,6 @@ All traversal endpoints enforce depth and row limits and return a truncation fla
 1. **Per-block vs per-document Y.Doc granularity.** **Decided:** one Y.Doc per node (body array + properties map inside it) — simplest sync unit; revisit if very large Notes strain update-log compaction.
 2. **UID collision policy.** **Decided:** 100 random bits makes collision negligible; the insert path retries once on primary-key conflict. No further mitigation.
 3. **`body_text` mirror freshness.** **Decided:** refresh on revision cut and on a debounced (≤10 s) head-change listener; search may lag the live head by that much.
-4. **Config-repo git backend.** **Decided:** shell out to the **system git binary behind a `ConfigRepo` seam** (an interface the rest of the server codes against, testable with a temp-dir fake). Full merge/diff/revert fidelity is required by propose-review-commit (§6.3), and `isomorphic-git`'s merge support (weak conflict handling, no rename detection) is not up to it; the git binary ships in the server image. This resolves the `isomorphic-git`-or-system-git option left open in [00 — Overview](00-overview.md) §4.
+4. **Config-repo git backend.** **Decided:** shell out to the **system git binary behind a `ConfigRepo` seam** (an interface the rest of the server codes against, testable with a temp-dir fake). Full merge/diff/revert fidelity is required by propose-review-commit (§6.3), and `isomorphic-git`'s merge support (weak conflict handling, no rename detection) is not up to it; the git binary ships in the server image. The seam's filesystem surface is `materializeTree(commitHash)` — a commit-addressed cache of detached worktrees (§6.3), not persistent branch checkouts. This resolves the `isomorphic-git`-or-system-git option left open in [00 — Overview](00-overview.md) §4.
+5. **Config file naming: slug paths + index vs UID-named paths.** **Decided:** UID-named paths (§6.1/§6.2). Path is a pure function of UID, so the previously-specced UID→path index is deleted outright; `slug` is YAML display metadata and an auto-generated `INDEX.md` keeps the raw repo navigable for admins.
+6. **Content-node aliases.** **Decided:** an `aliases` list in the properties map (§3.1) — same CRDT regime as title, folded into FTS and autocomplete, no uniqueness semantics. Rejected: a first-class unique column (alias-collision conflicts sit awkwardly in concurrent CRDT edits) and `alias:` tags (overloads the tag mechanism).

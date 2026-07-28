@@ -16,11 +16,11 @@ Each phase ends **demonstrable** — a runnable increment with its acceptance cr
 ## 2. Phases
 
 ### Phase 0 — Skeleton
-Repo scaffolding (TS monorepo: `server`, `ui`, `shared`), Fastify server, Postgres migrations harness, CI (typecheck, tests, lint), compose file, local-dev auth.
-**Accept:** `docker compose up` serves a hello UI against Postgres; CI green.
+Repo scaffolding (TS monorepo: `server`, `ui`, `shared`; Node 26 baseline), Fastify server, Postgres migrations harness + connection-config seam (`DATABASE_URL`, TLS/IAM options — [12](12-security-deployment.md) §1), CI (typecheck, tests, lint), compose file with local-Postgres profile, `deploy/aws/` IaC module stub (RDS + reference host; hardened in Phase 7), local-dev auth.
+**Accept:** `docker compose up` serves a hello UI against Postgres; the same build boots against an externally-provided `DATABASE_URL`; CI green.
 
 ### Phase 1 — Data model & config plane ([01](01-data-model.md))
-Identity tables (teams/users/roles/role_memberships) + nodes/revisions/edges/yjs_updates schema + DAL; UID generation; link indexer → `references` edges (derived-index semantics); `GraphQueries` (lineage CTEs with guards); config git repo init + read/commit/propose/merge/revert service with the UID→path index; schema validation for `breadboard/*@v1` files (incl. UID reference resolution); core REST for nodes/edges/config ([11](11-api-mcp.md) §3).
+Identity tables (teams/users/roles/role_memberships) + nodes/revisions/edges/yjs_updates schema + DAL; UID generation; link indexer → `references` edges (derived-index semantics); `GraphQueries` (lineage CTEs with guards); config git repo init + read/commit/propose/merge/revert service with UID-derived paths, `INDEX.md` generation, and the `materializeTree(commitHash)` cache ([01](01-data-model.md) §6); schema validation for `breadboard/*@v1` files (incl. UID reference resolution); core REST for nodes/edges/config ([11](11-api-mcp.md) §3).
 **Accept:** create/link/revise nodes via API; lineage queries answer up/down; config proposals round-trip branch→diff→merge with commit-hash reads.
 
 ### Phase 2 — Orchestrator core & Sessions ([02](02-sessions-orchestrator.md))
@@ -44,7 +44,7 @@ Task schema/lifecycle; hierarchical triage + bypass; auto-dispatch integration; 
 **Accept:** an idea shaped in conversation becomes a queued Task, auto-dispatches through triage into a handling circuit, gates, appears in the review queue, and completes to a deliverable whose lineage traces back to the conversation.
 
 ### Phase 7 — Connectors & v1 hardening ([07](07-knowledge.md) §8 + cross-cutting)
-Connector interface + scheduler + git-repo-of-Markdown reference connector; read-only enforcement; OIDC integration; webhooks; global search; docs (self-hosting guide, config reference, tool-author guide); load/burn-in on the orchestrator; backup/restore runbook validated.
+Connector interface + scheduler + git-repo-of-Markdown reference connector; read-only enforcement; OIDC integration; webhooks; global search; docs (self-hosting guide, config reference, tool-author guide); `deploy/aws/` IaC module hardened to the reference production deployment (RDS default, [12](12-security-deployment.md) §1); load/burn-in on the orchestrator; backup/restore runbook validated.
 **Accept:** external repo content syncs, is searchable/injective but not editable; fresh-machine self-host from docs in under an hour; v1 tag.
 
 ## 3. v1 cutline register (per component)

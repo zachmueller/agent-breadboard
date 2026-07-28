@@ -27,6 +27,7 @@
 ### Content & edges ([01](01-data-model.md), [09](09-content.md))
 ```
 GET    /nodes                        ?type=&tag=&scope=&need_input_role=&circuit=&q=&created_after=
+                                     (q= is FTS over title + aliases + body, [01] §3.1/§8)
 POST   /nodes                        create (type, title, properties, body, tags, scope)
 GET    /nodes/:uid                   head state
 PATCH  /nodes/:uid                   properties/tags/scope updates (non-CRDT fields)
@@ -79,8 +80,8 @@ POST   /sessions/:id/promote-fixture {fixture_title}
 ```
 GET    /config/tree                  ?ref=commit|branch      list definitions (uid, slug, path, title per entry)
 GET    /config/search                ?q=          search definitions by slug/title (backs global search, [10] §2)
-GET    /config/definitions/:uid      parsed + validated definition, resolved via the UID→path index
-                                     ([01] §6.2; same shape for circuits, subagents, tools, mcp, presets, tenets)
+GET    /config/definitions/:uid      parsed + validated definition, resolved by direct UID-derived path
+                                     ([01] §6.1–6.2; same shape for circuits, subagents, tools, mcp, presets, tenets)
 POST   /config/proposals             {changes: [{path, content}], message}  → branch + proposal id
 GET    /config/proposals/:id         diff, validation results, eval results
 POST   /config/proposals/:id/merge | discard

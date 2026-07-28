@@ -16,16 +16,18 @@
 │    · REST API + UI static serving      · orchestrator                       │
 │    · CRDT sync (WebSocket)             · MCP server                         │
 │    · connector scheduler               · credential broker (module, §5)     │
-│  postgres:16          (the one required stateful dependency)                │
+│  postgres 16+         (local container for dev/quickstart, or external      │
+│                        managed instance — AWS RDS recommended for prod)     │
 │  docker daemon        (tool sandbox; warm pools)                            │
 │  config repo          (bare git repo on server volume)                      │
 │  object storage       (filesystem volume by default; S3-compatible option)  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Distribution: a single container image + `docker compose up` reference file (server, Postgres, a Docker-in-Docker or socket-mounted sandbox runner). Also runs bare (`node`, local Postgres, local Docker).
+- Distribution: a single container image + `docker compose up` reference file (server, a local-Postgres profile, a Docker-in-Docker or socket-mounted sandbox runner). Also runs bare (`node`, local Postgres, local Docker).
+- **Postgres placement is a deployment choice, not an architectural one.** The server reaches Postgres only through connection config (`DATABASE_URL` + TLS and IAM-auth options), so the bundled compose profile (dev/quickstart) and an external managed instance are interchangeable. **AWS RDS is the recommended production default**, and the repo ships an IaC module (`deploy/aws/`, Terraform) that provisions RDS plus the reference server host as the AWS reference deployment. Other managed-Postgres providers work identically through the same connection seam.
 - v1 is a **single server process**; the event-sourced orchestrator and single-authority CRDT design are the two things that would shard first, and both have documented seams ([02](02-sessions-orchestrator.md) §9, [07](07-knowledge.md) §6).
-- **Backup/DR basics:** Postgres continuous archiving or scheduled `pg_dump`; the config repo is a plain git repo (mirror it to any remote); object storage is rsync/bucket-versioned. Restore = restore all three from a consistent point; the event log makes partially-restored Sessions detectable (they suspend rather than corrupt).
+- **Backup/DR basics:** Postgres continuous archiving or scheduled `pg_dump` for self-managed instances; on RDS, automated snapshots + point-in-time recovery replace self-managed archiving. The config repo is a plain git repo (mirror it to any remote); object storage is rsync/bucket-versioned. Restore = restore all three from a consistent point; the event log makes partially-restored Sessions detectable (they suspend rather than corrupt).
 
 ## 2. Threat model (summary)
 
@@ -96,13 +98,13 @@ The OSS core stays provider/auth-agnostic; an Amazon-internal deployment is a th
 | Knowledge connectors | Internal wiki/doc adapters implementing the connector interface ([07](07-knowledge.md) §8) |
 | Broker capabilities | Internal service credentials (e.g., ticketing, code search) registered as capabilities; internal MCP servers onboarded normally ([06](06-toolbox.md) §9) |
 | Object storage | S3 with the S3-compatible option |
-| Deployment | Internal container hosting; Postgres via RDS |
+| Deployment | Internal container hosting; Postgres via RDS (the standard managed-Postgres path, §1 — nothing adapter-specific) |
 
 Internal-only code lives in a separate adapter package, not in the OSS tree.
 
 ## 9. v1 cutline
 
-**In:** compose-based single-instance deployment; OIDC + local-dev auth; admin/member + scope + grant enforcement; in-process broker with capability model + audit log; the sandbox posture; the model gateway with Bedrock reference + preset fallback; backup guidance.
+**In:** compose-based single-instance deployment; the AWS IaC module (`deploy/aws/`: RDS + reference host); OIDC + local-dev auth; admin/member + scope + grant enforcement; in-process broker with capability model + audit log; the sandbox posture; the model gateway with Bedrock reference + preset fallback; backup guidance.
 
 **Out (future):** broker as a separate service; per-directory config review requirements; SSO-provisioned user lifecycle (SCIM); secrets rotation automation; network policy beyond the host (service mesh); the Amazon adapter package itself (documented here, built when needed).
 
@@ -112,3 +114,4 @@ Internal-only code lives in a separate adapter package, not in the OSS tree.
 
 1. **Sandbox runtime hardening tier.** **Decided:** plain Docker with the §6 posture (egress proxy) for v1; gVisor documented as the drop-in hardening step (§6).
 2. **Broker request signing.** **Decided:** actor token + per-execution nonce is sufficient at v1's trust level.
+3. **Postgres hosting.** **Decided:** connection-config seam (`DATABASE_URL` + TLS/IAM options) with **RDS as the recommended production default**, provisioned by a shipped IaC module (`deploy/aws/`); the compose local-Postgres profile remains the dev/quickstart path (§1). Rejected: making RDS the quickstart default (first-run would require an AWS account).
