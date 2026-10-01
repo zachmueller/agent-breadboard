@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
-import net from 'node:net';
+import type net from 'node:net';
 import { createFoundation, type Foundation } from '../test/harness.js';
 import { EgressProxy, hostMatches, parseProxyAuthorization, ruleAllows } from './egress-proxy.js';
 

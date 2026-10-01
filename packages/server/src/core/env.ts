@@ -44,15 +44,40 @@ const zEnv = z.object({
 });
 export type Env = z.infer<typeof zEnv>;
 
-/** Load env from process.env, layering a `.env` file from cwd if present (without overriding real env vars). */
-export function loadEnv(overrides: Partial<Record<keyof Env, string | boolean | number>> = {}): Env {
+/**
+ * The deployment root: `BREADBOARD_ROOT`, else the nearest ancestor of cwd holding a workspace `package.json`
+ * (the monorepo root in dev, `/app` in the container), else cwd. Relative env paths and `.env` resolve here.
+ */
+export function findRepoRoot(from = process.cwd()): string {
+  if (process.env.BREADBOARD_ROOT) return resolve(process.env.BREADBOARD_ROOT);
+  let dir = resolve(from);
+  for (let i = 0; i < 8; i++) {
+    const pkg = resolve(dir, 'package.json');
+    if (existsSync(pkg)) {
+      try {
+        if (JSON.parse(readFileSync(pkg, 'utf8')).workspaces) return dir;
+      } catch {}
+    }
+    const parent = resolve(dir, '..');
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return resolve(from);
+}
+
+/** Load env from process.env, layering a `.env` file from the repo root if present (without overriding real env vars). */
+export function loadEnv(overrides: Partial<Record<keyof Env, string | boolean | number>> = {}, root = findRepoRoot()): Env {
   const fileVars: Record<string, string> = {};
-  const envPath = resolve(process.cwd(), '.env');
+  const envPath = resolve(root, '.env');
   if (existsSync(envPath)) {
     for (const line of readFileSync(envPath, 'utf8').split('\n')) {
       const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
       if (!m || line.trim().startsWith('#')) continue;
-      fileVars[m[1]!] = m[2]!.replace(/^["']|["']$/g, '');
+      let v = m[2]!;
+      const quoted = /^(["']).*\1$/.test(v);
+      if (quoted) v = v.slice(1, -1);
+      else v = v.replace(/\s+#.*$/, '').trim(); // strip inline comments
+      fileVars[m[1]!] = v;
     }
   }
   const merged: Record<string, unknown> = { ...fileVars, ...process.env, ...overrides };

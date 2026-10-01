@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import * as Y from 'yjs';
+import type * as Y from 'yjs';
 import { BreadboardError, TAG, type Actor } from '@breadboard/shared';
 import { aiPrincipal, createKnowledgeKit, type KnowledgeKit } from './testkit.js';
 import { createSyncServer } from './sync.js';

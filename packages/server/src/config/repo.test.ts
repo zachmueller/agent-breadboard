@@ -3,7 +3,8 @@ import { promises as fs, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { silentLogger } from '../core/logger.js';
-import { createConfigRepo, GitConfigRepo, SYSTEM_AUTHOR } from './repo.js';
+import type { GitConfigRepo} from './repo.js';
+import { createConfigRepo, SYSTEM_AUTHOR } from './repo.js';
 import { seedIfEmpty } from './seed.js';
 
 const author = { name: 'Tester', email: 'tester@example.com' };

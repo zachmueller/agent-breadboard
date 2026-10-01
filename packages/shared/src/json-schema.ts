@@ -11,7 +11,8 @@ export const SYSTEM_DEFS: Record<string, JsonSchema> = {
 };
 
 const ajv = new Ajv2020({ allErrors: true, strict: false, useDefaults: true, coerceTypes: false, allowUnionTypes: true });
-addFormats.default ? addFormats.default(ajv) : (addFormats as any)(ajv);
+const applyFormats: (a: Ajv2020) => void = (addFormats as any).default ?? (addFormats as any);
+applyFormats(ajv);
 
 const cache = new WeakMap<object, ValidateFunction>();
 

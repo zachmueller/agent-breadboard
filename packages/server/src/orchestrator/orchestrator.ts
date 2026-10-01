@@ -378,7 +378,7 @@ export class OrchestratorImpl implements Orchestrator {
     if (!node) throw notFound('node', input.node_uid);
     const open = (Array.isArray(node.properties?.['need-input']) ? node.properties['need-input'] : []) as NeedInputRequest[];
     const history = (Array.isArray(node.properties?.['need-input-history']) ? node.properties['need-input-history'] : []) as NeedInputRequest[];
-    let req = open.find((r) => r.request_id === input.request_id) ?? null;
+    const req = open.find((r) => r.request_id === input.request_id) ?? null;
     if (!req) {
       if (history.some((r) => r.request_id === input.request_id)) throw new BreadboardError('conflict', `request ${input.request_id} already has a verdict`);
       throw notFound('need-input request', input.request_id);
@@ -488,7 +488,7 @@ export class OrchestratorImpl implements Orchestrator {
     const settings = await this.d.settings();
     const first = !s0.started_at;
     const commit = s0.config_commit ?? (await this.d.config.mainCommit());
-    let s = asRow(
+    const s = asRow(
       await this.transition(id, {
         state: 'running',
         state_detail: preserve(s0.state_detail),
