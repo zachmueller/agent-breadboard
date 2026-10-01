@@ -125,7 +125,7 @@ Breadboard is opinionated about its stack so implementation can start immediatel
 | Config plane | **Git** (repo managed by the server; system git binary behind a `ConfigRepo` seam with commit-addressed tree materialization — [01](01-data-model.md) §6.3, §10) | Circuits, Subagents, Tools, presets, tenets. UID-named definition paths; commit-hash provenance. |
 | Tool sandbox | **Docker** (per-execution containers, warm pools) | Runtime seam: any OCI runtime. Resource limits + default-deny egress enforced here. |
 | Tool languages | **TypeScript and Python** | Tool extensions may be written in either. |
-| Model access | **Model gateway abstraction**; **AWS Bedrock** is the reference provider | Provider interface (`invoke`, `stream`, structured output, token/cost reporting). Additional providers (Anthropic API, OpenAI, local) implement the same interface. |
+| Model access | **Model gateway abstraction**; **AWS Bedrock** is the reference provider | Provider interface (`invoke`, `stream`, structured output, token/cost reporting). **v1 ships Bedrock only**; additional providers (Anthropic API, OpenAI, local) are post-v1 and implement the same interface ([12](12-security-deployment.md) §7). |
 | UI | **React + TypeScript**, Vite | Flow editor via **React Flow**; collaborative editor via **CodeMirror 6 + Yjs** (Markdown-native). |
 | Identity | **OIDC-pluggable**; local-dev static users mode | See [12 — Security & Deployment](12-security-deployment.md). |
 | Object storage | **Filesystem by default; S3-compatible optional** | Only for large blobs (artifacts over a size threshold, container logs). |
@@ -191,7 +191,7 @@ Terms are used with exactly these meanings across all specs.
 - **`need-input` tag** — A non-blocking signal on an Artifact that an agent wants direction or review, with optional `role` and `username` targeting. Distinct from hard gates.
 - **Node** — Any content-plane object: `task`, `artifact`, `comment`, `knowledge` (extensible).
 - **Revision** — An immutable named snapshot of a content node, cut at meaningful boundaries (step completion, gate resolution, explicit publish, pre-AI-edit). Provenance edges bind to revisions; the CRDT head stays mutable.
-- **Session** — The recorded execution of one circuit run (or one intake conversation): step-by-step logs, config commit hashes, cost, lineage edges. The join between planes.
+- **Session** — The recorded execution of one circuit run or one user↔AI conversation (Intake idea shaping, designer chat): step-by-step logs, config commit hashes, cost, lineage edges. The join between planes. Kinds: `circuit-run`, `intake`, `conversation`, `eval-run` ([02](02-sessions-orchestrator.md) §2).
 - **Step** — One unit within a circuit: an LLM step (subagent + prompt template + tools) or a code step (tool extension). The step boundary is the universal unit of durability, revision, and replay.
 - **Subagent** — A named configuration of system prompt, tool/circuit/knowledge access, and model preset defining a narrowly-scoped AI expert.
 - **Task** — A content node representing a unit of intended work, queued in Intake and executed via Circuits.

@@ -28,7 +28,7 @@ Event log + checkpoints + replay (turns derived from events); dispatcher with th
 **Accept:** a hand-authored two-step circuit (LLM + code stub) runs end-to-end, checkpoints, survives server restart mid-run, suspends at a gate, resumes on verdict completion, records cost and commit hash.
 
 ### Phase 3 — Subagents & Toolbox ([05](05-subagents.md), [06](06-toolbox.md))
-Subagent schema + resolution (tenets injection, `{{knowledge:…}}` deferred-stub until Phase 5, grants); Docker sandbox with warm pools/limits/egress policy; idempotency journal; credential broker (capabilities, `ctx.fetch`, audit); Breadboard primitives; MCP onboarding; MCP server with core catalog; `spawn-harness` with Claude Code adapter; tool CI on proposals.
+Subagent schema + resolution (tenets injection, `{{knowledge:…}}` deferred-stub until Phase 5, grants); Docker sandbox with warm pools/limits/egress policy; idempotency journal; credential broker (capabilities, `ctx.fetch`, audit); Breadboard primitives; MCP onboarding; MCP server with core catalog; `spawn-harness` with Strands adapter; tool CI on proposals.
 **Accept:** an LLM step runs a Subagent that calls a custom TS tool and a Python tool in sandboxes, fetches through a broker capability, and emits an explicit edge; egress off-allowlist is blocked and observable.
 
 ### Phase 4 — Circuits & Evals ([03](03-circuits.md), [04](04-evals.md))

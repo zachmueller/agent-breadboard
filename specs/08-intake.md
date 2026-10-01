@@ -58,7 +58,7 @@ The team engages in "idea shaping" discussion with **Intake Subagents** in the b
   - **Deduplication:** searches past and pending Tasks across the Breadboard for overlap with the new idea (semantic + text over `task` nodes); overlaps are presented in-conversation and recorded as `references` edges + `possible-dup-of` tags.
   - **Grounded in code:** cross-references the idea against existing team code bases (via Toolbox tools, e.g. repo search or `spawn-harness`) to ground critiques in the actual starting point of the code.
   - **Contradiction check:** the `knowledge-checker` pattern ([07](07-knowledge.md) §7) against relevant Knowledge Domains.
-- **Conversations are Sessions** (`kind: intake-conversation`, [02](02-sessions-orchestrator.md) §2) — full observability/debugging benefits: every turn logged with the username, helper invocations navigable as child Sessions.
+- **Conversations are Sessions** (`kind: intake`, [02](02-sessions-orchestrator.md) §2) — full observability/debugging benefits: every turn logged with the username, helper invocations navigable as child Sessions.
 - **Primary outcome:** the shaper's goal is creating well-formed Tasks into the queue via the `create_task` primitive. The resulting Task is persisted as a content node with `produces` lineage from the shaping Session — a Task's full origin story is always navigable.
 
 ## 5. Direct injection (API + MCP)

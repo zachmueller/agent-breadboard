@@ -116,7 +116,7 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 
 Plus: **tool extensions with `exposure.external_mcp: true` are appended to the external catalog** dynamically ([06](06-toolbox.md) §8) — shared team tooling usable from local harnesses without re-implementing MCP servers.
 
-External connections authenticate per-user; all calls execute under that user's grants and are logged (as `service`-actor Sessions) like everything else.
+External connections authenticate per-user; all calls execute under that user's grants and are logged like everything else — as Sessions of `kind: conversation` ([02](02-sessions-orchestrator.md) §2) whose writes record the **`user` actor** (the connecting team member). They are never `service`-actor: `service` is reserved for server-internal writes such as connector syncs (§2).
 
 ## 5. Event stream
 

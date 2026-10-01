@@ -18,7 +18,8 @@ The orchestrator executes [Circuits](03-circuits.md) and records every execution
 
 ## 2. Concepts & IDs
 
-- **Session** — the recorded execution of one circuit run *or* one Intake idea-shaping conversation ([08 — Intake](08-intake.md)). ID: `ses_` + 20-char Crockford base32.
+- **Session** — the recorded execution of one circuit run, one Intake idea-shaping conversation ([08 — Intake](08-intake.md)), or one other user↔AI conversation (e.g., a designer chat panel, [10 — UI](10-ui.md) §4). ID: `ses_` + 20-char Crockford base32.
+- **Session kinds** (`sessions.kind`, §4): `circuit-run`; `intake` (idea-shaping conversations); `conversation` (any other user↔AI chat — designer chat panels, external MCP connections from a user's local harness ([11](11-api-mcp.md) §4); the Subagent driving it, if any, is recorded on the `session-started` event payload); `eval-run` ([04 — Evals](04-evals.md)).
 - **Step** — one executed circuit step within a Session. ID: the circuit-definition step ID plus an attempt counter (`plan-draft#2` = second attempt of step `plan-draft`). Unique within the Session.
 - **Turn** — one message in an LLM step's conversation. ID: `trn_` + 20-char Crockford base32, unique globally. For user↔AI chats (e.g., Intake), the user's username is mapped into the conversation history on their turns.
 - **Run states:** `queued → running → (suspended-gate | suspended-error | completed | cancelled)`. Suspended runs return to **`queued`** on resolution/resume — they re-enter the dispatch queue and pass the §5.1 capacity checks again before running (a resumed run must not bypass admission control).
@@ -42,7 +43,7 @@ Steps pass summarized context forward as intermediate **Artifacts** (the canonic
 CREATE TABLE sessions (
   session_id     char(24) PRIMARY KEY,            -- 'ses_' + uid
   team_id        char(20) NOT NULL REFERENCES teams(team_id),
-  kind           text NOT NULL,                   -- circuit-run | intake-conversation | eval-run
+  kind           text NOT NULL,                   -- circuit-run | intake | conversation | eval-run (§2)
   circuit_uid    char(20),                        -- config UID ([01] §6.2); null for pure conversations
   config_commit  text,                            -- git commit hash resolved at start (initial only;
                                                   -- mid-run re-resolutions are config-resolved events)
@@ -196,3 +197,4 @@ Every circuit run gets **its own Session ID** — whether initiated top-level, t
 
 1. **Mid-conversation checkpointing for very long LLM steps.** **Decided:** v1 checkpoints only at step boundaries; a crashed 40-turn step replays from its start. Revisit with turn-level checkpoint markers if long steps prove common.
 2. **Priority aging.** **Decided:** no aging in v1; surface queue-age in the Task inventory instead.
+3. **Session kind for designer chats and other non-Intake conversations.** **Decided 2026-09-30:** add a `conversation` kind and shorten `intake-conversation` to `intake` (§2). Previously designer chat panels had no kind of their own and were mislabeled as Intake conversations.

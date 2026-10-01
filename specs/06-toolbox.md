@@ -88,7 +88,9 @@ Tools are highly composable: within their logic they may call **circuits** (`ctx
 
 Breadboard ships with built-in tool extensions (same manifest format, maintained in the Breadboard distribution and copied into new config repos where teams may fork them):
 
-- **`spawn-harness`** — the notable one: spawn a **sub-harness** (e.g., Claude Code) to tackle coding-heavy tasks, with **Breadboard operating as the "user"** for the sub-harness. Runs the harness CLI in a sandbox container against a workspace (e.g., a repo checkout), streams the harness transcript into the Session log as a code-step log, and captures declared outputs as Artifacts. This lets Breadboard leverage other harnesses' specialization while remaining the primary harness across circuits.
+- **`spawn-harness`** — the notable one: spawn a **sub-harness** to tackle coding-heavy tasks, with **Breadboard operating as the "user"** for the sub-harness. Runs the harness in a sandbox container against a workspace (e.g., a repo checkout), streams the harness transcript into the Session log as a code-step log, and captures declared outputs as Artifacts. This lets Breadboard leverage other harnesses' specialization while remaining the primary harness across circuits.
+  - **v1 adapter: [Strands Agents](https://strandsagents.com/)** (open-source AWS agent SDK). Being open source, the adapter can integrate at the SDK level rather than scraping a CLI: the sandbox runs a thin Strands driver script that constructs the agent, feeds it the step's task prompt as the user, forwards its event stream (turns, tool calls, results) into the Session log, and maps declared outputs to Artifacts. Bedrock is Strands' default model provider, so credentials flow through the same gateway/broker posture ([12](12-security-deployment.md) §7).
+  - Other harnesses (e.g., Claude Code) are future adapters behind the same `spawn-harness` manifest; the adapter is a per-harness `src/` implementation, not a new tool.
 - **Content primitives** — `create_artifact`, `update_artifact`, `add_comment`, `emit_edge`, `tag_need_input` (§7).
 - **Knowledge primitives** — `query_knowledge` (text + RAG), `read_note`, `propose_note_edit` (the reconcile path, [07](07-knowledge.md) §5).
 - **Intake primitives** — `create_task`, `find_similar_tasks` ([08](08-intake.md) §6).
@@ -144,9 +146,9 @@ Central onboarding simplifies configuration: each distinct MCP server is onboard
 
 ## 11. v1 cutline
 
-**In:** `tool@v1` manifest; TS + Python runtimes; Docker sandbox with warm pools, limits, default-deny egress; credential broker integration; idempotency journal; pre-packaged tool set (incl. `spawn-harness` with a Claude Code adapter); read-only AI code access + branch proposals; MCP onboarding; external MCP exposure; inventory + editor UI.
+**In:** `tool@v1` manifest; TS + Python runtimes; Docker sandbox with warm pools, limits, default-deny egress; credential broker integration; idempotency journal; pre-packaged tool set (incl. `spawn-harness` with a Strands adapter); read-only AI code access + branch proposals; MCP onboarding; external MCP exposure; inventory + editor UI.
 
-**Out (future):** additional languages; long-running/daemon tools; tool-level caching layer; per-tool telemetry dashboards; harness adapters beyond Claude Code.
+**Out (future):** additional languages; long-running/daemon tools; tool-level caching layer; per-tool telemetry dashboards; harness adapters beyond Strands (e.g., Claude Code).
 
 ## 12. Resolved questions
 
@@ -154,3 +156,4 @@ Central onboarding simplifies configuration: each distinct MCP server is onboard
 
 1. **Warm-pool poisoning.** **Decided:** pools hold *pre-started but unused* containers only — a container is never returned to the pool after executing (§4).
 2. **`max_cost_units` calibration.** **Decided:** units stay abstract in v1 (1 unit ≈ 1 CPU-minute guidance); real metering is future work.
+3. **First `spawn-harness` adapter.** **Decided 2026-09-30:** Strands Agents (§3), replacing the earlier Claude Code choice — it is open source, so the adapter integrates at the SDK level (event stream, tool calls, outputs) instead of wrapping a closed CLI, and it defaults to Bedrock. Claude Code and others are future adapters.

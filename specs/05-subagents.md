@@ -96,10 +96,12 @@ presets:
     - { provider: bedrock, model_id: anthropic.claude-haiku-4-5 }
   large:
     - { provider: bedrock, model_id: anthropic.claude-opus-5, requires: [structured-output, tool-use] }
-    - { provider: openai,  model_id: gpt-5.5 }      # cross-provider fallback
+    - { provider: bedrock, model_id: anthropic.claude-sonnet-5 }   # v1 fallbacks stay within Bedrock (below)
 ```
 
 Preset entries may declare `requires: [<capability>...]` (e.g., `structured-output`, `tool-use`); during fallback the gateway **skips entries that don't satisfy the step's required capabilities** rather than failing mid-conversation.
+
+**v1 provider scope:** the gateway ships a single provider adapter — AWS Bedrock ([12](12-security-deployment.md) §7) — so every v1 fallback list is **Bedrock-internal**: fallbacks protect against model deprecation, throttling, and regional outages across the model families available on Bedrock, not against a Bedrock-wide outage. The `provider` field is in the schema from day one so post-v1 adapters (Anthropic API, OpenAI, local) can join a fallback list without a schema change; commit validation rejects a `provider` value with no installed adapter.
 
 Purpose is two-fold: **(1) simplicity** — Subagent authors pick a tier, not a model ID; **(2) robustness** — each preset is an **ordered fallback list**, so if the preferred model is unavailable (deprecated, throttled, region outage) the gateway falls back automatically to the next entry (e.g., if `opus-4-6` were the primary `large` and deprecated before the definition was updated, calls fall back to the next configured option). Fallback events are logged on the Session turn and surfaced as a Breadboard health warning.
 
@@ -136,3 +138,4 @@ Like all configuration, Subagents can be edited by AI (e.g., a meta-operating su
 
 1. **Tenet injection position.** **Decided:** top of the system prompt (most authoritative); revisit with evidence.
 2. **Preset capability mismatch on fallback.** **Decided:** preset entries may declare `requires: [structured-output, tool-use]` and the gateway skips non-conforming entries rather than failing mid-conversation (§4).
+3. **Cross-provider fallback in v1.** **Decided 2026-09-30:** accepted as a v1 limitation — Bedrock is the only shipped adapter, so fallback lists are Bedrock-internal (§4). The schema keeps `provider` so cross-provider lists land with the first post-v1 adapter.
