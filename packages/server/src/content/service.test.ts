@@ -239,7 +239,7 @@ describe('need-input', () => {
     await expect(svc.resolveNeedInput({ uid: art.uid, request_id: gate.request_id, by: f.memberPrincipal })).rejects.toMatchObject({ code: 'invalid-state' });
     const gq = await svc.reviewQueue(f.memberPrincipal);
     expect(gq[0]!.node.uid).toBe(art.uid);
-    expect(gq[0]!.gating_session).toEqual({ session_id: SES_A, circuit_uid: CIRCUIT, state: 'running' });
+    expect(gq[0]!.gating_session).toEqual({ session_id: SES_A, circuit_uid: CIRCUIT, state: 'running', kind: 'circuit-run' });
     const gr = await svc.resolveNeedInput({ uid: art.uid, request_id: gate.request_id, verdict: 'approve', by: f.memberPrincipal });
     expect(gr.resolved.gate).toEqual({ session_id: SES_A, step_id: 'review#1' });
 
