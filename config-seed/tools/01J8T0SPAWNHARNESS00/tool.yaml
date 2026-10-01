@@ -7,7 +7,8 @@ description: >
   Breadboard acting as the harness's "user" ([06] §3). The harness transcript (turns, tool calls, results) is
   streamed into the Session's code-step log, and declared outputs are captured as Artifacts: a summary, the full
   transcript, a patch (for git workspaces), and changed files matching `capture` globs.
-  v1 adapter: Strands Agents (SDK-level integration; Bedrock model provider). Exits `done` or `failed`.
+  v1 adapter: Strands Agents (SDK-level integration; model turns through the Breadboard model gateway). Exits
+  `done` or `failed`.
 language: python
 entrypoint: src/main.py
 builtin: true
@@ -69,14 +70,14 @@ settings:
     type: string
     default: ""
     description: Optional HTTPS git URL cloned as the workspace (its host must be in egress.allow). Empty = scratch dir.
+  preset:
+    type: string
+    default: medium
+    description: Model preset the harness drives, through the Breadboard model gateway.
   model_id:
     type: string
-    default: us.anthropic.claude-sonnet-5
-    description: Bedrock model the harness drives.
-  aws_region:
-    type: string
-    default: us-west-2
-    description: Bedrock region for the harness model. Changing it requires the matching bedrock-runtime egress host below.
+    default: ""
+    description: Optional explicit model id (overrides the preset).
   max_capture_files:
     type: number
     default: 20
@@ -90,18 +91,12 @@ limits:
 
 egress:
   allow:
-    # The harness's model calls. Egress patterns are exact hosts or a leading `*.` wildcard, so list one host per
-    # region; this must match the `aws_region` setting.
-    - host: bedrock-runtime.us-west-2.amazonaws.com
-      ports: [443]
     - host: github.com                         # workspace clone
       ports: [443]
-
 capabilities:
-  # Model access for the harness. The sandbox runtime supplies short-lived, invoke-only AWS credentials for
-  # executions whose tool declares this capability; nothing is baked into the image or the tool source.
-  - name: bedrock-invoke
+  # Model turns go through the Breadboard model gateway (`ctx.converse`): no AWS credentials in the sandbox, and the
+  # spend lands on the Session. `model` is reserved: the gateway grants it, not the credential broker.
+  - name: model
     scope: invoke
-
 exposure:
   external_mcp: false

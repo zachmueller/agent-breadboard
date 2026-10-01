@@ -107,7 +107,7 @@ sandbox:
   warm_pool_size: 2
   images:
     typescript: breadboard-sandbox-ts:local
-    python: breadboard-sandbox-py:local    # spawn-harness needs `strands-agents` in this image (see its requirements.txt)
+    python: breadboard-sandbox-py:local    # spawn-harness needs `strands-agents` in this image (derived-image recipe: deploy/sandbox/README.md)
 
 # Scheduled read-only knowledge connectors ([07] §8). The shipped reference connector is
 # git-markdown-connector (01J8T0G1TMDC0NNECT00). Its egress allowlist ships with github.com only — add your

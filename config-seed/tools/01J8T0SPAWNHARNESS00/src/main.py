@@ -2,7 +2,8 @@
 
 Breadboard is the harness's *user*: we build a Strands agent, hand it the step's task prompt as the user turn,
 forward its event stream into the Session code-step log via ``ctx.log``, and map declared outputs to Artifacts.
-The harness drives a Bedrock model directly (Strands' default provider); see tool.yaml for the egress/capability.
+The harness's model turns go through the Breadboard model gateway (``breadboard_model.BreadboardModel`` over
+``ctx.converse``), so they use presets and fallback, count against the Session's budget, and show up in its cost.
 """
 import fnmatch
 import os
@@ -163,6 +164,11 @@ def _changed_paths(ws, is_repo):
     return {line[3:].split(" -> ")[-1] for line in res.stdout.splitlines() if len(line) > 3}
 
 
+def _matches(rel, pattern):
+    """Glob match on the workspace-relative path; a leading `**/` also matches at the root (fnmatch needs a slash)."""
+    return fnmatch.fnmatch(rel, pattern) or (pattern.startswith("**/") and fnmatch.fnmatch(rel, pattern[3:]))
+
+
 def _capture(ctx, ws, is_repo, patterns, max_files):
     changed = _changed_paths(ws, is_repo)
     root = pathlib.Path(ws)
@@ -173,7 +179,7 @@ def _capture(ctx, ws, is_repo, patterns, max_files):
             continue
         if changed is not None and rel not in changed:
             continue  # in a checkout, only capture files the harness created or modified
-        if not any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(p.name, pat) for pat in patterns):
+        if not any(_matches(rel, pat) or fnmatch.fnmatch(p.name, pat) for pat in patterns):
             continue
         if p.stat().st_size > MAX_FILE_BYTES:
             ctx.log("warn", f"not capturing {rel}: larger than {MAX_FILE_BYTES} bytes")
@@ -195,7 +201,7 @@ def handler(input, ctx):
         return _ret(ctx, "failed", {"error": f"unsupported harness adapter: {settings.get('harness')}"})
     try:
         from strands import Agent, tool as strands_tool
-        from strands.models import BedrockModel
+        from breadboard_model import BreadboardModel
     except ImportError:
         return _ret(ctx, "failed", {"error": "strands not installed — add strands-agents to the python sandbox image"})
 
@@ -205,15 +211,16 @@ def handler(input, ctx):
     except Exception as e:
         return _ret(ctx, "failed", {"error": str(e)})
 
-    model_id = settings.get("model_id") or "us.anthropic.claude-sonnet-5"
+    preset = settings.get("preset") or "medium"
+    model_id = settings.get("model_id") or None
     forward = _Forwarder(ctx)
     agent = Agent(
-        model=BedrockModel(model_id=model_id, region_name=settings.get("aws_region") or "us-west-2"),
+        model=BreadboardModel(ctx, preset=preset, model_id=model_id),
         system_prompt=HARNESS_SYSTEM_PROMPT.format(workspace=ws),
         tools=_make_tools(strands_tool, ws),
         callback_handler=forward,
     )
-    ctx.log("info", "starting Strands harness", {"model_id": model_id, "workspace_is_repo": is_repo})
+    ctx.log("info", "starting Strands harness", {"preset": preset, "model_id": model_id, "workspace_is_repo": is_repo})
     started = time.time()
     try:
         result = agent(prompt)
@@ -229,13 +236,13 @@ def handler(input, ctx):
     metrics = getattr(result, "metrics", None)
     if metrics is not None and getattr(metrics, "accumulated_usage", None):
         usage = dict(metrics.accumulated_usage)
-    # Harness model spend bypasses the Breadboard gateway; log usage so it is at least visible on the Session.
+    # The per-turn spend is already on the Session (gateway turns); this is the harness's own tally.
     ctx.log("info", "harness finished", {"stop_reason": str(getattr(result, "stop_reason", "")), "elapsed_s": elapsed, "usage": usage})
 
     # Summary + patch carry no explicit scope/tag: the calling step's `artifacts:` declaration (or the Breadboard
     # default) decides whether they are reviewable deliverables or session scratch.
     summary = ctx.create_artifact(title="Harness summary", body=final_text, tags=["harness-summary"],
-                                  properties={"model_id": model_id, "elapsed_s": elapsed, "usage": usage})
+                                  properties={"preset": preset, "model_id": model_id, "elapsed_s": elapsed, "usage": usage})
     transcript = ctx.create_artifact(title="Harness transcript", body="\n".join(forward.transcript) or "_empty_",
                                      tags=["intermediate", "harness-transcript"], scope="session")
     patch_ref = None
