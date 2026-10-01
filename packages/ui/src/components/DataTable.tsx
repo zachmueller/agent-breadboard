@@ -103,7 +103,8 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, rowClassName, 
                 onClick={onRowClick ? (e) => !(e.target as HTMLElement).closest('a,button,input,select,[role=menu]') && onRowClick(row) : undefined}
                 onKeyDown={onRowClick ? (e) => onKey(e, row) : undefined}
                 tabIndex={onRowClick ? 0 : undefined}
-                className={cn('group', onRowClick && 'cursor-pointer hover:bg-hover focus-visible:bg-hover focus-visible:outline-none', rowClassName?.(row))}
+                // Inset ring: the scroll container would clip an outset one.
+                className={cn('group', onRowClick && 'cursor-pointer hover:bg-hover focus-visible:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus', rowClassName?.(row))}
               >
                 {columns.map((c) => (
                   <td
