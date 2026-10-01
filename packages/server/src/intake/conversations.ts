@@ -171,7 +171,7 @@ export class ConversationServiceImpl implements ConversationService {
     try {
       result = await this.d.subagents.runConversation({
         subagent: resolved,
-        principal: this.d.subagents.principalFor(resolved, session_id, CONVERSATION_STEP_ID, [session_id]),
+        principal: await this.withOpenDefinition(this.d.subagents.principalFor(resolved, session_id, CONVERSATION_STEP_ID, [session_id]), session, context),
         messages,
         session_id,
         step_id: CONVERSATION_STEP_ID,
@@ -374,6 +374,26 @@ export class ConversationServiceImpl implements ConversationService {
   }
 
   /** Context preamble ([10] §4.5): the open definition as on screen (working tree), open proposal, or the draft task. */
+  /**
+   * A designer chat reads the definition it is open on and what it references, but circuits are readable only with a
+   * grant. Grant read on the open circuit and its sub-circuits for this conversation (subagents, tools, and MCP
+   * onboarding need no grant).
+   */
+  private async withOpenDefinition(p: Principal, session: SessionRecord, context: Record<string, any>): Promise<Principal> {
+    const uid = typeof context.definition_uid === 'string' ? context.definition_uid : null;
+    if (session.kind !== 'conversation' || !uid || !p.grants?.circuits) return p;
+    let def: { kind: string; definition: unknown };
+    try {
+      def = await this.d.config.definition(uid, context.ref ?? undefined);
+    } catch {
+      return p;
+    }
+    if (def.kind !== 'circuit') return p;
+    const steps = ((def.definition as { steps?: Array<{ kind?: string; circuit?: string }> })?.steps ?? []).filter((s) => s.kind === 'circuit' && s.circuit);
+    const read = new Set([...p.grants.circuits.read, uid, ...steps.map((s) => s.circuit!)]);
+    return { ...p, grants: { ...p.grants, circuits: { ...p.grants.circuits, read } } };
+  }
+
   private async preamble(session: SessionRecord, context: Record<string, any>): Promise<string | null> {
     const parts: string[] = [];
     if (session.kind === 'conversation' && typeof context.definition_uid === 'string' && context.definition_uid) {

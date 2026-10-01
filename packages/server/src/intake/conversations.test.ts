@@ -8,6 +8,7 @@ import { CONVERSATION_STEP_ID, createConversationService, type ConversationServi
 const SHAPER = mintUid();
 const DESIGNER = mintUid();
 const CIRC = mintUid();
+const SUB_CIRC = mintUid();
 const TASK = mintUid();
 const NOTE = mintUid();
 const MAIN = 'm'.repeat(40);
@@ -41,7 +42,7 @@ describe('ConversationService', () => {
           commit: MAIN,
           slug: 'research',
           title: 'Research',
-          definition: {},
+          definition: { steps: [{ id: 'gather', kind: 'llm' }, { id: 'deep', kind: 'circuit', circuit: SUB_CIRC }] },
           raw: 'title: Research\nsteps: [gather]\n',
           files: { 'prompts/gather.md': 'ORIGINAL PROMPT', 'prompts/write.md': 'WRITE PROMPT' },
           validation: { ok: true, errors: [], warnings: [] },
@@ -135,6 +136,8 @@ describe('ConversationService', () => {
     expect(out.proposals).toEqual([proposalId]);
     expect(out.draft_task).toBeNull();
 
+    // The designer may read the open circuit and its sub-circuits (read_config needs a circuit grant).
+    expect([...(subagents.calls[0]!.principal.grants!.circuits.read as Set<string>)].sort()).toEqual([CIRC, SUB_CIRC].sort());
     const pre = textOf(subagents.calls[0]!.messages[0]!);
     expect(pre).toContain(`[Open definition] circuit Research (uid ${CIRC}`);
     expect(pre).toContain('title: Research\nsteps: [gather]');

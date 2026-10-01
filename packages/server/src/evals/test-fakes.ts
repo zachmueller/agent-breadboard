@@ -156,7 +156,7 @@ export class FakeSubagentRuntime {
 
   async resolve(uid: string, commit: string): Promise<ResolvedSubagent> {
     this.resolved.push({ uid, commit });
-    return { uid, slug: `sub-${uid.slice(0, 4).toLowerCase()}`, commit, definition: {} as any, system_prompt: 'You are a test subagent.', injected_notes: [], grants: {} as any, model_preset: 'medium' };
+    return { uid, slug: `sub-${uid.slice(0, 4).toLowerCase()}`, commit, definition: {} as any, system_prompt: 'You are a test subagent.', injected_notes: [], grants: { circuits: { read: new Set<string>(), execute: new Set<string>() } } as any, model_preset: 'medium' };
   }
 
   principalFor(resolved: ResolvedSubagent, sessionId: string, stepId: string | null, visible: string[]): Principal {
