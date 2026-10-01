@@ -170,13 +170,15 @@ describe('BreadboardStack', () => {
     const secrets = t.findResources('AWS::SecretsManager::Secret');
     expect(Object.keys(secrets)).toHaveLength(3);
     for (const secret of Object.values(secrets)) {
-      expect(secret.DeletionPolicy).toBe('Retain');
+      expect(secret.DeletionPolicy).toBe('RetainExceptOnCreate');
       expect(secret.Properties.SecretString).toBeUndefined();
       expect(secret.Properties.GenerateSecretString).toBeDefined();
     }
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'breadboard-test/db',
-      GenerateSecretString: Match.objectLike({ SecretStringTemplate: '{"username":"breadboard"}', GenerateStringKey: 'password', ExcludeCharacters: Match.stringLikeRegexp('@') }),
+      // ExcludePunctuation, not ExcludeCharacters listing every punctuation mark: Secrets Manager rejects the latter
+      // ("All characters of the desired type have been excluded"), found by the first real deploy.
+      GenerateSecretString: Match.objectLike({ SecretStringTemplate: '{"username":"breadboard"}', GenerateStringKey: 'password', ExcludePunctuation: true, ExcludeCharacters: Match.absent() }),
     });
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'breadboard-test/token-signing-key',
@@ -227,7 +229,7 @@ describe('BreadboardStack', () => {
       VersioningConfiguration: { Status: 'Enabled' },
       PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true },
     });
-    t.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Retain' });
+    t.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'RetainExceptOnCreate' });
     t.hasResourceProperties('AWS::S3::BucketPolicy', {
       PolicyDocument: { Statement: [Match.objectLike({ Effect: 'Deny', Condition: { Bool: { 'aws:SecureTransport': 'false' } } })] },
     });

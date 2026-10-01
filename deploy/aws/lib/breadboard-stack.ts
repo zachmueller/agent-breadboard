@@ -65,8 +65,11 @@ export const DEFAULTS = {
   enableS3Objects: true,
 } satisfies Partial<BreadboardStackProps>;
 
-/** Generated secrets carry no punctuation: they end up in a URL and an env file (parity with `special = false`). */
-const PUNCTUATION = ' !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
+/**
+ * State that outlives the stack: kept on update and delete, but removed when the initial create rolls back, so a
+ * failed first deploy leaves nothing behind that would block a retry under the same `name`.
+ */
+const KEEP = RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE;
 
 const USER_DATA = readFileSync(new URL('./user-data.sh', import.meta.url), 'utf8');
 
@@ -115,12 +118,14 @@ export class BreadboardStack extends Stack {
 
     // --- RDS Postgres (the only required stateful dependency) ------------------
     // Explicit so it can be retained with the final snapshot (the generated default is deleted with the stack).
-    const dbCredentials = new rds.DatabaseSecret(this, 'DbSecret', {
-      username: 'breadboard',
+    // No punctuation: the password ends up in a URL and an env file. (Excluding every punctuation character through
+    // rds.DatabaseSecret's excludeCharacters fails at deploy: Secrets Manager still requires one of each type.)
+    const dbCredentials = new secretsmanager.Secret(this, 'DbSecret', {
       secretName: `${prefix}/db`,
-      excludeCharacters: PUNCTUATION,
+      description: 'RDS master credentials (username, password)',
+      generateSecretString: { secretStringTemplate: JSON.stringify({ username: 'breadboard' }), generateStringKey: 'password', passwordLength: 30, excludePunctuation: true, includeSpace: false },
+      removalPolicy: KEEP,
     });
-    dbCredentials.applyRemovalPolicy(RemovalPolicy.RETAIN);
     const engine = rds.DatabaseInstanceEngine.postgres({
       version: rds.PostgresEngineVersion.of(p.dbEngineVersion, p.dbEngineVersion.split('.')[0]),
     });
@@ -157,7 +162,7 @@ export class BreadboardStack extends Stack {
         secretName: `${prefix}/${suffix}`,
         description,
         generateSecretString: { passwordLength, excludePunctuation: true, includeSpace: false },
-        removalPolicy: RemovalPolicy.RETAIN,
+        removalPolicy: KEEP,
       });
     const tokenKey = generated('TokenSigningKey', 'token-signing-key', 'TOKEN_SIGNING_KEY: HMAC key for user/actor tokens', 48);
     // 43 alphanumeric chars are valid base64 for exactly 32 bytes (~256 bits), which the broker uses directly
@@ -173,7 +178,7 @@ export class BreadboardStack extends Stack {
           enforceSSL: true,
           encryption: s3.BucketEncryption.S3_MANAGED,
           blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-          removalPolicy: RemovalPolicy.RETAIN,
+          removalPolicy: KEEP,
         })
       : undefined;
 

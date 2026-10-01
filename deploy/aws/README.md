@@ -68,7 +68,7 @@ Secrets Manager generates all three secrets, so their values never appear in the
 
 - **The AMI is pinned on first synth** (`cdk.context.json`). A new AMI would replace the host, and the config repo lives on the host's root volume at `/var/breadboard`. To move to a newer AMI on purpose, mirror the config repo first (see Backup/DR), then run `npx cdk context --reset <key>`.
 - **RDS modifications** made through a deploy (for example, a new instance class) are expected to apply during the deploy rather than in the maintenance window. CloudFormation has no equivalent of deferring them. This is not yet confirmed; see `docs/verification-plan.md` §7.
-- **Destroy keeps the state.** `npx cdk destroy` leaves a final DB snapshot, all three secrets, and the objects bucket. Deletion protection blocks a destroy, so first deploy with `-c dbDeletionProtection=false`. The retained secrets and bucket keep their names, so a new deploy with the same `name` fails until you delete them.
+- **Destroy keeps the state.** `npx cdk destroy` leaves a final DB snapshot, all three secrets, and the objects bucket (`DeletionPolicy: RetainExceptOnCreate`, so a failed *first* deploy rolls back completely and can simply be retried). Deletion protection blocks a destroy, so first deploy with `-c dbDeletionProtection=false`. The retained secrets and bucket keep their names, so a new deploy with the same `name` fails until you delete them.
 
 The server reaches Postgres only through `DATABASE_URL` (+ `DATABASE_SSL=require`); any other managed Postgres works identically through the same seam. The bundled `deploy/compose.yaml` local-Postgres profile remains the dev/quickstart path.
 
