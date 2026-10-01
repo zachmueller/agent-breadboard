@@ -226,6 +226,12 @@ export function diffCircuits(base: LooseCircuit | null | undefined, next: LooseC
   return { steps, exits, edges, circuitFields, entryChanged: base?.entry !== next?.entry };
 }
 
+/** Whether the circuit definition itself changes (steps, routes, exits, entry, fields), not only files it references such as prompts. */
+export function hasFlowChanges(base: LooseCircuit | null | undefined, next: LooseCircuit | null | undefined): boolean {
+  const d = diffCircuits(base, next);
+  return d.entryChanged || d.circuitFields.length > 0 || [d.steps, d.edges, d.exits].some((m) => Object.keys(m).length > 0);
+}
+
 /** Annotate a derived graph with diff marks for one side of a side-by-side view. */
 export function markGraph(g: { nodes: GraphNode[]; edges: GraphEdge[] }, d: CircuitDiff, side: 'base' | 'next'): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const keep = (m: DiffMark) => (side === 'base' ? (m === 'removed' || m === 'modified' ? m : undefined) : m === 'added' || m === 'modified' ? m : undefined);

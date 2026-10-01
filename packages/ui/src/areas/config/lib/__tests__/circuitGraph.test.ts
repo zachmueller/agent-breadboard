@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { deriveGraph, diffCircuits, layoutGraph, markGraph, renameStep, stepNodeId, exitNodeId, START_ID } from '../circuitGraph';
+import { deriveGraph, diffCircuits, hasFlowChanges, layoutGraph, markGraph, renameStep, stepNodeId, exitNodeId, START_ID } from '../circuitGraph';
 import { LIT_REVIEW_YAML } from './fixtures';
 
 const circuit = () => parse(LIT_REVIEW_YAML);
@@ -65,6 +65,17 @@ describe('diffCircuits', () => {
     const marked = markGraph(deriveGraph(base), d, 'base');
     expect((marked.nodes.find((n) => n.id === stepNodeId('report-empty'))!.data as any).diff).toBe('removed');
     expect((marked.nodes.find((n) => n.id === stepNodeId('gather'))!.data as any).diff).toBe('modified');
+  });
+
+  it('hasFlowChanges ignores referenced-file-only changes', () => {
+    expect(hasFlowChanges(circuit(), circuit())).toBe(false);
+    const routed = circuit();
+    routed.steps[0].exits[1].to = '$exit.empty';
+    expect(hasFlowChanges(circuit(), routed)).toBe(true);
+    const retitled = circuit();
+    retitled.title = 'Renamed';
+    expect(hasFlowChanges(circuit(), retitled)).toBe(true);
+    expect(hasFlowChanges(null, circuit())).toBe(true);
   });
 });
 

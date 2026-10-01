@@ -4,7 +4,7 @@
  * YAML / prompt / rubric / fixture file diffs underneath.
  */
 import { useMemo, useState } from 'react';
-import { deriveGraph, diffCircuits, markGraph } from '../lib/circuitGraph';
+import { deriveGraph, diffCircuits, hasFlowChanges, markGraph } from '../lib/circuitGraph';
 import { FlowCanvas } from './FlowCanvas';
 import { MultiFileDiff } from '../components/Diff';
 import { Pill, TabBar } from '../ui';
@@ -21,7 +21,8 @@ function promptOfFactory(base: Snapshot, next: Snapshot) {
 }
 
 export function FlowDiff({ base, next }: { base: Snapshot; next: Snapshot }) {
-  const [view, setView] = useState<'flow' | 'files'>('flow');
+  // Open on Files when the flow is unchanged (e.g. only a prompt, rubric or fixture file changed).
+  const [view, setView] = useState<'flow' | 'files'>(() => (hasFlowChanges(base.parsed, next.parsed) ? 'flow' : 'files'));
   const diff = useMemo(() => diffCircuits(base.parsed, next.parsed, promptOfFactory(base, next)), [base, next]);
   const baseGraph = useMemo(() => markGraph(deriveGraph(base.parsed), diff, 'base'), [base, diff]);
   const nextGraph = useMemo(() => markGraph(deriveGraph(next.parsed), diff, 'next'), [next, diff]);
