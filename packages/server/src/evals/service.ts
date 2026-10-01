@@ -54,7 +54,11 @@ export interface EvalServiceDeps {
   concurrency?: number;
   /** Per-session wait timeout passed to `orchestrator.waitFor`. */
   wait_timeout_ms?: number;
+  /** How often a fixture session parked at a hard gate is re-checked (default 5 s). */
+  gate_poll_ms?: number;
 }
+
+const GATE_POLL_MS = 5_000;
 
 export interface EvalRunRow {
   eval_run_id: string;
@@ -107,6 +111,7 @@ interface InlinedArtifact {
 export class EvalServiceImpl implements EvalService {
   private readonly svc: Principal;
   private readonly inflight = new Map<string, Promise<void>>();
+  private stopped = false;
 
   constructor(private readonly d: EvalServiceDeps) {
     this.svc = servicePrincipal(d.team_id, 'evals');
@@ -153,8 +158,7 @@ export class EvalServiceImpl implements EvalService {
     if (input.proposal_id) await this.d.config.attachEvalRun(input.proposal_id, id);
 
     const ctx: RunCtx = { run_id: id, circuit_uid: input.circuit, circuit: loaded.circuit, commit, rubric, fixtures, model_overrides, by };
-    const job = this.execute(ctx).finally(() => this.inflight.delete(id));
-    this.inflight.set(id, job);
+    const job = this.track(id, this.execute(ctx));
     if (input.wait === false) {
       job.catch(() => undefined);
       return this.getRun(id);
@@ -166,6 +170,71 @@ export class EvalServiceImpl implements EvalService {
   /** Await a background run (tests, graceful shutdown). */
   async settle(evalRunId: string): Promise<void> {
     await this.inflight.get(evalRunId)?.catch(() => undefined);
+  }
+
+  private track(id: string, job: Promise<void>): Promise<void> {
+    const tracked = job.finally(() => this.inflight.delete(id));
+    this.inflight.set(id, tracked);
+    return tracked;
+  }
+
+  /**
+   * Re-attach to runs still `running` after a restart. A fixture session can wait on a hard gate for days, so a
+   * run outlives the process that started it; unscored fixtures resume waiting, scored ones are kept.
+   */
+  async recover(): Promise<number> {
+    const rows = await this.d.db.query<EvalRunRow>(`SELECT * FROM eval_runs WHERE team_id=$1 AND status='running' ORDER BY created_at`, [this.d.team_id]);
+    let n = 0;
+    for (const row of rows.rows) {
+      const id = String(row.eval_run_id).trim();
+      if (this.inflight.has(id)) continue;
+      const sessions = ((row.summary ?? {}).sessions ?? {}) as Record<string, string>;
+      const resume = async () => {
+        const loaded = await this.d.config.circuit(row.circuit_uid, row.circuit_commit);
+        const rubric = loaded.rubric ?? (await this.d.config.rubric(row.circuit_uid, row.circuit_commit));
+        const manifest = loaded.fixtures ?? (await this.d.config.fixtures(row.circuit_uid, row.circuit_commit));
+        if (!rubric) throw new Error(`rubric missing at ${row.circuit_commit.slice(0, 12)}`);
+        const done = new Set(
+          (await this.d.db.query<{ fixture_id: string }>(`SELECT fixture_id FROM eval_results WHERE eval_run_id=$1 AND dimension='*'`, [id])).rows.map((r) => r.fixture_id),
+        );
+        const fixtures = (manifest?.fixtures ?? []).filter((f) => sessions[f.fixture_id]);
+        const ctx: RunCtx = { run_id: id, circuit_uid: row.circuit_uid, circuit: loaded.circuit, commit: row.circuit_commit, rubric, fixtures, model_overrides: row.model_overrides, by: this.svc };
+        const errors: Array<{ fixture_id: string; error: string }> = [];
+        const queued = fixtures.filter((f) => !done.has(f.fixture_id)).map((fixture) => ({ fixture, session_id: sessions[fixture.fixture_id]! }));
+        await this.scoreQueued(ctx, queued, errors);
+        await this.finish(ctx, errors);
+      };
+      void this.track(
+        id,
+        resume().catch(async (e) => {
+          this.d.log.error({ err: e, eval_run_id: id }, 'eval run recovery failed');
+          await this.mergeSummary(id, { errors: [{ fixture_id: '*', error: `recovery failed: ${errMsg(e)}` }] }).catch(() => undefined);
+          await this.d.db.query(`UPDATE eval_runs SET status='failed', ended_at=now() WHERE eval_run_id=$1`, [id]).catch(() => undefined);
+        }),
+      );
+      n++;
+    }
+    return n;
+  }
+
+  /** Stop waiting on gated fixtures (shutdown); their runs stay `running` and resume via `recover()`. */
+  stop(): void {
+    this.stopped = true;
+  }
+
+  /**
+   * Eval sessions gate like production: a hard gate waits for its human reviewers, so `suspended-gate` is not an
+   * outcome. The fixture is scored once the session moves past it (or the wait times out).
+   */
+  private async awaitSettled(sessionId: string): Promise<SessionRecord> {
+    const deadline = this.d.wait_timeout_ms ? Date.now() + this.d.wait_timeout_ms : Infinity;
+    for (;;) {
+      const left = Number.isFinite(deadline) ? Math.max(1, deadline - Date.now()) : undefined;
+      const s = await this.d.orchestrator.waitFor(sessionId, left);
+      if (s.state !== 'suspended-gate' || Date.now() >= deadline) return s;
+      if (this.stopped) throw new Error('eval service stopped while the session waits on a gate');
+      await new Promise((r) => setTimeout(r, this.d.gate_poll_ms ?? GATE_POLL_MS).unref?.());
+    }
   }
 
   private async execute(ctx: RunCtx): Promise<void> {
@@ -191,27 +260,8 @@ export class EvalServiceImpl implements EvalService {
         }
       }
       await this.mergeSummary(ctx.run_id, { sessions });
-
-      await pool(queued, this.d.concurrency ?? DEFAULT_CONCURRENCY, async ({ fixture, session_id }) => {
-        try {
-          let session: SessionRecord;
-          try {
-            session = await this.d.orchestrator.waitFor(session_id, this.d.wait_timeout_ms);
-          } catch (e) {
-            session = (await this.d.sessions.get(session_id)) ?? ({ session_id, state: 'running', state_detail: {} } as unknown as SessionRecord);
-            (session as any).__wait_error = errMsg(e);
-          }
-          await this.scoreFixture(ctx, fixture, session);
-        } catch (e) {
-          this.d.log.warn({ err: e, eval_run_id: ctx.run_id, fixture_id: fixture.fixture_id }, 'eval fixture scoring failed');
-          errors.push({ fixture_id: fixture.fixture_id, error: errMsg(e) });
-        }
-      });
-
-      const summary = await this.recomputeSummary(ctx.run_id, ctx.rubric, { errors });
-      const status = summary.scored > 0 ? 'completed' : 'failed';
-      await this.d.db.query(`UPDATE eval_runs SET status=$2, ended_at=now() WHERE eval_run_id=$1`, [ctx.run_id, status]);
-      await this.publishCompleted(ctx.run_id, ctx.circuit_uid, status, summary);
+      await this.scoreQueued(ctx, queued, errors);
+      await this.finish(ctx, errors);
     } catch (e) {
       this.d.log.error({ err: e, eval_run_id: ctx.run_id }, 'eval run failed');
       await this.mergeSummary(ctx.run_id, { errors: [...errors, { fixture_id: '*', error: errMsg(e) }] }).catch(() => undefined);
@@ -219,6 +269,34 @@ export class EvalServiceImpl implements EvalService {
       await this.publishCompleted(ctx.run_id, ctx.circuit_uid, 'failed', {}).catch(() => undefined);
       throw e;
     }
+  }
+
+  private async scoreQueued(ctx: RunCtx, queued: Array<{ fixture: Fixture; session_id: string }>, errors: Array<{ fixture_id: string; error: string }>): Promise<void> {
+    await pool(queued, this.d.concurrency ?? DEFAULT_CONCURRENCY, async ({ fixture, session_id }) => {
+      try {
+        let session: SessionRecord;
+        try {
+          session = await this.awaitSettled(session_id);
+        } catch (e) {
+          if (this.stopped) throw e; // left unscored; recover() resumes it
+          session = (await this.d.sessions.get(session_id)) ?? ({ session_id, state: 'running', state_detail: {} } as unknown as SessionRecord);
+          (session as any).__wait_error = errMsg(e);
+        }
+        await this.scoreFixture(ctx, fixture, session);
+      } catch (e) {
+        if (this.stopped) return;
+        this.d.log.warn({ err: e, eval_run_id: ctx.run_id, fixture_id: fixture.fixture_id }, 'eval fixture scoring failed');
+        errors.push({ fixture_id: fixture.fixture_id, error: errMsg(e) });
+      }
+    });
+  }
+
+  private async finish(ctx: RunCtx, errors: Array<{ fixture_id: string; error: string }>): Promise<void> {
+    if (this.stopped) return; // still running: recover() picks it up on the next start
+    const summary = await this.recomputeSummary(ctx.run_id, ctx.rubric, { errors });
+    const status = summary.scored > 0 ? 'completed' : 'failed';
+    await this.d.db.query(`UPDATE eval_runs SET status=$2, ended_at=now() WHERE eval_run_id=$1`, [ctx.run_id, status]);
+    await this.publishCompleted(ctx.run_id, ctx.circuit_uid, status, summary);
   }
 
   private async publishCompleted(id: string, circuit: string, status: string, summary: Record<string, any>): Promise<void> {
@@ -251,7 +329,18 @@ export class EvalServiceImpl implements EvalService {
     for (const s of scored) await this.upsertResult(ctx.run_id, fixture.fixture_id, session.session_id, s.dim.key, s.dim.type, s.value, s.rationale, s.cost_usd);
     const values = Object.fromEntries(scored.map((s) => [s.dim.key, s.value]));
     const agg = buildAggregate(ctx.rubric, values, { session_cost_usd: sessionCost, failed: !outcome.completed, failure: outcome.completed ? undefined : `${outcome.state}: ${outcome.reason}` });
-    await this.upsertResult(ctx.run_id, fixture.fixture_id, session.session_id, '*', 'aggregate', agg, null, sessionCost);
+    const gates = await this.gateVerdicts(session.session_id);
+    await this.upsertResult(ctx.run_id, fixture.fixture_id, session.session_id, '*', 'aggregate', gates.length ? { ...agg, gates } : agg, null, sessionCost);
+  }
+
+  /** The human reviews the scored session passed through, in order (each gate visit with its verdicts). */
+  private async gateVerdicts(sessionId: string): Promise<NonNullable<AggregateValue['gates']>> {
+    return (await this.allEvents(sessionId))
+      .filter((e) => e.event_type === 'gate-resolved')
+      .map((e) => {
+        const p = e.payload as { step_id: string; exit: string; verdicts?: Array<Record<string, any>> };
+        return { step_id: p.step_id, exit: p.exit, verdicts: (p.verdicts ?? []).map((v) => ({ verdict: v.verdict, comment: v.comment ?? null, by: v.by, at: v.at })) };
+      });
   }
 
   /** The circuit output = the `session-completed` payload `{exit, output}`, or a failure record. */
@@ -478,7 +567,7 @@ export class EvalServiceImpl implements EvalService {
     let sessionCost = prev?.session_cost_usd;
     if (sessionCost === undefined) sessionCost = await this.d.sessions.costIncludingChildren(sessionId).catch(() => 0);
     const agg = buildAggregate(rubric, values, { session_cost_usd: sessionCost, failed: prev?.failed, failure: prev?.failure });
-    await this.upsertResult(run.eval_run_id, input.fixture_id, sessionId, '*', 'aggregate', agg, null, sessionCost);
+    await this.upsertResult(run.eval_run_id, input.fixture_id, sessionId, '*', 'aggregate', prev?.gates ? { ...agg, gates: prev.gates } : agg, null, sessionCost);
     await this.recomputeSummary(run.eval_run_id, rubric);
   }
 

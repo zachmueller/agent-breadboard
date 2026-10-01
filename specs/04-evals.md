@@ -74,6 +74,8 @@ An eval run executes one circuit version against fixtures and scores results.
 2. Score the scored session: programmatic dimensions invoke their tools against the output; judge dimensions run the evaluator Subagent with the dimension prompt, the fixture input, and the circuit output. The judge returns per-dimension `{value, rationale}` via structured output.
 3. Persist one result row per (fixture × dimension) plus an aggregate row.
 
+**Hard gates in eval sessions behave as in production.** Model evals need human review, so a gate in an eval session is not bypassed: it targets its reviewers through the review queue (marked as an eval run), the eval run stays `running` until the gate resolves, and the fixture is scored once its session settles (including any `changes` loop). The gate verdicts are recorded on the fixture's aggregate row. Because a run can wait on reviewers for days, runs still `running` are resumed after a server restart.
+
 **Each eval run records:** eval run ID, rubric ID + commit, circuit ID + commit, fixture ID, scored session ID, judge model ID, per-dimension `{dimension, type, value, rationale}`, aggregate score, cost, and timestamp.
 
 ### 4.1 Results store (Postgres)

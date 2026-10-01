@@ -5,7 +5,7 @@ import { Inbox, PauseCircle } from 'lucide-react';
 import type { ReviewQueueItemDto } from '@breadboard/shared';
 import { useReviewQueue } from '../../lib/queries';
 import { cn } from '../../components/cn';
-import { ConfigLink, EmptyState, ErrorState, Loading, NodeTypeIcon, PageBody, PageHeader, Tabs, TimeAgo } from '../../components';
+import { Badge, ConfigLink, EmptyState, ErrorState, Loading, NodeTypeIcon, PageBody, PageHeader, Tabs, TimeAgo } from '../../components';
 import { ContentTabs } from './ContentInventory';
 import { asRequest, NeedInputRequestCard } from './NeedInputRequestCard';
 
@@ -70,6 +70,11 @@ function ReviewItem({ item, gate }: { item: ReviewQueueItemDto; gate: boolean })
             <PauseCircle size={13} className="text-warn-fg" aria-hidden />
             <ConfigLink uid={item.gating_session.circuit_uid} kind="circuit" />
           </span>
+        )}
+        {item.gating_session?.kind === 'eval-run' && (
+          <Badge tone="info" size="xs" title="This gate belongs to an eval run; its fixture is scored after your verdict.">
+            eval run
+          </Badge>
         )}
         <span className="ml-auto flex items-center gap-2 text-[12px] text-fg-subtle">
           <TimeAgo at={node.updated_at} />

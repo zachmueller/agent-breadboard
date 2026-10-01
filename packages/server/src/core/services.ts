@@ -621,6 +621,10 @@ export interface EvalService {
   getFixtureOutput(evalRunId: string, fixtureId: string): Promise<unknown>;
   promoteFixture(input: { session_id: string; fixture_title: string; tags?: string[]; notes?: string; by: Principal }): Promise<{ fixture_id: string; commit: string }>;
   dashboard(): Promise<Record<string, unknown>>;
+  /** Restart recovery: resume runs still `running` (fixtures may be waiting on hard gates). */
+  recover(): Promise<number>;
+  /** Shutdown: stop waiting on gated fixtures; their runs resume via `recover()`. */
+  stop(): void;
 }
 
 // ---------------------------------------------------------------------------

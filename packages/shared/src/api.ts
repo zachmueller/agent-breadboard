@@ -96,7 +96,7 @@ export interface ProposalDto {
 export interface ReviewQueueItemDto {
   node: NodeDto;
   requests: Array<Record<string, unknown>>;
-  gating_session: Pick<SessionRecord, 'session_id' | 'circuit_uid' | 'state'> | null;
+  gating_session: Pick<SessionRecord, 'session_id' | 'circuit_uid' | 'state' | 'kind'> | null;
 }
 
 export type { NodeRecord, NodeRevision, EdgeRecord, SessionRecord, SessionEvent, Turn };

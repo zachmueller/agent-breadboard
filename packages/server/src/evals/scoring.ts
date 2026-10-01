@@ -22,6 +22,8 @@ export interface AggregateValue {
   /** The scored session did not complete (suspended/cancelled/timeout). */
   failed?: boolean;
   failure?: string;
+  /** Human gate reviews of the scored session (eval sessions gate like production). */
+  gates?: Array<{ step_id: string; exit: string; verdicts: Array<{ verdict: string; comment: string | null; by: unknown; at: string }> }>;
 }
 
 /**

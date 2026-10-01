@@ -978,7 +978,7 @@ export class ContentServiceImpl implements ContentService {
       let gating_session: ReviewQueueItemDto['gating_session'] = null;
       if (gate && store) {
         const s = await store.get(gate.session_id).catch(() => null);
-        if (s) gating_session = { session_id: s.session_id, circuit_uid: s.circuit_uid, state: s.state };
+        if (s) gating_session = { session_id: s.session_id, circuit_uid: s.circuit_uid, state: s.state, kind: s.kind };
       }
       out.push({ node: dtos[i]!, requests: it.requests as unknown as Array<Record<string, unknown>>, gating_session });
     }

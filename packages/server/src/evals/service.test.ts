@@ -4,7 +4,7 @@ import { BreadboardError, mintUid, notFound, SCHEMA_TAGS, type Rubric } from '@b
 import { createFoundation, type Foundation } from '../test/harness.js';
 import type { ConfigService, ContentService, EnqueueRunInput, Orchestrator, Toolbox } from '../core/services.js';
 import type { Principal } from '../core/principal.js';
-import { createEvalService, fixturesPath, JUDGE_STEP_ID, RECORD_SCORES_TOOL, type EvalServiceImpl } from './service.js';
+import { createEvalService, fixturesPath, JUDGE_STEP_ID, RECORD_SCORES_TOOL, type EvalServiceDeps, type EvalServiceImpl } from './service.js';
 import { FakeEventBus, FakeSubagentRuntime, MemorySessionStore } from './test-fakes.js';
 
 const CIRCUIT = mintUid();
@@ -38,7 +38,7 @@ const fixtures = {
 };
 
 /** Per-fixture behavior of the fake circuit + judge. */
-const behavior: Record<string, { exit: string; fail?: boolean; scores: Array<{ dimension: string; value: unknown; rationale?: string }> }> = {
+const behavior: Record<string, { exit: string; fail?: boolean; gate?: boolean; scores: Array<{ dimension: string; value: unknown; rationale?: string }> }> = {
   a: { exit: 'done', scores: [{ dimension: 'accuracy', value: 5, rationale: 'exact' }, { dimension: 'clarity', value: 'good' }, { dimension: 'cites', value: true }] },
   b: { exit: 'needs-input', scores: [{ dimension: 'accuracy', value: 2 }, { dimension: 'clarity', value: 'ok' }, { dimension: 'cites', value: false }] },
 };
@@ -64,6 +64,9 @@ function fakeConfig(state: { commits: Array<{ changes: Array<{ path: string; con
   } as unknown as ConfigService;
 }
 
+/** Sessions whose (fake) hard gate a reviewer has resolved; gated fixtures stay `suspended-gate` until then. */
+const gateResolved = new Set<string>();
+
 function fakeOrchestrator(store: MemorySessionStore, enqueued: EnqueueRunInput[]): Orchestrator {
   return {
     enqueue: async (input: EnqueueRunInput) => {
@@ -74,7 +77,13 @@ function fakeOrchestrator(store: MemorySessionStore, enqueued: EnqueueRunInput[]
       const s = (await store.get(id))!;
       const q = ((s as any).input as { q: string }).q;
       const b = behavior[q]!;
-      await store.recordTurn({ session_id: id, step_id: 'answer', role: 'assistant', username: null, content: [{ type: 'text', text: 'answer' }], model_id: 'm', tokens_in: 10, tokens_out: 5, cost_usd: 0.05 });
+      if (s.state !== 'suspended-gate') {
+        await store.recordTurn({ session_id: id, step_id: 'answer', role: 'assistant', username: null, content: [{ type: 'text', text: 'answer' }], model_id: 'm', tokens_in: 10, tokens_out: 5, cost_usd: 0.05 });
+      }
+      if (b.gate && !gateResolved.has(id)) return store.update(id, { state: 'suspended-gate', state_detail: { step_id: 'review' } });
+      if (b.gate) {
+        await store.appendEvent(id, 'gate-resolved' as any, { step_id: 'review', exit: 'approve', verdicts: [{ verdict: 'approve', comment: 'grounded', by: { kind: 'user', id: 'U1' }, at: '2026-10-01T00:00:00.000Z' }] });
+      }
       if (b.fail) {
         await store.appendEvent(id, 'session-failed' as any, { reason: 'tool crashed' });
         return store.update(id, { state: 'suspended-error', state_detail: { reason: 'tool crashed' } });
@@ -93,6 +102,7 @@ describe('EvalService', () => {
   let svc: EvalServiceImpl;
   let enqueued: EnqueueRunInput[];
   let cfg: { commits: any[]; fixturesRaw: string | null; attached: string[] };
+  let make: (extra?: Partial<EvalServiceDeps>) => EvalServiceImpl;
 
   beforeEach(async () => {
     f = await createFoundation();
@@ -101,23 +111,27 @@ describe('EvalService', () => {
     enqueued = [];
     cfg = { commits: [], fixturesRaw: null, attached: [] };
     behavior.b!.fail = false;
+    behavior.a!.gate = false;
     subagents = new FakeSubagentRuntime(async (input) => {
       const s = (await store.get(input.session_id!))!;
       const q = ((s as any).input as { q: string }).q;
       return { terminal: { name: RECORD_SCORES_TOOL, input: { scores: behavior[q]!.scores } }, cost_usd: 0.03 };
     });
-    svc = createEvalService({
-      db: f.db,
-      team_id: f.team_id,
-      config: fakeConfig(cfg),
-      orchestrator: fakeOrchestrator(store, enqueued),
-      sessions: store.asStore(),
-      subagents: subagents.asRuntime(),
-      toolbox: {} as Toolbox,
-      content: { getNode: async (uid: string) => { throw notFound('node', uid); } } as unknown as ContentService,
-      events: events.asBus(),
-      log: f.log,
-    });
+    make = (extra = {}) =>
+      createEvalService({
+        db: f.db,
+        team_id: f.team_id,
+        config: fakeConfig(cfg),
+        orchestrator: fakeOrchestrator(store, enqueued),
+        sessions: store.asStore(),
+        subagents: subagents.asRuntime(),
+        toolbox: {} as Toolbox,
+        content: { getNode: async (uid: string) => { throw notFound('node', uid); } } as unknown as ContentService,
+        events: events.asBus(),
+        log: f.log,
+        ...extra,
+      });
+    svc = make();
   });
   afterEach(async () => f.close());
 
@@ -174,6 +188,50 @@ describe('EvalService', () => {
     expect(run.variant).toBe('medium=cheap');
     expect(cfg.attached).toEqual([run.eval_run_id]);
     await expect(svc.startRun({ circuit: CIRCUIT, ref: null, fixture_tags: ['nope'], model_overrides: null, by: f.adminPrincipal })).rejects.toMatchObject({ code: 'validation-failed' });
+  });
+
+  /** Start a gated `fx-a` run in the background and return once its session is parked at the gate. */
+  async function startGated(s: EvalServiceImpl): Promise<{ id: string; sid: string }> {
+    behavior.a!.gate = true;
+    const started = (await s.startRun({ circuit: CIRCUIT, ref: null, fixture_tags: ['core'], model_overrides: null, by: f.adminPrincipal, wait: false })) as any;
+    const id = started.eval_run_id as string;
+    for (let i = 0; i < 200; i++) {
+      const sid = ((await s.getRun(id)) as any).summary.sessions?.['fx-a'];
+      if (sid && (await store.get(sid))?.state === 'suspended-gate') return { id, sid };
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error('fixture session never reached the gate');
+  }
+
+  it('waits for the human verdict at a hard gate, then scores and records the review', async () => {
+    svc = make({ gate_poll_ms: 10 });
+    const { id, sid } = await startGated(svc);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(((await svc.getRun(id)) as any).status).toBe('running');
+    expect(subagents.calls).toHaveLength(0); // not judged while the gate is open
+    gateResolved.add(sid);
+    await svc.settle(id);
+    const run = (await svc.getRun(id)) as any;
+    expect(run.status).toBe('completed');
+    expect(subagents.calls).toHaveLength(1);
+    expect(run.results[0].aggregate).toMatchObject({ pass: true, gates: [{ step_id: 'review', exit: 'approve', verdicts: [{ verdict: 'approve', comment: 'grounded' }] }] });
+    expect(run.results[0].aggregate.failed).toBeFalsy();
+  });
+
+  it('resumes a run whose fixture was waiting on a gate when the service stopped', async () => {
+    const first = make({ gate_poll_ms: 10 });
+    const { id, sid } = await startGated(first);
+    first.stop();
+    await first.settle(id);
+    expect(((await first.getRun(id)) as any).status).toBe('running');
+    const second = make({ gate_poll_ms: 10 });
+    expect(await second.recover()).toBe(1);
+    gateResolved.add(sid);
+    await second.settle(id);
+    const run = (await second.getRun(id)) as any;
+    expect(run.status).toBe('completed');
+    expect(run.summary.scored).toBe(1);
+    expect(run.results[0].aggregate.gates).toHaveLength(1);
   });
 
   it('scores a failed session as 0 and skips the judge', async () => {

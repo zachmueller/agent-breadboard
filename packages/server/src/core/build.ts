@@ -182,6 +182,8 @@ export async function startBackground(s: BuiltServices): Promise<void> {
     await s.sandbox.start();
     const recovered = await s.orchestrator.recover();
     if (recovered) s.log.info({ recovered }, 'recovered running sessions from checkpoints');
+    const evalRuns = await s.evals.recover();
+    if (evalRuns) s.log.info({ eval_runs: evalRuns }, 'resumed running eval runs');
     s.dispatcher.start();
   }
   if (s.env.CONNECTORS_ENABLED) s.connectors.start();
@@ -192,6 +194,7 @@ export async function startBackground(s: BuiltServices): Promise<void> {
 
 export async function stopServices(s: BuiltServices): Promise<void> {
   for (const t of s.timers) clearInterval(t);
+  s.evals.stop();
   await s.dispatcher.stop().catch(() => {});
   await s.connectors.stop().catch(() => {});
   await s.events.stop().catch(() => {});
