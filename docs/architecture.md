@@ -31,7 +31,7 @@ packages/
       test/          shared test harness (PGlite in-memory)
   ui/                @breadboard/ui — React 19 + Vite + TanStack Router/Query + Tailwind + React Flow + CodeMirror 6
 config-seed/         the shipped configuration repo contents (copied into a fresh repo on first boot)
-deploy/              compose.yaml, Dockerfile(s), aws/ Terraform
+deploy/              compose.yaml, Dockerfile(s), aws/ CDK app (TypeScript)
 docs/                self-hosting, config reference, tool-author guide
 ```
 

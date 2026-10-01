@@ -26,7 +26,7 @@ Or `docker compose -f deploy/compose.yaml --profile local-postgres up --build`. 
 | `packages/ui` | React app: Intake, Circuits, Knowledge, Toolbox, Subagents, Content, Sessions, dashboard |
 | `packages/sandbox-runtime` | the `ctx` contract tool code sees (TypeScript + Python runners) |
 | `config-seed/` | the shipped configuration a fresh Breadboard starts with |
-| `deploy/` | Dockerfile, compose, sandbox images, AWS Terraform |
+| `deploy/` | Dockerfile, compose, sandbox images, AWS CDK app |
 | `docs/` | [architecture](docs/architecture.md), [self-hosting](docs/self-hosting.md), [config reference](docs/config-reference.md), [tool author guide](docs/tool-author-guide.md), [MCP](docs/mcp.md) |
 
 ## Development

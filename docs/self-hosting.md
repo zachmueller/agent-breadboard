@@ -28,7 +28,7 @@ Point `DATABASE_URL` at an external Postgres 16+ (RDS recommended) to drop the `
 
 ## 3. Production on AWS
 
-`deploy/aws/` is a Terraform module provisioning RDS + a reference host (see its README). Set these in production:
+`deploy/aws/` is a TypeScript CDK app provisioning RDS + a reference host (see its README). Set these in production:
 
 | Variable | Why |
 |---|---|

@@ -1,0 +1,5 @@
+{
+  "app": "npx tsx bin/breadboard.ts",
+  "watch": { "include": ["bin/**", "lib/**"] },
+  "context": {}
+}

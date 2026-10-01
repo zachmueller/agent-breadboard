@@ -1,19 +1,23 @@
 #!/bin/bash
 # Bootstrap the Breadboard reference host: Docker + the server container, secrets from Secrets Manager.
+# Rendered by the stack (renderUserData): every dollar-brace placeholder is a stack value, so shell variables
+# here are always written brace-less ($NAME). The stack refuses to synth if a placeholder has no value.
 set -euo pipefail
 dnf install -y docker jq git
 systemctl enable --now docker
 
 REGION="${region}"
-SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "${secret_arn}" --query SecretString --output text)
-DATABASE_URL=$(echo "$SECRET_JSON" | jq -r .DATABASE_URL)
-TOKEN_SIGNING_KEY=$(echo "$SECRET_JSON" | jq -r .TOKEN_SIGNING_KEY)
-BROKER_MASTER_KEY=$(echo "$SECRET_JSON" | jq -r .BROKER_MASTER_KEY)
+secret() { aws secretsmanager get-secret-value --region "$REGION" --secret-id "$1" --query SecretString --output text; }
+
+# The RDS-generated secret holds the credentials; the endpoint and database name come from the stack.
+DATABASE_URL=$(secret "${db_secret_arn}" | jq -r '"postgres://\(.username|@uri):\(.password|@uri)@${db_host}:${db_port}/${db_name}"')
+TOKEN_SIGNING_KEY=$(secret "${token_secret_arn}")
+BROKER_MASTER_KEY=$(secret "${broker_secret_arn}")
 
 PUBLIC_URL="${public_url}"
 if [[ "$PUBLIC_URL" == *"__IMDS__"* ]]; then
   TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-  IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4 || curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
+  IP=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4 || curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
   PUBLIC_URL="http://$IP:${server_port}"
 fi
 

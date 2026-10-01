@@ -1,0 +1,4 @@
+node_modules/
+cdk.out/
+# Lookup results (VPC, AMI) are per-deployer; a team deploying from a fork may commit theirs.
+cdk.context.json

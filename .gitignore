@@ -8,9 +8,6 @@ coverage/
 /data/
 /var/
 .DS_Store
-.terraform/
-*.tfstate
-*.tfstate.backup
 packages/ui/dist
 packages/server/dist
 packages/shared/dist

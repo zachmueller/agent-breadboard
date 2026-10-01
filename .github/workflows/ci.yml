@@ -8,9 +8,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 26, cache: npm }
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            deploy/aws/package-lock.json
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      # AWS CDK app: a standalone package; its tests synthesize the template without AWS credentials.
+      - run: npm ci
+        working-directory: deploy/aws
+      - run: npm run typecheck
+        working-directory: deploy/aws
+      - run: npm test
+        working-directory: deploy/aws
