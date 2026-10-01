@@ -41,7 +41,17 @@ export interface AuthServiceDeps {
   grantsResolver?: (subagentUid: string, commit: string, sessionId: string | null) => Promise<Grants>;
   /** Secret lookup for the OIDC client secret (defaults to `process.env`). */
   secretFor?: (envName: string) => string | undefined;
+  /** Production: never accept the seed's well-known `*-change-me` local tokens. */
+  rejectWellKnownTokens?: boolean;
+  /**
+   * `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN`: authenticates as the `bootstrap-admin` user in any auth mode, so an operator
+   * can sign in to a fresh production deployment (whose seed tokens are refused) and configure OIDC.
+   */
+  bootstrapAdminToken?: string | null;
 }
+
+export const BOOTSTRAP_ADMIN_HANDLE = 'bootstrap-admin';
+const WELL_KNOWN_TOKEN = /-change-me$/;
 
 // ---------------------------------------------------------------------------
 // Grants (de)serialization — Maps/Sets ↔ arrays
@@ -161,6 +171,8 @@ export class AuthServiceImpl implements AuthService {
       return { principal, expiresAtMs: t.expires_at ? Date.parse(t.expires_at) : null };
     }
 
+    const boot = await this.bootstrapAdmin(token);
+    if (boot) return { principal: await this.principalForUser(boot), expiresAtMs: null };
     const settings = await this.refresh();
     const local = this.matchLocalUser(settings, token);
     if (local) {
@@ -281,6 +293,8 @@ export class AuthServiceImpl implements AuthService {
 
   async loginLocal(token: string): Promise<{ user: UserRecord; session_token: string } | null> {
     if (!token) return null;
+    const boot = await this.bootstrapAdmin(token);
+    if (boot) return { user: boot, session_token: await this.mintUserToken(boot) };
     const settings = await this.refresh();
     const local = this.matchLocalUser(settings, token);
     if (!local) return null;
@@ -301,6 +315,24 @@ export class AuthServiceImpl implements AuthService {
   async syncLocalUsers(): Promise<void> {
     const settings = await this.refresh();
     await this.syncLocal(settings);
+    const refused = settings.auth.mode === 'local' && this.deps.rejectWellKnownTokens ? settings.auth.local_users.filter((u) => WELL_KNOWN_TOKEN.test(u.token)) : [];
+    if (refused.length) {
+      this.deps.log.warn(
+        { users: refused.map((u) => u.handle), bootstrap_admin: !!this.deps.bootstrapAdminToken },
+        'production: local users with well-known *-change-me tokens are refused; sign in with BREADBOARD_BOOTSTRAP_ADMIN_TOKEN and configure OIDC or real tokens',
+      );
+    }
+  }
+
+  /** The break-glass admin for `bootstrapAdminToken`; created once, never re-enabled once an admin deactivates it. */
+  private async bootstrapAdmin(token: string): Promise<UserRecord | null> {
+    const expected = this.deps.bootstrapAdminToken;
+    if (!expected) return null;
+    if (!timingSafeEqual(createHash('sha256').update(token).digest(), createHash('sha256').update(expected).digest())) return null;
+    const { identity, team_id } = this.deps;
+    const existing = await identity.getUserByHandle(team_id, BOOTSTRAP_ADMIN_HANDLE);
+    if (existing) return existing.deactivated_at ? null : existing;
+    return identity.upsertUser({ team_id, handle: BOOTSTRAP_ADMIN_HANDLE, display_name: 'Bootstrap admin', is_admin: true });
   }
 
   private async syncLocal(settings: BreadboardConfig): Promise<void> {
@@ -321,7 +353,7 @@ export class AuthServiceImpl implements AuthService {
     for (const u of settings.auth.local_users) {
       const expected = createHash('sha256').update(u.token).digest();
       // constant-time over every candidate; no early exit
-      if (timingSafeEqual(given, expected) && !found) found = u;
+      if (timingSafeEqual(given, expected) && !found && !(this.deps.rejectWellKnownTokens && WELL_KNOWN_TOKEN.test(u.token))) found = u;
     }
     return found;
   }

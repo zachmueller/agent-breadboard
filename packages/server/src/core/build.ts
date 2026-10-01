@@ -98,7 +98,18 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
   // In mock-only mode the gateway routes `provider: bedrock` preset entries to the mock, so the config
   // validator must accept them too (the shipped seed is Bedrock-internal by construction, [05] §4).
   gatewayProviderNames = () => (env.MODEL_PROVIDER === 'mock' ? [...new Set([...gateway.providers(), 'bedrock'])] : gateway.providers());
-  const auth = createAuthService({ db, identity, team_id, settings, signingKey: env.TOKEN_SIGNING_KEY, publicUrl: env.PUBLIC_URL, log, sessions: () => sessions });
+  const auth = createAuthService({
+    db,
+    identity,
+    team_id,
+    settings,
+    signingKey: env.TOKEN_SIGNING_KEY,
+    publicUrl: env.PUBLIC_URL,
+    log,
+    sessions: () => sessions,
+    rejectWellKnownTokens: env.NODE_ENV === 'production',
+    bootstrapAdminToken: env.BREADBOARD_BOOTSTRAP_ADMIN_TOKEN ?? null,
+  });
 
   // --- knowledge -----------------------------------------------------------------------------------
   const sync = createSyncServer({ db, team_id, nodes, linkIndexer, auth, events, settings, log, onHeadChanged: (uid) => void knowledge.reindexEmbeddings(uid).catch((e) => log.warn({ err: e, uid }, 'embedding reindex failed')) });

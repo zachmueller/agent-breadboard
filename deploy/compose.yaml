@@ -30,6 +30,9 @@ services:
       SANDBOX_DOCKER_SOCKET: /var/run/docker.sock
       SANDBOX_EGRESS_PROXY_HOST: server
       TOKEN_SIGNING_KEY: ${TOKEN_SIGNING_KEY:-dev-only-change-me}
+      # The image runs with NODE_ENV=production, which refuses the seed's `*-change-me` tokens: sign in with this
+      # (e.g. `openssl rand -hex 24`), then configure OIDC or real local tokens.
+      BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: ${BREADBOARD_BOOTSTRAP_ADMIN_TOKEN:-}
       BROKER_MASTER_KEY: ${BROKER_MASTER_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:

@@ -38,6 +38,7 @@ Point `DATABASE_URL` at an external Postgres 16+ (RDS recommended) to drop the `
 | `SANDBOX_RUNNER=docker` | isolated per-execution containers; `process` is an unisolated dev fallback |
 | `TOKEN_SIGNING_KEY` | HMAC key for user/actor tokens — long and random |
 | `BROKER_MASTER_KEY` | 32-byte base64 key encrypting broker credentials at rest |
+| `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN` | break-glass admin sign-in (`bootstrap-admin`). Production (`NODE_ENV=production`, as in the image) refuses the seed's `*-change-me` tokens, so this is how you first sign in to configure OIDC. Deactivate `bootstrap-admin` in Admin to revoke it. |
 | `PUBLIC_URL` | the browser-facing base URL (OIDC redirect, links) |
 | `SANDBOX_EGRESS_PROXY_HOST`, `SANDBOX_API_URL` | how sandbox containers reach the egress proxy and the API; set both to the server's name on `breadboard-sandbox` when the server runs in a container (`SANDBOX_API_URL` defaults to `PUBLIC_URL`) |
 | `OBJECT_STORE=s3`, `OBJECT_STORE_S3_BUCKET` | large blobs off the host disk |

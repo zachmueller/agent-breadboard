@@ -53,6 +53,28 @@ describe('AuthService', () => {
     auth = createAuthService({ db: f.db, identity: f.identity, team_id: f.team_id, settings: async () => settings, signingKey: KEY, publicUrl: 'http://localhost:4000', log: f.log, sessions: () => null });
   });
 
+  it('refuses the seed\'s well-known tokens in production and accepts the bootstrap admin token in any mode', async () => {
+    settings = cfg({ mode: 'local', local_users: [{ handle: 'admin', token: 'dev-admin-token-change-me', admin: true }, { handle: 'zach', token: 'local-token-zach' }] });
+    const prod = createAuthService({ db: f.db, identity: f.identity, team_id: f.team_id, settings: async () => settings, signingKey: KEY, publicUrl: 'http://x', log: f.log, sessions: () => null, rejectWellKnownTokens: true, bootstrapAdminToken: 'boot-secret-0123456789' });
+    await expectUnauthorized(prod.authenticate('dev-admin-token-change-me'));
+    expect(await prod.loginLocal('dev-admin-token-change-me')).toBeNull();
+    expect((await prod.authenticate('local-token-zach')).actor).toMatchObject({ handle: 'zach' }); // operator-set tokens still work
+    const boot = await prod.authenticate('boot-secret-0123456789');
+    expect(boot.actor).toMatchObject({ kind: 'user', handle: 'bootstrap-admin' });
+    expect(boot.is_admin).toBe(true);
+    expect((await prod.loginLocal('boot-secret-0123456789'))?.user.handle).toBe('bootstrap-admin');
+    settings = cfg({ mode: 'oidc', oidc: { issuer: 'https://idp.example.com/', client_id: 'bb', client_secret_env: 'X', group_mappings: { admin: [], roles: {} } } } as any);
+    expect((await prod.authenticate('boot-secret-0123456789')).actor).toMatchObject({ handle: 'bootstrap-admin' });
+    // An admin can revoke it: once deactivated it is never re-enabled.
+    const row = await f.identity.getUserByHandle(f.team_id, 'bootstrap-admin');
+    await f.identity.deactivateUser(row!.user_id);
+    prod.invalidate(); // as the admin deactivation route does
+    await expectUnauthorized(prod.authenticate('boot-secret-0123456789'));
+    // Development keeps accepting the seed tokens.
+    settings = cfg({ mode: 'local', local_users: [{ handle: 'admin', token: 'dev-admin-token-change-me', admin: true }] });
+    expect((await auth.authenticate('dev-admin-token-change-me')).actor).toMatchObject({ handle: 'admin' });
+  });
+
   it('rejects missing and garbage tokens', async () => {
     await expectUnauthorized(auth.authenticate(null));
     await expectUnauthorized(auth.authenticate(''));

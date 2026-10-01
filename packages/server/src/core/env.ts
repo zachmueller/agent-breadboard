@@ -39,6 +39,8 @@ const zEnv = z.object({
   SANDBOX_API_URL: z.string().optional(),
   BROKER_MASTER_KEY: z.string().optional(),
   TOKEN_SIGNING_KEY: z.string().default('dev-only-change-me'),
+  /** Break-glass admin sign-in for a fresh deployment (production refuses the seed's `*-change-me` tokens). */
+  BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: z.string().optional(),
   UI_DIST_DIR: z.string().optional(),
   ORCHESTRATOR_ENABLED: bool.default(true),
   CONNECTORS_ENABLED: bool.default(true),
