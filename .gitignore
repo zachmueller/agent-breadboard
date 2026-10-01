@@ -12,3 +12,4 @@ packages/ui/dist
 packages/server/dist
 packages/shared/dist
 packages/sandbox-runtime/dist
+*.tsbuildinfo
