@@ -1,0 +1,59 @@
+schema: breadboard/tool@v1
+uid: 01J8T0G1TMDC0NNECT00
+slug: git-markdown-connector
+title: Git repo of Markdown (knowledge connector)
+description: >
+  Reference read-only knowledge connector ([07] §8): enumerates `*.md` files in a git repository (wikis-as-repos,
+  docs-as-code) and fetches each as Markdown. The scheduler materializes results as read-only `knowledge` Notes
+  tagged `connector:01J8T0G1TMDC0NNECT00`. Configure one instance per repo under `connectors:` in breadboard.yaml.
+
+  EGRESS: the clone runs `git` over HTTPS through the sandbox egress proxy, so the repository's host must be in
+  `egress.allow` below. Only github.com ships allowed; add your git host (e.g. gitlab.example.com) in a reviewed
+  change. v1 supports public / anonymously readable repositories — the container holds no credentials.
+language: python
+entrypoint: src/main.py
+builtin: true
+
+input:
+  type: object
+  description: "Manual invocation (handler): {op: list, cursor} or {op: fetch, external_id}. The scheduler calls list/fetch directly."
+  properties:
+    op: { type: string, enum: [list, fetch] }
+    cursor: { type: [string, "null"] }
+    external_id: { type: string }
+output:
+  type: object
+
+settings:
+  repo_url:
+    type: string
+    default: ""                  # required; the connector fails with a clear error until it is set
+    description: HTTPS clone URL of the repository (e.g. https://github.com/org/handbook.git)
+  branch:
+    type: string
+    default: main
+  path_prefix:
+    type: string
+    default: ""
+    description: Only files under this directory are synced (e.g. docs/)
+  page_size:
+    type: number
+    default: 200
+    description: Items returned per list() page.
+
+connector:
+  schedule_minutes: 360            # default 6h incremental sync
+  domains: [codebase]
+
+limits:
+  timeout_s: 600
+  memory_mb: 1024
+  cpus: 1
+  max_cost_units: 5
+
+egress:
+  allow:
+    - host: github.com
+      ports: [443]
+
+capabilities: []

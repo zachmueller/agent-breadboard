@@ -1,0 +1,58 @@
+schema: breadboard/circuit@v1
+uid: 01J8CRKN0WVPDATE0000
+slug: knowledge-update
+title: Knowledge update
+description: >
+  Carry out a knowledge-maintenance request by proposing reconciled edits to Knowledge Notes ([07] §5). Writes are
+  bounded by the knowledge-editor's write grants; anything outside them is flagged for a human.
+tags: [knowledge]
+
+budget:
+  max_cost_usd: 3
+  max_tokens: 500000
+
+input:
+  type: object
+  required: [title]
+  properties:
+    title: { type: string }
+    request: { type: string, default: "", description: Full description of the requested change }
+
+exits:
+  - name: done
+    description: One or more Notes were edited.
+    output:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+        edited_notes: { type: array, items: { $ref: "#/defs/artifact-ref" } }
+  - name: no-change
+    description: Nothing was edited (already correct, ambiguous, or outside write grants; see summary).
+    output:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+
+entry: edit
+
+steps:
+  - id: edit
+    title: Edit Notes
+    kind: llm
+    subagent: 01J8SAKN0WED1T0R0000          # knowledge-editor
+    prompt: prompts/edit.md
+    max_turns: 40
+    output:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+        edited_notes: { type: array, items: { $ref: "#/defs/artifact-ref" } }
+    artifacts: { tag: intermediate, scope: session }
+    exits:
+      - name: edited
+        to: $exit.done
+      - name: no-change
+        to: $exit.no-change

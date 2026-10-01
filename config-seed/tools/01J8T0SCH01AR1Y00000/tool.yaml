@@ -1,0 +1,83 @@
+schema: breadboard/tool@v1
+uid: 01J8T0SCH01AR1Y00000
+slug: search-scholarly
+title: Scholarly search
+description: >
+  Searches scholarly literature (Crossref, then Semantic Scholar) and materializes each qualifying hit as a
+  `session`-scoped source Artifact, returning revision-pinned artifact refs. All outbound calls go through the
+  credential broker. If both capabilities are missing or denied it returns a keyword-only stub
+  (`degraded: true`, no sources) instead of failing, so the caller can fall back to the knowledge base.
+language: python
+entrypoint: src/main.py
+builtin: true
+
+input:
+  type: object
+  required: [query]
+  properties:
+    query: { type: string, description: Natural-language research question or keywords }
+    limit: { type: integer, minimum: 1, maximum: 25 }
+    year_from: { type: integer, description: Only works published in or after this year }
+output:
+  type: object
+  required: [sources, results, degraded]
+  properties:
+    sources:
+      type: array
+      description: Revision-pinned refs to the source Artifacts created (one per result)
+      items:
+        type: object
+        required: [uid, revision_id]
+        properties:
+          uid: { type: string }
+          revision_id: { type: integer }
+    results:
+      type: array
+      items:
+        type: object
+        properties:
+          uid: { type: string }
+          title: { type: string }
+          year: { type: [integer, "null"] }
+          doi: { type: [string, "null"] }
+          url: { type: [string, "null"] }
+          provider: { type: string }
+    degraded: { type: boolean, description: true when no search provider was reachable }
+    keywords: { type: array, items: { type: string } }
+    note: { type: string }
+
+settings:
+  max_results:
+    type: number
+    default: 10
+    description: Upper bound on results per call (the caller's `limit` cannot exceed it).
+  providers:
+    type: array
+    default: [crossref, semantic-scholar]
+    description: Providers to try, in order.
+  mailto:
+    type: string
+    default: ""
+    hidden: true
+    description: Contact address sent to Crossref's polite pool.
+
+limits:
+  timeout_s: 120
+  memory_mb: 512
+  max_cost_units: 2
+
+egress:
+  allow:
+    - host: api.crossref.org
+      ports: [443]
+    - host: api.semanticscholar.org
+      ports: [443]
+
+capabilities:
+  - name: crossref-api
+    scope: read
+  - name: semantic-scholar-api
+    scope: read
+
+exposure:
+  external_mcp: false

@@ -1,0 +1,40 @@
+schema: breadboard/tool@v1
+uid: 01J8T0REQD1RECT10N00
+slug: request-direction
+title: Request human direction
+description: >
+  Tags a node (usually the triggering Task) with a non-blocking `need-input` request ([09] §3) asking a human
+  to decide how it should be handled. Used by triage for Tasks no handling circuit fits. Exits `done`.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  properties:
+    uid: { type: string, description: Node to tag (defaults to the ambient Task) }
+    title: { type: string, description: Short title of the item, quoted in the request }
+    rationale: { type: string, description: Why the AI could not decide }
+    role: { type: string, description: Review role to target (defaults to the `default_role` setting) }
+    username: { type: string, description: Specific user to target instead of a role }
+output:
+  type: object
+  required: [request_id]
+  properties:
+    request_id: { type: [string, "null"] }
+    reason: { type: string }
+
+settings:
+  default_role:
+    type: string
+    default: scientist
+    description: Review role targeted when the caller does not pass `role` or `username`.
+
+limits:
+  timeout_s: 30
+  memory_mb: 256
+  max_cost_units: 1
+
+egress:
+  allow: []
+capabilities: []

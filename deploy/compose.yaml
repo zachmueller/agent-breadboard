@@ -49,6 +49,13 @@ services:
     profiles: ["sandbox-docker"]
     environment:
       SANDBOX_RUNNER: docker
+      # Tool containers live on the internal-only `breadboard-sandbox` network; the server joins it too so
+      # the egress proxy and the API are reachable by container name (see deploy/sandbox/README.md).
+      SANDBOX_EGRESS_PROXY_HOST: server-docker-sandbox
+      PUBLIC_URL: http://server-docker-sandbox:4000
+    networks:
+      - default
+      - sandbox
     volumes:
       - breadboard-data:/var/breadboard
       - /var/run/docker.sock:/var/run/docker.sock
@@ -77,3 +84,6 @@ volumes:
 networks:
   default:
     name: breadboard
+  sandbox:
+    name: breadboard-sandbox
+    internal: true

@@ -28,6 +28,8 @@ export interface NodeRecord {
   created_by: Actor;
   updated_at: string;
   deleted_at: string | null;
+  /** Producing session for `session`-scoped visibility checks (denormalized from the first `produces` edge). */
+  session_id?: string | null;
 }
 
 export interface NodeRevision {

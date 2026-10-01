@@ -1,0 +1,110 @@
+schema: breadboard/circuit@v1
+uid: 01J8CRC0DETASK000000
+slug: code-task
+title: Code task
+description: >
+  Plan an engineering Task, implement it with a sandboxed coding harness (spawn-harness, Strands adapter), and gate
+  the result on human review. Requested changes loop back into the harness with the reviewer's feedback.
+tags: [engineering, deliverable]
+
+budget:
+  max_cost_usd: 20
+  max_tokens: 3000000
+
+input:
+  type: object
+  required: [title]
+  properties:
+    title: { type: string }
+    body: { type: string, default: "" }
+
+exits:
+  - name: done
+    description: Implementation approved by a reviewer.
+    output:
+      type: object
+      required: [summary_artifact]
+      properties:
+        summary_artifact: { $ref: "#/defs/artifact-ref" }
+        files: { type: array, items: { $ref: "#/defs/artifact-ref" } }
+        feedback: { type: array, items: { type: string } }
+  - name: failed
+    description: The harness could not complete the Task.
+    output:
+      type: object
+      properties:
+        error: { type: string }
+        transcript_artifact: { $ref: "#/defs/artifact-ref" }
+
+entry: plan
+
+max_tool_cost_units: 100
+
+steps:
+  - id: plan
+    title: Plan
+    kind: llm
+    subagent: 01J8SAP1ANNER0000000          # planner
+    prompt: prompts/plan.md
+    output:
+      type: object
+      required: [plan_artifact]
+      properties:
+        plan_artifact: { $ref: "#/defs/artifact-ref" }
+    artifacts: { tag: intermediate, scope: team }
+    exits:
+      - name: planned
+        to: implement
+
+  - id: implement
+    title: Implement (sandboxed harness)
+    kind: code
+    tool: 01J8T0SPAWNHARNESS00              # spawn-harness
+    input_map:
+      task: $input                          # {title, body}
+      plan_artifact: $steps.plan.output.plan_artifact
+      feedback: $steps.review.output.feedback   # empty on the first visit; reviewer feedback after `changes`
+    settings:
+      harness: strands
+    output:
+      type: object
+      properties:
+        summary_artifact: { $ref: "#/defs/artifact-ref" }
+        transcript_artifact: { $ref: "#/defs/artifact-ref" }
+        patch_artifact: { type: [object, "null"] }
+        files: { type: array, items: { $ref: "#/defs/artifact-ref" } }
+        stop_reason: { type: string }
+        usage: { type: object }
+        error: { type: string }
+    artifacts: { tag: deliverable, scope: team }
+    max_visits: 4
+    retry: { max_attempts: 2, backoff: { base_s: 10, cap_s: 120 } }
+    exits:
+      - name: done
+        to: review
+      - name: failed
+        to: $exit.failed
+
+  - id: review
+    title: Engineer review
+    kind: gate
+    review:
+      artifacts:
+        - $steps.implement.output.summary_artifact
+        - $steps.implement.output.files
+      reviewers: { role: scientist }
+      prompt: >
+        Does the change satisfy the plan's acceptance criteria? Approve, or request changes with concrete, actionable
+        feedback; it is passed verbatim to the next harness run.
+    output:
+      type: object
+      required: [summary_artifact]
+      properties:
+        summary_artifact: { $ref: "#/defs/artifact-ref" }
+        files: { type: array, items: { $ref: "#/defs/artifact-ref" } }
+        feedback: { type: array, items: { type: string } }
+    exits:
+      - name: approve
+        to: $exit.done
+      - name: changes
+        to: implement

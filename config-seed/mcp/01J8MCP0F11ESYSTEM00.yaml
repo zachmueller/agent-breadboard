@@ -1,0 +1,25 @@
+# Example MCP onboarding ([06] §9): a stdio filesystem server exposing /data read-only to granted subagents.
+# NOTE: shipped as an example only. No seed subagent references it, because the server is fetched via `npx`
+# at connect time and /data may not exist in your deployment. To use it, make sure Node/npx and the directory
+# are available to the Breadboard server process, then grant it to a subagent:
+#   tools:
+#     - mcp: 01J8MCP0F11ESYSTEM00
+#       allow: [read_text_file, search_files]      # optional narrowing within the server allowlist below
+schema: breadboard/mcp@v1
+uid: 01J8MCP0F11ESYSTEM00
+slug: filesystem
+title: Filesystem (read-only, /data)
+description: Model Context Protocol reference filesystem server, restricted to /data and to its read-only tools.
+transport: stdio
+command: npx
+args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
+env: {}
+tools:
+  allow:                          # default allowlist: read-only tools only (no write_file/edit_file/move_file)
+    - read_text_file
+    - read_multiple_files
+    - list_directory
+    - directory_tree
+    - search_files
+    - get_file_info
+    - list_allowed_directories

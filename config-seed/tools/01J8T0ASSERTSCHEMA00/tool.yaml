@@ -1,0 +1,46 @@
+schema: breadboard/tool@v1
+uid: 01J8T0ASSERTSCHEMA00
+slug: assert-output-schema
+title: "Eval assertion: output matches exit schema"
+description: >
+  Programmatic rubric dimension ([04] §2). Checks a scored Session's terminal output against the output schema
+  of the circuit exit it took (read from the circuit definition at the eval's config commit). Returns `{pass, detail}`.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  required: [fixture, output]
+  properties:
+    fixture: { type: object, description: The fixture manifest entry being scored }
+    output: { description: The circuit's terminal output payload }
+    exit: { type: string, description: The circuit exit the scored Session took }
+    session_id: { type: string }
+    circuit_uid: { type: string, description: Circuit under evaluation (falls back to the `circuit` setting) }
+output:
+  type: object
+  required: [pass, detail]
+  properties:
+    pass: { type: boolean }
+    score: { type: number }
+    detail: { type: string }
+
+settings:
+  circuit:
+    type: string
+    default: ""
+    description: Circuit UID whose exit schemas apply, when the eval runner does not pass circuit_uid.
+  exit:
+    type: string
+    default: ""
+    description: Exit whose schema to check, when the eval runner does not pass the exit taken.
+
+limits:
+  timeout_s: 30
+  memory_mb: 256
+  max_cost_units: 0.5
+
+egress:
+  allow: []
+capabilities: []

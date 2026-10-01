@@ -1,0 +1,46 @@
+schema: breadboard/tool@v1
+uid: 01J8T0ASSERTEX1T0000
+slug: assert-exit
+title: "Eval assertion: expected exit taken"
+description: >
+  Programmatic rubric dimension ([04] §2) that scores routing: passes when the scored Session ended through the
+  expected circuit exit. The expectation comes from a fixture tag `expect-exit:<name>` (preferred, so one rubric
+  serves fixtures with different expectations) or the `expected` setting. Returns `{pass, detail}`.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  required: [fixture]
+  properties:
+    fixture:
+      type: object
+      properties:
+        fixture_id: { type: string }
+        tags: { type: array, items: { type: string } }
+    output: {}
+    exit: { type: string, description: The circuit exit the scored Session took }
+    session_id: { type: string }
+output:
+  type: object
+  required: [pass, detail]
+  properties:
+    pass: { type: boolean }
+    score: { type: number }
+    detail: { type: string }
+
+settings:
+  expected:
+    type: string
+    default: ""
+    description: Expected exit name when the fixture carries no `expect-exit:<name>` tag.
+
+limits:
+  timeout_s: 30
+  memory_mb: 128
+  max_cost_units: 0.2
+
+egress:
+  allow: []
+capabilities: []

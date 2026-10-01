@@ -51,6 +51,11 @@ export interface SessionRecord {
   state_detail: Record<string, unknown>;
   budget: SessionBudget;
   priority?: string | null;
+  /** The circuit input the run was started with (fixture promotion, replay). */
+  input?: unknown;
+  model_overrides?: Record<string, string> | null;
+  pinned_context?: Array<{ uid: string; revision_id: number }> | null;
+  created_by?: import('./actor.js').Actor;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;

@@ -1,0 +1,75 @@
+# Intake shaping helper ([08] §4) and the [07] §7 consistency pattern: check a claim against current Notes.
+schema: breadboard/circuit@v1
+uid: 01J8CRC0NTRAD1CT0000
+slug: contradiction-check
+title: Contradiction check
+description: Check a claim against the team's Knowledge Notes and report any contradictions with verbatim quotes.
+tags: [intake, helper, knowledge]
+
+budget:
+  max_cost_usd: 1
+  max_tokens: 300000
+
+input:
+  type: object
+  required: [claim]
+  properties:
+    claim: { type: string }
+    domains: { type: array, items: { type: string }, description: Restrict the check to these Knowledge Domains }
+
+exits:
+  - name: contradiction
+    output:
+      type: object
+      required: [conflicts, summary]
+      properties:
+        conflicts:
+          type: array
+          items:
+            type: object
+            required: [note_uid, note_quote, claim_part, explanation]
+            properties:
+              note_uid: { type: string }
+              note_title: { type: string }
+              note_quote: { type: string }
+              claim_part: { type: string }
+              explanation: { type: string }
+        summary: { type: string }
+  - name: consistent
+    output:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+        conflicts: { type: array, maxItems: 0 }
+
+entry: check
+
+steps:
+  - id: check
+    title: Check against Notes
+    kind: llm
+    subagent: 01J8SAKN0WCHECKER000          # knowledge-checker
+    prompt: prompts/check.md
+    max_turns: 30
+    output:
+      type: object
+      required: [conflicts, summary]
+      properties:
+        conflicts:
+          type: array
+          items:
+            type: object
+            required: [note_uid, note_quote, claim_part, explanation]
+            properties:
+              note_uid: { type: string }
+              note_title: { type: string }
+              note_quote: { type: string }
+              claim_part: { type: string }
+              explanation: { type: string }
+        summary: { type: string }
+    exits:
+      - name: contradiction
+        to: $exit.contradiction
+      - name: consistent
+        to: $exit.consistent

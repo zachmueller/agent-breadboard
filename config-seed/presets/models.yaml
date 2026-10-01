@@ -1,0 +1,21 @@
+# Model presets ([05] §4): tier name -> ordered fallback list. The gateway walks the list in order, skipping
+# entries that are unavailable (deprecated, throttled, regional outage) or that fail a step's `requires`.
+# v1 ships one provider adapter (AWS Bedrock), so every fallback list is Bedrock-internal. In local dev the
+# gateway may map these to its mock provider; the definitions stay `provider: bedrock`.
+schema: breadboard/presets@v1
+
+presets:
+  small:                          # classification, routing, short structured judgments
+    - { provider: bedrock, model_id: anthropic.claude-haiku-4-5 }
+    - { provider: bedrock, model_id: amazon.nova-lite-v2 }
+  medium:                         # default tier for most subagents
+    - { provider: bedrock, model_id: anthropic.claude-sonnet-5 }
+    - { provider: bedrock, model_id: amazon.nova-pro-v2 }
+    - { provider: bedrock, model_id: anthropic.claude-haiku-4-5 }
+  large:                          # planning, long-form writing, config design
+    - { provider: bedrock, model_id: anthropic.claude-opus-5, requires: [structured-output, tool-use] }
+    - { provider: bedrock, model_id: anthropic.claude-sonnet-5 }
+    - { provider: bedrock, model_id: amazon.nova-pro-v2 }
+
+# Embedding model for semantic knowledge search and task dedup ([07] §9).
+embeddings: { provider: bedrock, model_id: "amazon.titan-embed-text-v2:0", requires: [embeddings] }

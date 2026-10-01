@@ -1,0 +1,31 @@
+schema: breadboard/tool@v1
+uid: 01J8T0ECH00000000000
+slug: echo
+title: Echo
+description: Returns its input unchanged. Used by docs, smoke tests, and sandbox health checks. Exits `done`.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  properties:
+    message: { type: string }
+output:
+  type: object
+  required: [echo]
+  properties:
+    echo: {}
+    invocation: { type: string }
+
+limits:
+  timeout_s: 10
+  memory_mb: 128
+  max_cost_units: 0.1
+
+egress:
+  allow: []
+capabilities: []
+
+exposure:
+  external_mcp: true

@@ -1,0 +1,62 @@
+schema: breadboard/tool@v1
+uid: 01J8T0REP0SEARCH0000
+slug: repo-search
+title: Code repository search
+description: >
+  Searches source code on GitHub (code search API) for files relevant to a query, optionally scoped to one
+  repository. Credentials come from the broker's `github-api` capability; if the capability is not configured
+  the tool degrades gracefully (`available: false`) instead of failing the step. Exits `done`.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  required: [query]
+  properties:
+    query: { type: string, description: Keywords or a GitHub code-search expression }
+    repo: { type: [string, "null"], description: "owner/name to scope the search (defaults to the `default_repo` setting)" }
+    limit: { type: integer, minimum: 1, maximum: 50 }
+output:
+  type: object
+  required: [available, results]
+  properties:
+    available: { type: boolean, description: false when the github-api capability is missing or denied }
+    query: { type: string }
+    results:
+      type: array
+      items:
+        type: object
+        required: [repo, path, url]
+        properties:
+          repo: { type: string }
+          path: { type: string }
+          url: { type: string }
+          fragments: { type: array, items: { type: string } }
+    note: { type: string }
+
+settings:
+  default_repo:
+    type: string
+    description: "owner/name searched when the caller passes no repo (empty = search everything the token can see)"
+    default: ""
+  max_results:
+    type: number
+    default: 10
+
+limits:
+  timeout_s: 60
+  memory_mb: 256
+  max_cost_units: 1
+
+egress:
+  allow:
+    - host: api.github.com
+      ports: [443]
+
+capabilities:
+  - name: github-api
+    scope: read
+
+exposure:
+  external_mcp: false

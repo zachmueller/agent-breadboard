@@ -1,0 +1,45 @@
+schema: breadboard/rubric@v1
+circuit: 01J8CR11TREV00000000          # lit-review
+
+judge:
+  subagent: 01J8SAEVA1JVDGE00000       # eval-judge
+  provider: bedrock
+  model_id: anthropic.claude-sonnet-5  # pinned so scores stay comparable across model-regression runs ([04] §6)
+
+dimensions:
+  - key: coverage
+    type: numeric
+    scale: { min: 0, max: 10 }
+    prompt: >
+      How well does the summary cover the important prior work for the question? 10 = every major line of work a
+      domain expert would expect is represented; 0 = the key work is missing.
+  - key: effort-size
+    type: ordinal
+    levels: [XS, S, M, L, XL]
+    prompt: >
+      Estimate how much follow-up effort a scientist would need before acting on this summary
+      (XS = none, XL = redo most of it).
+  - key: grounded
+    type: boolean
+    prompt: >
+      Is every substantive claim supported by a cited source, with no claims that go beyond what the cited sources say?
+  - key: schema-valid
+    type: programmatic
+    tool: 01J8T0ASSERTSCHEMA00         # assert-output-schema
+    settings:
+      circuit: 01J8CR11TREV00000000
+  - key: citations-resolve
+    type: programmatic
+    tool: 01J8T0ASSERTC1TES000         # assert-citations-exist
+    settings:
+      artifact_field: summary_artifact
+
+aggregate:
+  method: weighted-mean
+  weights:
+    coverage: 3
+    grounded: 2
+    schema-valid: 1
+    citations-resolve: 1
+  gate:
+    min: 0.7

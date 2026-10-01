@@ -13,7 +13,7 @@ import { registerRoutes } from './api/index.js';
 export const API_PREFIX = '/api/v1';
 
 /** Paths that don't require authentication. */
-const PUBLIC_PATHS = new Set([`${API_PREFIX}/health`, `${API_PREFIX}/auth/login`, `${API_PREFIX}/auth/oidc/start`, `${API_PREFIX}/auth/oidc/callback`, `${API_PREFIX}/auth/mode`]);
+const PUBLIC_PATHS = new Set([`${API_PREFIX}/health`, `${API_PREFIX}/auth/login`, `${API_PREFIX}/auth/oidc/start`, `${API_PREFIX}/auth/oidc/callback`, `${API_PREFIX}/auth/mode`, `${API_PREFIX}/auth/logout`, `${API_PREFIX}/sync`]);
 
 export async function buildApp(services: Services): Promise<FastifyInstance> {
   const app = Fastify({

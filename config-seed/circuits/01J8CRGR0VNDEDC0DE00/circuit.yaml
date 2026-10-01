@@ -1,0 +1,68 @@
+# Intake shaping helper ([08] §4): ground an idea in the real codebase before it becomes a Task.
+schema: breadboard/circuit@v1
+uid: 01J8CRGR0VNDEDC0DE00
+slug: grounded-in-code
+title: Grounded in code
+description: >
+  Search the codebase for where an idea lands (repo-search), then have the code-grounder write a grounding report
+  covering the starting point, how it works today, impact, and open questions.
+tags: [intake, helper, engineering]
+
+budget:
+  max_cost_usd: 3
+  max_tokens: 600000
+
+input:
+  type: object
+  required: [title]
+  properties:
+    title: { type: string }
+    body: { type: string, default: "" }
+    repo: { type: [string, "null"], description: "owner/name to scope the search; defaults to the tool's default_repo" }
+
+exits:
+  - name: done
+    output:
+      type: object
+      required: [grounding_artifact, summary]
+      properties:
+        grounding_artifact: { $ref: "#/defs/artifact-ref" }
+        summary: { type: string }
+
+entry: repo-search
+
+steps:
+  - id: repo-search
+    title: Code search
+    kind: code
+    tool: 01J8T0REP0SEARCH0000              # repo-search
+    input_map:
+      query: $input.title
+      repo: $input.repo
+    output:
+      type: object
+      required: [available, results]
+      properties:
+        available: { type: boolean }
+        query: { type: string }
+        results: { type: array }
+        note: { type: string }
+    exits:
+      - name: done
+        to: ground
+
+  - id: ground
+    title: Grounding report
+    kind: llm
+    subagent: 01J8SAC0DEGR0VNDER00          # code-grounder
+    prompt: prompts/ground.md
+    output:
+      type: object
+      required: [grounding_artifact, summary]
+      properties:
+        grounding_artifact: { $ref: "#/defs/artifact-ref" }
+        summary: { type: string }
+    artifacts: { tag: intermediate, scope: team }
+    exits:
+      - name: done
+        to: $exit.done

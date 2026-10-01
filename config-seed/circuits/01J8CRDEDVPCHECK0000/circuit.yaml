@@ -1,0 +1,97 @@
+# Intake shaping helper ([08] §4): run by the intake-shaper while an idea is being shaped.
+schema: breadboard/circuit@v1
+uid: 01J8CRDEDVPCHECK0000
+slug: dedup-check
+title: Duplicate check
+description: >
+  Find existing Tasks that may duplicate a proposed one (embedding similarity via the dedup tool), then have a small
+  model judge which candidates are true duplicates.
+tags: [intake, helper]
+
+budget:
+  max_cost_usd: 0.5
+  max_tokens: 200000
+
+input:
+  type: object
+  required: [title]
+  properties:
+    title: { type: string }
+    body: { type: string, default: "" }
+    task_uid: { type: [string, "null"], description: Draft Task being shaped, if one exists yet }
+
+exits:
+  - name: duplicates-found
+    output:
+      type: object
+      required: [duplicates, summary]
+      properties:
+        duplicates:
+          type: array
+          items:
+            type: object
+            required: [uid, title, classification]
+            properties:
+              uid: { type: string }
+              title: { type: string }
+              classification: { type: string, enum: [duplicate, overlapping] }
+              reason: { type: string }
+        summary: { type: string }
+  - name: none
+    output:
+      type: object
+      properties:
+        summary: { type: string }
+        candidates: { type: array }
+
+entry: find-similar
+
+steps:
+  - id: find-similar
+    title: Similarity search
+    kind: code
+    tool: 01J8T0DEDVP000000000              # dedup
+    input_map:
+      title: $input.title
+      body: $input.body
+      task_uid: $input.task_uid
+    output:
+      type: object
+      required: [candidates]
+      properties:
+        candidates: { type: array }
+        edges_emitted: { type: integer }
+        summary: { type: string }
+    exits:
+      - name: found
+        to: summarize
+      - name: none
+        to: $exit.none
+
+  - id: summarize
+    title: Judge candidates
+    kind: llm
+    subagent: 01J8SADEDVPREV1EW000          # dedup-reviewer
+    prompt: prompts/summarize.md
+    tools_override: []
+    max_turns: 12
+    output:
+      type: object
+      required: [duplicates, summary]
+      properties:
+        duplicates:
+          type: array
+          items:
+            type: object
+            required: [uid, title, classification]
+            properties:
+              uid: { type: string }
+              title: { type: string }
+              classification: { type: string, enum: [duplicate, overlapping] }
+              reason: { type: string }
+        summary: { type: string }
+    exits:
+      - name: duplicates-found
+        to: $exit.duplicates-found
+      - name: none
+        to: $exit.none

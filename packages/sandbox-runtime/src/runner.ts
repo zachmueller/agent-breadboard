@@ -10,10 +10,12 @@ import type { RunnerMessage, RunnerRequest } from './types.js';
  */
 export async function runToolProcess(workdir: string, request: RunnerRequest): Promise<void> {
   const emit = (m: RunnerMessage) => process.stdout.write(JSON.stringify(m) + '\n');
+  // Flush stdout before exiting: on pipes, process.exit() can truncate large pending writes.
+  const exit = (code: number) => process.stdout.write('', () => process.exit(code));
   const ctx = createContext({ ambient: request.ambient, baseUrl: request.api.base_url, token: request.api.token, emit });
   const timer = setTimeout(() => {
     emit({ kind: 'error', message: `tool timed out after ${request.timeout_ms}ms` });
-    process.exit(1);
+    exit(1);
   }, request.timeout_ms);
   try {
     const modUrl = pathToFileURL(resolve(workdir, request.entrypoint)).href;
@@ -24,12 +26,12 @@ export async function runToolProcess(workdir: string, request: RunnerRequest): P
     const value = exportName === 'handler' ? await fn(request.input, ctx) : await fn(...(Array.isArray(request.input) ? request.input : [request.input]), ctx);
     emit({ kind: 'result', value: value === undefined ? null : value });
     clearTimeout(timer);
-    process.exit(0);
+    exit(0);
   } catch (e) {
     clearTimeout(timer);
     const err = e as Error;
     emit({ kind: 'error', message: err?.message ?? String(e), stack: err?.stack });
-    process.exit(1);
+    exit(1);
   }
 }
 

@@ -1,0 +1,138 @@
+# Literature review: the reference circuit from [03] §2, with real seed UIDs.
+schema: breadboard/circuit@v1
+uid: 01J8CR11TREV00000000
+slug: lit-review
+title: Literature review
+description: >
+  Survey prior art for a research question and produce an annotated, fully cited summary. A programmatic citation
+  check loops back to the writer, and a scientist gates the deliverable.
+tags: [research, deliverable]
+
+budget:
+  max_cost_usd: 15
+  max_tokens: 2000000
+
+input:
+  type: object
+  required: [question]
+  properties:
+    question: { type: string, description: The research question to answer }
+    depth: { type: string, enum: [quick, thorough], default: quick }
+
+exits:
+  - name: done
+    description: Reviewed and approved literature summary.
+    output:
+      type: object
+      required: [summary_artifact]
+      properties:
+        summary_artifact: { $ref: "#/defs/artifact-ref" }
+        feedback: { type: array, items: { type: string } }
+  - name: empty
+    description: No relevant sources were found; a short report explains what was tried.
+    output:
+      type: object
+      required: [note]
+      properties:
+        note: { type: string }
+        report_artifact: { $ref: "#/defs/artifact-ref" }
+
+entry: gather
+
+knowledge:
+  read: [glossary, prior-art]
+
+steps:
+  - id: gather
+    title: Gather sources
+    kind: llm
+    subagent: 01J8SARSRCHSC0VT0000          # research-scout
+    prompt: prompts/gather.md
+    # Deviation from the [03] §2 example (`tools_override: []`): the scout needs search-scholarly to gather.
+    tools_override: [01J8T0SCH01AR1Y00000]  # search-scholarly
+    output:
+      type: object
+      required: [sources]
+      properties:
+        sources: { type: array, items: { $ref: "#/defs/artifact-ref" } }
+        notes: { type: string, description: Search angles tried and anything the writer should know }
+    artifacts: { tag: intermediate, scope: session }
+    exits:
+      - name: found-sources
+        to: summarize
+      - name: nothing-found
+        to: report-empty
+    retry: { max_attempts: 3, backoff: { base_s: 5, cap_s: 300 } }
+
+  - id: summarize
+    title: Write the summary
+    kind: llm
+    subagent: 01J8SARSRCHWR1TER000          # research-writer
+    prompt: prompts/summarize.md            # reads quality-check / quality-gate output on loop-back ([03] §5)
+    output:
+      type: object
+      required: [summary_artifact]
+      properties:
+        summary_artifact: { $ref: "#/defs/artifact-ref" }
+    artifacts: { tag: deliverable, scope: team }
+    max_visits: 6
+    exits:
+      - name: done
+        to: quality-check
+
+  - id: quality-check
+    title: Check citations
+    kind: code
+    tool: 01J8T0CHKC1TAT10N000              # check-citations
+    input_map:
+      artifact: $steps.summarize.output.summary_artifact
+    output:
+      type: object
+      required: [ok, missing]
+      properties:
+        ok: { type: boolean }
+        missing: { type: array, items: { type: string } }
+        cited: { type: array, items: { type: string } }
+    exits:
+      - name: pass
+        to: quality-gate
+      - name: fail
+        to: summarize
+
+  - id: quality-gate
+    title: Scientist review
+    kind: gate
+    review:
+      artifacts: [$steps.summarize.output.summary_artifact]
+      reviewers: { role: scientist }
+      prompt: >
+        Is this summary accurate, well grounded in its cited sources, and useful for answering the question?
+        Request changes with concrete feedback if not.
+    output:
+      type: object
+      required: [summary_artifact]
+      properties:
+        summary_artifact: { $ref: "#/defs/artifact-ref" }
+        feedback: { type: array, items: { type: string } }
+    exits:
+      - name: approve
+        to: $exit.done
+      - name: changes
+        to: summarize
+
+  - id: report-empty
+    title: Report no sources
+    kind: code
+    tool: 01J8T0EMPTYREP0RT000              # emit-empty-report
+    input_map:
+      question: $input.question
+      reason: $steps.gather.output.notes
+    output:
+      type: object
+      required: [note]
+      properties:
+        note: { type: string }
+        report_artifact: { $ref: "#/defs/artifact-ref" }
+    exits:
+      - name: done
+        to: $exit.empty

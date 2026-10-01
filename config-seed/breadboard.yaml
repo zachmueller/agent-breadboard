@@ -1,0 +1,123 @@
+# Instance settings for this Breadboard ([01] §6.1). One deployment = one Breadboard = one team ([00] §4.1).
+# Every cross-reference below is a config UID ([01] §6.2); INDEX.md maps UIDs to slugs/titles.
+schema: breadboard/breadboard@v1
+
+team:
+  name: Breadboard
+
+# Auto-dispatch capacity ([02] §5.1): all three checks must pass for a queued Session to be admitted.
+capacity:
+  max_concurrent_runs: 4          # running Sessions (gate-suspended Sessions do not count)
+  max_spend_usd_per_hour: 25      # rolling-window LLM spend ceiling across all Sessions
+  dispatch_interval_ms: 2000
+
+defaults:
+  scope: team                     # default node scope; steps that produce scratch work declare `artifacts.scope: session`
+  budget:                         # per-run budget for circuits that declare no `budget:` block
+    max_cost_usd: 5
+    max_tokens: 1000000
+  retry:
+    max_attempts: 3
+    backoff: { base_s: 5, cap_s: 300 }
+  max_visits: 25                  # per-step loop guard ([03] §2)
+  max_tool_cost_units: 100        # per-run ceiling on summed tool max_cost_units ([06] §4)
+
+intake:
+  triage_circuit: 01J8CRTR1AGE00000000     # triage — top-level triage circuit every new Task flows into ([08] §3)
+  shaper_subagent: 01J8SA1NTAKESHAPER00    # intake-shaper — the idea-shaping conversation partner ([08] §4)
+  draft_retention_days: 30
+
+# Designer subagents behind the always-visible chat panel in each editor ([10] §4).
+designers:
+  circuit: 01J8SAC1RCV1TDES1GN0            # circuit-designer
+  tool: 01J8SAT001DES1GN0000               # tool-designer
+  subagent: 01J8SASVBAGDES1GN000           # subagent-designer
+
+knowledge:
+  # Domain slugs are declared centrally so subagent/circuit grants can be validated at commit ([07] §3).
+  domains:
+    - slug: glossary
+      description: Canonical definitions of the team's key terms, acronyms, and metrics.
+    - slug: prior-art
+      description: Curated notes on papers, prior projects, and external work relevant to the team's research.
+    - slug: datasets
+      description: One note per dataset or table — provenance, grain, caveats, owners, and known quirks.
+    - slug: codebase
+      description: How the team's production code is organized — services, repos, conventions, and gotchas.
+    - slug: stakeholders
+      description: Accumulated learnings about stakeholders' priorities, preferences, and decision history.
+    - slug: breadboard-ops
+      description: How this Breadboard itself is run — circuit/subagent/tool design conventions and lessons learned. Read by the designer subagents.
+  base_revision_retention_hours: 24
+  compaction_update_threshold: 500
+  wipeout_fraction: 0.9
+  size_warning_chars: 200000
+
+# Deterministic context injection ([07] §4): when a step's input or conversation mentions `table:<name>`,
+# inject up to 3 `datasets` Notes tagged `table:<name>` — no retrieval roulette for known-critical context.
+knowledge_injection:
+  - domain: datasets
+    trigger: { kind: reference-match, pattern: "table:([a-z_]+)" }
+    inject: { notes_tagged: "table:$1" }
+    max_notes: 3
+
+tenets:
+  max_chars: 2000                 # hard cap enforced at commit ([05] §5); may only be lowered
+
+# =====================================================================================================
+#  !!!  DEV-ONLY AUTHENTICATION  !!!
+#  `mode: local` with static tokens is for running the stack on a laptop ([12] §3). These tokens are
+#  checked into git and therefore PUBLIC. Before exposing this Breadboard to any network, switch to
+#  `mode: oidc` (and delete `local_users`), or at minimum replace both tokens with long random secrets.
+#  Static users become real `users` rows at startup; the UI shows a dev-mode banner while this is on.
+#  `roles` are review-routing labels (gate/need-input targeting, [09] §3), not permissions.
+# =====================================================================================================
+auth:
+  mode: local
+  local_users:
+    - handle: admin
+      display_name: Dev Admin
+      token: dev-admin-token-change-me
+      admin: true
+      roles: [scientist]
+    - handle: member
+      display_name: Dev Member
+      token: dev-member-token-change-me
+      admin: false
+      roles: [scientist]
+  # Production example:
+  # mode: oidc
+  # oidc:
+  #   issuer: https://login.example.com/
+  #   client_id: breadboard
+  #   client_secret_env: OIDC_CLIENT_SECRET
+  #   group_mappings:
+  #     admin: [breadboard-admins]
+  #     roles: { scientist: [research-scientists], engineer: [eng] }
+
+# Server-to-server event delivery ([11] §5). Example:
+# webhooks:
+#   - url: https://hooks.example.com/breadboard
+#     secret_env: BREADBOARD_WEBHOOK_SECRET
+#     topics: [session.state, need-input.tagged]
+webhooks: []
+
+sandbox:
+  nesting_depth_cap: 8
+  warm_pool_size: 2
+  images:
+    typescript: breadboard-sandbox-ts:local
+    python: breadboard-sandbox-py:local    # spawn-harness needs `strands-agents` in this image (see its requirements.txt)
+
+# Scheduled read-only knowledge connectors ([07] §8). The shipped reference connector is
+# git-markdown-connector (01J8T0G1TMDC0NNECT00). Its egress allowlist ships with github.com only — add your
+# git host to that tool's `egress.allow` before pointing it elsewhere. Example:
+# connectors:
+#   - tool: 01J8T0G1TMDC0NNECT00           # git-markdown-connector
+#     schedule_minutes: 360
+#     domains: [codebase]
+#     settings:
+#       repo_url: https://github.com/example-org/engineering-handbook.git
+#       branch: main
+#       path_prefix: docs/
+connectors: []

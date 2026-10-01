@@ -1,0 +1,51 @@
+schema: breadboard/tool@v1
+uid: 01J8T0CHKC1TAT10N000
+slug: check-citations
+title: Citation checker
+description: >
+  Verifies that every `[[UID]]` / `[[UID|title]]` citation in an artifact resolves to a readable content node.
+  As a circuit code step it exits `pass` or `fail`; `missing` lists the UIDs that did not resolve.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  required: [artifact]
+  properties:
+    artifact:
+      description: Artifact UID, or a revision-pinned artifact ref `{uid, revision_id}` (checked at that revision).
+      oneOf:
+        - { type: string }
+        - type: object
+          required: [uid]
+          properties:
+            uid: { type: string }
+            revision_id: { type: integer }
+output:
+  type: object
+  required: [ok, missing]
+  properties:
+    ok: { type: boolean }
+    missing: { type: array, items: { type: string }, description: Cited UIDs that do not resolve to a readable node }
+    cited: { type: array, items: { type: string }, description: Every distinct UID cited }
+
+settings:
+  strict:
+    type: boolean
+    default: false
+    description: When true, an artifact with zero citations also fails.
+    hidden: false
+
+limits:
+  timeout_s: 120
+  memory_mb: 512
+  max_cost_units: 1
+
+egress:
+  allow: []                       # only the Breadboard API (implicit) is needed
+
+capabilities: []
+
+exposure:
+  external_mcp: true

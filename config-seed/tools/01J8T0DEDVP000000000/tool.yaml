@@ -1,0 +1,55 @@
+schema: breadboard/tool@v1
+uid: 01J8T0DEDVP000000000
+slug: dedup
+title: Task dedup search
+description: >
+  Searches past and pending Tasks (semantic + text, via `find_similar_tasks`) for overlap with a new idea.
+  When a Task UID is supplied, emits a `references` edge from it to every candidate above `min_score`
+  ([08] §4). Exits `found` or `none`.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  required: [title]
+  properties:
+    title: { type: string }
+    body: { type: string }
+    task_uid: { type: [string, "null"], description: The (draft) Task being shaped; edges are emitted from it when present }
+    limit: { type: integer, minimum: 1, maximum: 25 }
+output:
+  type: object
+  required: [candidates]
+  properties:
+    candidates:
+      type: array
+      items:
+        type: object
+        required: [uid, title, status, score]
+        properties:
+          uid: { type: string }
+          title: { type: string }
+          status: { type: string }
+          score: { type: number }
+    edges_emitted: { type: integer }
+    summary: { type: string }
+
+settings:
+  min_score:
+    type: number
+    default: 0.75
+    description: Similarity threshold (0-1) for a candidate to count as overlap.
+  limit:
+    type: number
+    default: 8
+    description: Max candidates requested from find_similar_tasks.
+
+limits:
+  timeout_s: 60
+  memory_mb: 256
+  max_cost_units: 1
+
+egress:
+  allow: []
+capabilities: []

@@ -1,0 +1,36 @@
+schema: breadboard/tool@v1
+uid: 01J8T0EMPTYREP0RT000
+slug: emit-empty-report
+title: Empty-result report
+description: >
+  Creates a short team-visible deliverable stating that a search found no qualifying sources, so the
+  "nothing found" outcome is reviewable instead of silent. Exits `done`.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  properties:
+    question: { type: string, description: The question that produced no results }
+    reason: { type: string, description: Optional explanation from the upstream step }
+output:
+  type: object
+  required: [note, report_artifact]
+  properties:
+    note: { type: string }
+    report_artifact:
+      type: object
+      required: [uid, revision_id]
+      properties:
+        uid: { type: string }
+        revision_id: { type: integer }
+
+limits:
+  timeout_s: 60
+  memory_mb: 256
+  max_cost_units: 1
+
+egress:
+  allow: []
+capabilities: []

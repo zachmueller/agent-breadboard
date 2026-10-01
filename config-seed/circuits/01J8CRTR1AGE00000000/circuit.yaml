@@ -1,0 +1,122 @@
+# Top-level triage ([08] §3): every auto-dispatched Task enters here (breadboard.yaml intake.triage_circuit).
+# Hierarchical: specialized triage circuits can replace any route below with their own sub-circuit.
+schema: breadboard/circuit@v1
+uid: 01J8CRTR1AGE00000000
+slug: triage
+title: Top-level triage
+description: >
+  Classify an incoming Task and hand it to the circuit that handles that category. Anything the classifier cannot
+  place confidently is routed to a human with a need-input request.
+tags: [triage, intake]
+
+budget:                      # sub-circuit budgets draw down this one ([02] §5.5)
+  max_cost_usd: 25
+  max_tokens: 3000000
+
+input:                       # assumed dispatcher payload: the Task's title/body/priority (the Task ref is $ambient.task)
+  type: object
+  required: [title]
+  properties:
+    title: { type: string }
+    body: { type: string, default: "" }
+    priority: { type: string, enum: [p0, p1, p2, p3] }
+
+exits:
+  - name: handled
+    description: A handling circuit ran to one of its terminal exits.
+    output:
+      type: object
+      properties:
+        session_id: { type: string, description: Child Session that handled the Task (when the runtime records it) }
+  - name: needs-human
+    description: Triage could not route the Task, or the handling circuit failed; a human has been asked.
+    output:
+      type: object
+      properties:
+        request_id: { type: [string, "null"] }
+        reason: { type: string }
+        error: { type: string }
+
+entry: classify
+
+steps:
+  - id: classify
+    title: Classify
+    kind: llm
+    subagent: 01J8SATR1AGEC1ASS000          # triage-classifier
+    prompt: prompts/classify.md
+    tools_override: []
+    max_turns: 4
+    output:
+      type: object
+      required: [rationale, confidence]
+      properties:
+        rationale: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+    exits:
+      - name: research
+        to: research
+      - name: engineering
+        to: engineering
+      - name: knowledge-maintenance
+        to: knowledge-maintenance
+      - name: unknown
+        to: request-direction
+
+  - id: research
+    title: Literature review
+    kind: circuit
+    circuit: 01J8CR11TREV00000000           # lit-review
+    input_map:
+      question: $input.title
+      depth: quick
+    exits:
+      - name: done
+        to: $exit.handled
+      - name: empty
+        to: $exit.handled
+
+  - id: engineering
+    title: Code task
+    kind: circuit
+    circuit: 01J8CRC0DETASK000000           # code-task
+    input_map:
+      title: $input.title
+      body: $input.body
+    exits:
+      - name: done
+        to: $exit.handled
+      - name: failed
+        to: $exit.needs-human
+
+  - id: knowledge-maintenance
+    title: Knowledge update
+    kind: circuit
+    circuit: 01J8CRKN0WVPDATE0000           # knowledge-update
+    input_map:
+      title: $input.title
+      request: $input.body
+    exits:
+      - name: done
+        to: $exit.handled
+      - name: no-change
+        to: $exit.handled
+
+  - id: request-direction
+    title: Ask a human
+    kind: code
+    tool: 01J8T0REQD1RECT10N00              # request-direction
+    input_map:
+      uid: $ambient.task.uid
+      title: $input.title
+      rationale: $steps.classify.output.rationale
+      role: scientist
+    output:
+      type: object
+      required: [request_id]
+      properties:
+        request_id: { type: [string, "null"] }
+        reason: { type: string }
+    exits:
+      - name: done
+        to: $exit.needs-human

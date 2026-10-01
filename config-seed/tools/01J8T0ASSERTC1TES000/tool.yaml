@@ -1,0 +1,46 @@
+schema: breadboard/tool@v1
+uid: 01J8T0ASSERTC1TES000
+slug: assert-citations-exist
+title: "Eval assertion: cited sources exist"
+description: >
+  Programmatic rubric dimension ([04] §2). Reads the artifact referenced by the scored output (field
+  `artifact_field`, default `summary_artifact`) and checks that every `[[UID]]` it cites resolves to a content
+  node. Passes trivially when the output has no such artifact (e.g. the `empty` exit). Returns `{pass, detail}`.
+language: typescript
+entrypoint: src/index.ts
+builtin: true
+
+input:
+  type: object
+  required: [fixture, output]
+  properties:
+    fixture: { type: object }
+    output: { description: The circuit's terminal output payload }
+    exit: { type: string }
+    session_id: { type: string }
+output:
+  type: object
+  required: [pass, detail]
+  properties:
+    pass: { type: boolean }
+    score: { type: number }
+    detail: { type: string }
+
+settings:
+  artifact_field:
+    type: string
+    default: summary_artifact
+    description: Output field holding the artifact ref to inspect.
+  require_citations:
+    type: boolean
+    default: true
+    description: Fail when the artifact cites nothing at all.
+
+limits:
+  timeout_s: 60
+  memory_mb: 256
+  max_cost_units: 0.5
+
+egress:
+  allow: []
+capabilities: []

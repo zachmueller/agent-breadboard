@@ -1,0 +1,14 @@
+schema: breadboard/fixtures@v1
+circuit: 01J8CR11TREV00000000          # lit-review
+
+fixtures:
+  - fixture_id: smoke-data-drift
+    title: Detecting data drift in production ML models (quick)
+    input:
+      question: What are the established methods for detecting data drift in production machine-learning models?
+      depth: quick
+    tags: [smoke, expect-exit:done]
+    notes: >
+      Hand-written smoke fixture shipped with the seed (no source Session). Replace with fixtures promoted from
+      real Sessions as the team uses the circuit.
+    retired: false

@@ -8,8 +8,8 @@
  *    exponentially (30 s · 2^n) and are marked `failed` after 8 attempts.
  *  - Outbox rows older than 7 days are pruned hourly (bounded SSE replay window).
  */
-import { createHmac } from 'node:crypto';
-import { mintUid, type BreadboardConfig, type EventTopic, type StreamEvent } from '@breadboard/shared';
+import { createHmac, randomBytes } from 'node:crypto';
+import { CROCKFORD, type BreadboardConfig, type EventTopic, type StreamEvent } from '@breadboard/shared';
 import type { Db } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import type { EventBus, SessionStore } from '../core/services.js';
@@ -48,6 +48,42 @@ export interface WebhookDeliveryRow {
   delivered_at: string | null;
 }
 
+const EVENT_ID_RE = /^evt_[0-9A-HJKMNP-TV-Z]{20}$/;
+let lastMs = 0;
+let seq = 0;
+
+function crockford(n: number, len: number): string {
+  let out = '';
+  for (let i = 0; i < len; i++) {
+    out = CROCKFORD[n % 32] + out;
+    n = Math.floor(n / 32);
+  }
+  return out;
+}
+
+/**
+ * `evt_` + 20 Crockford chars (24 = `event_outbox.event_id char(24)`): 9 chars of epoch-ms, 3 chars of
+ * per-ms sequence, 8 random chars. Unlike node UIDs, event ids are stream cursors, so they are
+ * deliberately time-sortable: replay is `event_id > Last-Event-ID`, immune to timestamp ties.
+ */
+export function mintEventId(): string {
+  let ms = Date.now();
+  if (ms <= lastMs) {
+    ms = lastMs;
+    seq++;
+    if (seq >= 32 ** 3) {
+      ms = ++lastMs;
+      seq = 0;
+    }
+  } else {
+    lastMs = ms;
+    seq = 0;
+  }
+  let rand = '';
+  for (const b of randomBytes(8)) rand += CROCKFORD[b & 31];
+  return `evt_${crockford(ms, 9)}${crockford(seq, 3)}${rand}`;
+}
+
 export function signWebhookBody(body: string, secret: string): string {
   return 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
 }
@@ -67,8 +103,7 @@ export class EventBusImpl implements EventBus {
   constructor(private deps: EventBusDeps) {}
 
   async publish(topic: EventTopic, payload: Record<string, unknown>, visibility: StreamEvent['visibility'] = { scope: 'team' }): Promise<StreamEvent> {
-    const id = 'evt_' + mintUid(); // 24 chars = event_outbox.event_id char(24)
-    // clock_timestamp() (not now()) so events published inside one transaction still order correctly.
+    const id = mintEventId();
     const r = await this.deps.db.query<{ created_at: unknown }>(`INSERT INTO event_outbox (event_id, topic, payload, visibility, created_at) VALUES ($1,$2,$3,$4, clock_timestamp()) RETURNING created_at`, [
       id,
       topic,
@@ -97,21 +132,22 @@ export class EventBusImpl implements EventBus {
   }
 
   /**
-   * `afterId` given: events strictly after it in (created_at, event_id) order — an unknown/pruned id yields [].
-   * `afterId` null: the most recent `limit` events, oldest first.
+   * `afterId` given: events strictly after it in id (= publish) order; a pruned-but-well-formed id still
+   * replays what remains after it; a malformed id yields []. `afterId` null: the most recent `limit`
+   * events, oldest first.
    */
   async replay(afterId: string | null, limit = 100): Promise<StreamEvent[]> {
     const n = Math.max(1, Math.min(REPLAY_MAX, Math.floor(limit) || 100));
     if (afterId) {
+      if (!EVENT_ID_RE.test(afterId)) return [];
       const r = await this.deps.db.query(
         `SELECT event_id, topic, payload, visibility, created_at FROM event_outbox
-          WHERE (created_at, event_id) > (SELECT created_at, event_id FROM event_outbox WHERE event_id = $1)
-          ORDER BY created_at, event_id LIMIT $2`,
+          WHERE event_id COLLATE "C" > $1 COLLATE "C" ORDER BY event_id COLLATE "C" LIMIT $2`,
         [afterId, n],
       );
       return r.rows.map(rowToEvent);
     }
-    const r = await this.deps.db.query(`SELECT event_id, topic, payload, visibility, created_at FROM event_outbox ORDER BY created_at DESC, event_id DESC LIMIT $1`, [n]);
+    const r = await this.deps.db.query(`SELECT event_id, topic, payload, visibility, created_at FROM event_outbox ORDER BY event_id COLLATE "C" DESC LIMIT $1`, [n]);
     return r.rows.map(rowToEvent).reverse();
   }
 

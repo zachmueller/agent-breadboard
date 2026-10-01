@@ -132,7 +132,7 @@ export class IdentityStore {
     return r.rows.map(rowToUser);
   }
 
-  /** Replace a user's role memberships with the given slugs (OIDC group mapping at login). */
+  /** Add role memberships for the given slugs (creating roles as needed). Additive: never removes memberships. */
   async syncUserRoles(teamId: string, userId: string, slugs: string[], q: Queryable = this.db): Promise<void> {
     for (const slug of slugs) {
       const role = await this.ensureRole(teamId, slug, '', q);

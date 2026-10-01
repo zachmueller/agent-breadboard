@@ -1,0 +1,107 @@
+schema: breadboard/tool@v1
+uid: 01J8T0SPAWNHARNESS00
+slug: spawn-harness
+title: Spawn sub-harness
+description: >
+  Runs a coding-specialized agent harness in the sandbox against a workspace (optionally a git checkout), with
+  Breadboard acting as the harness's "user" ([06] §3). The harness transcript (turns, tool calls, results) is
+  streamed into the Session's code-step log, and declared outputs are captured as Artifacts: a summary, the full
+  transcript, a patch (for git workspaces), and changed files matching `capture` globs.
+  v1 adapter: Strands Agents (SDK-level integration; Bedrock model provider). Exits `done` or `failed`.
+language: python
+entrypoint: src/main.py
+builtin: true
+
+input:
+  type: object
+  properties:
+    prompt: { type: string, description: The task for the harness. If omitted it is composed from task/plan/feedback. }
+    task:
+      type: object
+      properties:
+        title: { type: string }
+        body: { type: string }
+    plan_artifact:
+      type: [object, "null"]
+      description: Revision-pinned ref to a plan Artifact to follow
+      properties:
+        uid: { type: string }
+        revision_id: { type: integer }
+    feedback:
+      type: [array, "null"]
+      items: { type: string }
+      description: Reviewer feedback from a previous round (gate `changes` loop)
+    capture:
+      type: array
+      items: { type: string }
+      description: Glob patterns (relative to the workspace) of output files to capture as Artifacts. Default ["**/*.md"].
+output:
+  type: object
+  properties:
+    summary_artifact:
+      type: object
+      required: [uid, revision_id]
+      properties: { uid: { type: string }, revision_id: { type: integer } }
+    transcript_artifact:
+      type: object
+      required: [uid, revision_id]
+      properties: { uid: { type: string }, revision_id: { type: integer } }
+    patch_artifact:
+      type: [object, "null"]
+      properties: { uid: { type: string }, revision_id: { type: integer } }
+    files:
+      type: array
+      items:
+        type: object
+        required: [uid, revision_id]
+        properties: { uid: { type: string }, revision_id: { type: integer } }
+    stop_reason: { type: string }
+    usage: { type: object }
+    error: { type: string }
+
+settings:
+  harness:
+    type: string
+    default: strands
+    enum: [strands]
+    description: Harness adapter. v1 ships Strands Agents only; future adapters (e.g. Claude Code) slot in here.
+  workspace_repo:
+    type: string
+    default: ""
+    description: Optional HTTPS git URL cloned as the workspace (its host must be in egress.allow). Empty = scratch dir.
+  model_id:
+    type: string
+    default: anthropic.claude-sonnet-5
+    description: Bedrock model the harness drives.
+  aws_region:
+    type: string
+    default: us-west-2
+    description: Bedrock region for the harness model. Changing it requires the matching bedrock-runtime egress host below.
+  max_capture_files:
+    type: number
+    default: 20
+
+limits:
+  timeout_s: 1800                  # coding sessions are long; 30 min wall clock
+  memory_mb: 4096
+  cpus: 2
+  pids: 1024
+  max_cost_units: 30
+
+egress:
+  allow:
+    # The harness's model calls. Egress patterns are exact hosts or a leading `*.` wildcard, so list one host per
+    # region; this must match the `aws_region` setting.
+    - host: bedrock-runtime.us-west-2.amazonaws.com
+      ports: [443]
+    - host: github.com                         # workspace clone
+      ports: [443]
+
+capabilities:
+  # Model access for the harness. The sandbox runtime supplies short-lived, invoke-only AWS credentials for
+  # executions whose tool declares this capability; nothing is baked into the image or the tool source.
+  - name: bedrock-invoke
+    scope: invoke
+
+exposure:
+  external_mcp: false
