@@ -10,6 +10,31 @@ export interface StepResult<O = unknown> {
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+/** Chat content blocks, as the Breadboard model gateway uses them. */
+export type ChatBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+
+export interface ConverseRequest {
+  system?: string;
+  messages: Array<{ role: 'user' | 'assistant' | 'tool'; content: ChatBlock[] }>;
+  tools?: Array<{ name: string; description?: string; input_schema?: Record<string, unknown> }>;
+  /** Model preset tier (default `medium`); `model_id` overrides it. */
+  preset?: string;
+  model_id?: string;
+  max_tokens?: number;
+  temperature?: number;
+}
+
+export interface ConverseResponse {
+  message: { role: 'assistant'; content: ChatBlock[] };
+  stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | 'other';
+  usage: { input_tokens: number; output_tokens: number };
+  model_id: string;
+  cost_usd: number;
+}
+
 export interface BrokerFetchRequest {
   url: string;
   method?: string;
@@ -66,6 +91,9 @@ export interface BreadboardContext {
 
   // Broker-mediated outbound HTTP
   fetch(capability: string, request: BrokerFetchRequest): Promise<BrokerFetchResponse>;
+
+  // One model turn through the Breadboard model gateway (the tool must declare the `model` capability)
+  converse(request: ConverseRequest): Promise<ConverseResponse>;
 
   // Evals
   recordScore(args: { eval_run_id: string; fixture_id: string; dimension: string; value: unknown; rationale?: string }): Promise<void>;

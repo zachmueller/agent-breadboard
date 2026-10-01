@@ -49,6 +49,7 @@ export function createContext(args: { ambient: BreadboardAmbient; baseUrl: strin
     getSessionSummary: (session_id) => call('get_session_summary', { session_id }),
     runTool: (uid, input, settings) => call('run_tool', { tool: uid, input, settings }),
     fetch: (capability, request) => call('broker_fetch', { capability, request }),
+    converse: (request) => call('model_converse', request),
     recordScore: (a) => call('record_score', a),
     getRubric: (circuit_uid) => call('get_rubric', { circuit_uid }),
     readConfig: (ref) => call('read_config', { ref }),

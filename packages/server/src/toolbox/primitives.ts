@@ -11,7 +11,7 @@ import { BreadboardError, validateAgainst, type JsonSchema } from '@breadboard/s
 import type { Queryable } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import { canSeeSession, requireScope, type Principal } from '../core/principal.js';
-import type { ConfigService, ContentService, CredentialBroker, EvalService, KnowledgeService, Orchestrator, Primitives, SessionStore, TaskService, Toolbox, ToolSpec } from '../core/services.js';
+import type { ChatMessage, ConfigService, ContentService, CredentialBroker, EvalService, KnowledgeService, ModelGateway, Orchestrator, Primitives, SessionStore, TaskService, Toolbox, ToolSpec } from '../core/services.js';
 
 export interface PrimitiveCallCtx {
   session_id?: string | null;
@@ -41,6 +41,8 @@ export interface PrimitivesDeps {
   /** Lazy: toolbox → sandbox API → primitives is cyclic. */
   toolbox: () => Toolbox;
   broker: CredentialBroker;
+  /** `model_converse`: tool code's model calls go through the gateway like every other LLM call. */
+  gateway: Pick<ModelGateway, 'complete'>;
   /** Used to resolve the executing tool from the execution journal (`broker_fetch`). */
   db: Queryable;
   log: Logger;
@@ -50,9 +52,11 @@ export interface PrimitivesDeps {
 export const MAX_COMPOSITION_DEPTH = 8;
 
 /** Primitives never offered to users/services directly (tool-code only). */
-const TOOL_CODE_ONLY = new Set(['broker_fetch', 'run_tool']);
+const TOOL_CODE_ONLY = new Set(['broker_fetch', 'run_tool', 'model_converse']);
 /** Primitives never offered to the model directly, whatever its grants. */
-const NEVER_MODEL_DIRECT = new Set(['broker_fetch']);
+const NEVER_MODEL_DIRECT = new Set(['broker_fetch', 'model_converse']);
+/** Reserved capability name: a tool declaring it may call `model_converse` (granted by the gateway, not the broker). */
+export const MODEL_CAPABILITY = 'model';
 /** Always available to subagent principals. */
 const ALWAYS_FOR_SUBAGENTS = new Set(['read_node']);
 
@@ -492,6 +496,66 @@ export class PrimitivesImpl implements Primitives {
           const { uid, commit } = await this.callingTool(p);
           const loaded = await d.config.tool(uid, commit ?? undefined);
           return d.broker.fetch({ capability: a.capability, request: a.request, tool: loaded.tool, principal: p, execution_key: p.execution_key });
+        },
+      },
+      {
+        name: 'model_converse',
+        scope: 'tools:execute',
+        description:
+          "One model turn through the Breadboard model gateway (presets, fallback, the session's budget and cost tracking). Tool code only; the tool must declare the `model` capability. Messages and the reply use Breadboard's chat format (text, tool_use, tool_result blocks).",
+        input_schema: obj(
+          {
+            system: { type: 'string' },
+            messages: { type: 'array', minItems: 1, items: { type: 'object' } },
+            tools: { type: 'array', items: obj({ name: { type: 'string', minLength: 1 }, description: { type: 'string' }, input_schema: { type: 'object' } }, ['name']) },
+            preset: { type: 'string', minLength: 1, description: 'Model preset tier (default `medium`).' },
+            model_id: { type: 'string', minLength: 1, description: 'Explicit model id (overrides the preset).' },
+            max_tokens: { type: 'integer', minimum: 1 },
+            temperature: { type: 'number' },
+          },
+          ['messages'],
+        ),
+        handler: async (a, p, ctx) => {
+          const { uid, commit } = await this.callingTool(p);
+          const loaded = await d.config.tool(uid, commit ?? undefined);
+          if (!(loaded.tool.capabilities ?? []).some((c) => c.name === MODEL_CAPABILITY)) {
+            throw new BreadboardError('grant-denied', `tool ${loaded.tool.slug} does not declare the '${MODEL_CAPABILITY}' capability`);
+          }
+          const session_id = ctx.session_id ?? p.session_id;
+          if (!session_id) throw new BreadboardError('invalid-state', 'model_converse needs a session (its spend is accounted there)');
+          const session = await d.sessions.mustGet(session_id);
+          const [spent, used] = await Promise.all([d.sessions.costIncludingChildren(session_id), d.sessions.cost(session_id)]);
+          if (spent >= session.budget.max_cost_usd || used.tokens_in + used.tokens_out >= session.budget.max_tokens) {
+            throw new BreadboardError('budget-exceeded', `session ${session_id} has no model budget left`, { spent_usd: spent, max_cost_usd: session.budget.max_cost_usd });
+          }
+          const [step_id, attempt] = (ctx.step_id ?? 'tool').split('#');
+          const res = await d.gateway.complete({
+            preset: a.preset ?? 'medium',
+            model_id: a.model_id,
+            system: a.system ?? '',
+            messages: a.messages as ChatMessage[],
+            tools: (a.tools ?? []).map((t: { name: string; description?: string; input_schema?: JsonSchema }) => ({ name: t.name, description: t.description ?? t.name, input_schema: t.input_schema ?? { type: 'object' } })),
+            max_tokens: a.max_tokens,
+            temperature: a.temperature,
+            model_overrides: session.model_overrides ?? null,
+            session_id,
+            step_id: step_id!,
+          });
+          await d.sessions.recordTurn({
+            session_id,
+            step_id: step_id!,
+            attempt: attempt ? Number(attempt) : undefined,
+            role: 'assistant',
+            username: null,
+            content: res.message.content,
+            model_id: res.model_id,
+            tokens_in: res.usage.input_tokens,
+            tokens_out: res.usage.output_tokens,
+            cost_usd: res.cost_usd,
+            latency_ms: res.latency_ms ?? null,
+            fallback_from: res.fallback_from ?? null,
+          });
+          return { message: res.message, stop_reason: res.stop_reason, usage: res.usage, model_id: res.model_id, cost_usd: res.cost_usd };
         },
       },
 

@@ -26,6 +26,8 @@ function fake<T>(svc: string, calls: Call[], impl: Record<string, (...a: any[]) 
 const CIRCUIT = '01J8FQ2ZK7XW9MBT4PVN';
 const OTHER_CIRCUIT = '01J8FQ2ZK7XW9MBT4PVM';
 const TOOL = '01J8FQ2ZK7XW9MBT4PVT';
+const MODEL_TOOL = '01J8FQ2ZK7XW9MBT4PVH';
+let spentUsd = 0;
 const SUBAGENT = '01J8FQ2ZK7XW9MBT4PVS';
 
 function grants(over: Partial<{ primitives: string[]; execute: string[]; read: string[]; override: string[] | null }> = {}): Grants {
@@ -98,18 +100,28 @@ function build(): PrimitivesImpl {
       events: (_id: string, after?: number) => events.filter((e) => after === undefined || e.seq > after),
       summary: (id: string) => ({ session_id: id, steps: [] }),
       get: (id: string) => (id === 'sess_child' ? session(id, 'running', { parent_session: 'sess_parent' }) : id === 'sess_other' ? session(id, 'running') : null),
+      mustGet: (id: string) => session(id, 'running'),
+      cost: () => ({ cost_usd: spentUsd, tokens_in: 0, tokens_out: 0 }),
+      costIncludingChildren: () => spentUsd,
+      recordTurn: (t: any) => ({ ...t, turn_id: 'trn_1', created_at: '' }),
     }),
     evals: fake('evals', calls, { recordScore: () => undefined, getFixtureOutput: () => ({ out: 1 }) }),
     config: fake('config', calls, {
       definition: (ref: string) => ({ uid: ref, kind: ref.startsWith('01J8FQ2ZK7XW9MBT4PV') && ref !== TOOL ? 'circuit' : 'tool', path: `x/${ref}`, commit: 'c', slug: 's', title: 't', definition: {}, raw: 'raw', validation: { ok: true, errors: [], warnings: [] }, referenced_by: [] }),
       rubric: () => ({ dimensions: [] }),
-      tool: (uid: string) => ({ uid, commit: 'c', tool: { uid, slug: 'gh', capabilities: [{ name: 'github', scope: 'read' }] }, dir: '/tmp' }),
+      tool: (uid: string) =>
+        uid === MODEL_TOOL
+          ? { uid, commit: 'c', tool: { uid, slug: 'harness', capabilities: [{ name: 'model', scope: 'invoke' }] }, dir: '/tmp' }
+          : { uid, commit: 'c', tool: { uid, slug: 'gh', capabilities: [{ name: 'github', scope: 'read' }] }, dir: '/tmp' },
       validateChanges: () => ({ ok: true, errors: [], warnings: [] }),
       propose: () => ({ proposal_id: 'prop_1' }),
       amendProposal: (id: string) => ({ proposal_id: id }),
     }),
     toolbox: () => fake('toolbox', calls, { invoke: (inv: any) => ({ output: { echoed: inv.input }, logs: [], execution_key: 'k', replayed: false, cost_units: 0, duration_ms: 1 }) }),
     broker: fake('broker', calls, { fetch: () => ({ status: 200, headers: {}, body: 'ok' }) }),
+    gateway: fake('gateway', calls, {
+      complete: () => ({ model_id: 'm-1', provider: 'mock', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 2 }, cost_usd: 0.01, latency_ms: 5, fallback_from: null }),
+    }),
     db: f.db,
     log: f.log,
   };
@@ -253,11 +265,10 @@ describe('get_session_summary visibility', () => {
 });
 
 describe('specsFor by principal kind', () => {
-  it('users/services get everything except broker_fetch and run_tool', () => {
+  it('users/services get everything except the tool-code-only primitives', () => {
     const names = prims.specsFor(f.memberPrincipal).map((s) => s.name);
-    expect(names).not.toContain('broker_fetch');
-    expect(names).not.toContain('run_tool');
-    expect(names.length).toBe(prims.names.length - 2);
+    for (const n of ['broker_fetch', 'run_tool', 'model_converse']) expect(names).not.toContain(n);
+    expect(names.length).toBe(prims.names.length - 3);
     expect(prims.specsFor(f.servicePrincipal).map((s) => s.name)).toEqual(names);
   });
 
@@ -286,6 +297,26 @@ describe('broker_fetch, run_tool, config', () => {
     expect(out).toEqual({ status: 200, headers: {}, body: 'ok' });
     expect(callsTo('config', 'tool')[0]!.args).toEqual([TOOL, 'abc123']);
     expect(callsTo('broker', 'fetch')[0]!.args[0]).toMatchObject({ capability: 'github', execution_key: 'exec-1', tool: { uid: TOOL } });
+  });
+
+  it('model_converse: tool code declaring `model` calls the gateway and records the turn on its session', async () => {
+    spentUsd = 0;
+    await f.db.query(`INSERT INTO tool_executions (execution_key, tool_uid, tool_commit, input_hash, status) VALUES ($1,$2,$3,'h','running')`, ['exec-model', MODEL_TOOL, 'abc123']);
+    const toolCode = subagentPrincipal(f, grants(), { execution_key: 'exec-model', token_kind: 'actor' });
+    const req = { messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], tools: [{ name: 'run_command', input_schema: { type: 'object' } }] };
+    const out = await prims.call('model_converse', req, toolCode, { session_id: 'sess_parent', step_id: 'implement#2' });
+    expect(out).toMatchObject({ stop_reason: 'end_turn', model_id: 'm-1', cost_usd: 0.01, message: { content: [{ type: 'text', text: 'hello' }] } });
+    expect(callsTo('gateway', 'complete')[0]!.args[0]).toMatchObject({ preset: 'medium', session_id: 'sess_parent', step_id: 'implement', tools: [{ name: 'run_command', description: 'run_command' }] });
+    expect(callsTo('sessions', 'recordTurn')[0]!.args[0]).toMatchObject({ session_id: 'sess_parent', step_id: 'implement', attempt: 2, role: 'assistant', model_id: 'm-1', cost_usd: 0.01, tokens_in: 10, tokens_out: 2 });
+    // Never for the model or users; never for tools that did not declare the capability; never past the budget.
+    expect(await codeOf(prims.call('model_converse', req, subagentPrincipal(f, grants({ primitives: ['model_converse'] }))))).toBe('grant-denied');
+    expect(await codeOf(prims.call('model_converse', req, f.memberPrincipal))).toBe('grant-denied');
+    await f.db.query(`INSERT INTO tool_executions (execution_key, tool_uid, tool_commit, input_hash, status) VALUES ($1,$2,$3,'h','running') ON CONFLICT DO NOTHING`, ['exec-1', TOOL, 'abc123']);
+    const plainTool = subagentPrincipal(f, grants(), { execution_key: 'exec-1', token_kind: 'actor' });
+    expect(await codeOf(prims.call('model_converse', req, plainTool, { session_id: 'sess_parent' }))).toBe('grant-denied');
+    spentUsd = 1;
+    expect(await codeOf(prims.call('model_converse', req, toolCode, { session_id: 'sess_parent' }))).toBe('budget-exceeded');
+    spentUsd = 0;
   });
 
   it('run_tool increments depth and returns the tool output', async () => {

@@ -110,6 +110,17 @@ class BreadboardContext:
     def fetch(self, capability, request):
         return self._call("broker_fetch", {"capability": capability, "request": request})
 
+    # -- models ----------------------------------------------------------
+    def converse(self, messages, system=None, tools=None, preset=None, model_id=None, max_tokens=None, temperature=None):
+        """One model turn through the Breadboard model gateway (the tool must declare the `model` capability).
+
+        Messages and the reply use the gateway's chat format: {"role", "content": [{"type": "text" | "tool_use" |
+        "tool_result", ...}]}. Spend lands on the Session like any other model call.
+        """
+        body = {"messages": messages, "system": system, "tools": tools, "preset": preset, "model_id": model_id,
+                "max_tokens": max_tokens, "temperature": temperature}
+        return self._call("model_converse", {k: v for k, v in body.items() if v is not None})
+
     # -- evals -----------------------------------------------------------
     def record_score(self, **a):
         return self._call("record_score", a)

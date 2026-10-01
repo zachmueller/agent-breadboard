@@ -73,7 +73,7 @@ beforeAll(async () => {
     },
   };
   const proxy = new Proxy({}, { get: () => unimpl });
-  const primitives = createPrimitives({ content, knowledge: proxy as any, tasks: proxy as any, orchestrator: proxy as any, sessions: sessions as any, evals: proxy as any, config: { definition: async (ref: string) => ({ uid: ref, kind: 'tool', raw: 'r' }) } as any, toolbox: () => toolbox, broker: proxy as any, db: f.db, log: f.log });
+  const primitives = createPrimitives({ content, knowledge: proxy as any, tasks: proxy as any, orchestrator: proxy as any, sessions: sessions as any, evals: proxy as any, config: { definition: async (ref: string) => ({ uid: ref, kind: 'tool', raw: 'r' }) } as any, toolbox: () => toolbox, broker: proxy as any, gateway: proxy as any, db: f.db, log: f.log });
   const services = { primitives, toolbox, sessions, log: f.log } as unknown as Services;
 
   app = Fastify();

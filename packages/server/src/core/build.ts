@@ -130,7 +130,7 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
   const sandbox = createSandboxRunner(env, { log, proxy, objects, publicUrl: sandboxApiUrl, settings });
   const toolbox = createToolbox({ config, sandbox, proxy, auth, objects, db, team_id, publicUrl: sandboxApiUrl, log, settings, pythonBin: env.PYTHON_BIN });
   const mcpClients = createMcpClientManager({ config, broker, log });
-  const primitives = createPrimitives({ content, knowledge, tasks, orchestrator: orchestratorLazy.proxy, sessions, evals: evalsLazy.proxy, config, toolbox: () => toolbox, broker, db, log });
+  const primitives = createPrimitives({ content, knowledge, tasks, orchestrator: orchestratorLazy.proxy, sessions, evals: evalsLazy.proxy, config, toolbox: () => toolbox, broker, gateway, db, log });
   const subagents = createSubagentRuntime({ config, knowledge, toolbox, mcp: mcpClients, primitives, gateway, sessions, team_id, log });
 
   // --- orchestrator, evals, conversations --------------------------------------------------------------
