@@ -81,12 +81,13 @@ Deploy with a new image tag: `npx cdk deploy … -c serverImage=$R:server-v0.2` 
 live in the instance's CloudFormation::Init metadata, not in its user data, so the deploy neither restarts nor replaces
 the host. cfn-hup on the host notices the metadata change within a minute or two, pulls the images, and recreates the
 `breadboard` container (`/usr/local/bin/breadboard-apply`; log in `/var/log/cfn-hup.log`). The config repo on
-`/var/breadboard` is untouched.
+`/var/breadboard` is untouched. Preview an upgrade with `npx cdk diff … --method=template`: the default change-set diff
+does not show metadata-only changes and reports "no differences" (the deploy still applies them; verified 2026-10-01).
 
 ## Behaviour to know about
 
 - **The AMI is pinned on first synth** (`cdk.context.json`). A new AMI would replace the host, and the config repo lives on the host's root volume at `/var/breadboard`. To move to a newer AMI on purpose, mirror the config repo first (see Backup/DR), then run `npx cdk context --reset <key>`.
-- **RDS modifications** made through a deploy (for example, a new instance class) are expected to apply during the deploy rather than in the maintenance window. CloudFormation has no equivalent of deferring them. This is not yet confirmed; see `docs/verification-plan.md` §7.
+- **RDS modifications** made through a deploy apply during the deploy, not in the maintenance window; CloudFormation has no way to defer them. Verified 2026-10-01: `-c dbInstanceClass=db.t4g.large` on a single-AZ instance took 6.5 minutes and restarted the DB twice (about 30 s of unavailability); the server reconnected on its own. Use `dbMultiAz=true` or schedule such changes.
 - **Destroy keeps the state.** `npx cdk destroy` leaves a final DB snapshot, all four secrets, and the objects bucket (`DeletionPolicy: RetainExceptOnCreate`, so a failed *first* deploy rolls back completely and can simply be retried). Deletion protection blocks a destroy, so first deploy with `-c dbDeletionProtection=false`. The retained secrets and bucket keep their names, so a new deploy with the same `name` fails until you delete them.
 
 The server reaches Postgres only through `DATABASE_URL` (+ `DATABASE_SSL=require`); any other managed Postgres works identically through the same seam. The bundled `deploy/compose.yaml` local-Postgres profile remains the dev/quickstart path.
