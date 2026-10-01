@@ -385,7 +385,10 @@ export class PrimitivesImpl implements Primitives {
           ['title', 'body'],
         ),
         handler: async (a, p, ctx) => {
-          const t = await d.tasks.create({ title: a.title, body: a.body, priority: a.priority, target_circuit: a.target_circuit ?? null, draft: a.draft, tags: a.tags, by: p, session_id: ctx.session_id ?? p.session_id });
+          const session_id = ctx.session_id ?? p.session_id;
+          // In idea shaping the Task stays a draft until the human accepts it into the queue ([08] §7).
+          const shaping = !!session_id && (await d.sessions.get(session_id))?.kind === 'intake';
+          const t = await d.tasks.create({ title: a.title, body: a.body, priority: a.priority, target_circuit: a.target_circuit ?? null, draft: a.draft ?? shaping, tags: a.tags, by: p, session_id });
           return { uid: t.uid, status: (t.properties as any)?.status ?? null };
         },
       },

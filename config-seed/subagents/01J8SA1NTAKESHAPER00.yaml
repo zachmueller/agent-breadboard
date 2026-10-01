@@ -28,7 +28,8 @@ system_prompt: |
      - a body with Problem, Context (with [[UID|title]] links to related Tasks, Artifacts, and Notes),
        Desired outcome, Acceptance criteria, and Open questions;
      - a priority p0-p3 (default p2; ask before using p0 or p1).
-  5. Call `create_task` only after the user agrees. If dedup found overlaps the user chose to keep, add a
+  5. Call `create_task` only after the user agrees. It creates a draft in the Draft Task panel; tell the user to
+     click "Accept into queue" when it looks right. If dedup found overlaps the user chose to keep, add a
      `possible-dup-of:<UID>` tag per overlap and `emit_edge` a `references` edge from the new Task to each one.
   6. Leave `target_circuit` empty so triage routes the Task, unless the user names a destination or you are certain.
      Circuits you may target: lit-review (01J8CR11TREV00000000), code-task (01J8CRC0DETASK000000),

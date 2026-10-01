@@ -99,7 +99,8 @@ function build(): PrimitivesImpl {
     sessions: fake('sessions', calls, {
       events: (_id: string, after?: number) => events.filter((e) => after === undefined || e.seq > after),
       summary: (id: string) => ({ session_id: id, steps: [] }),
-      get: (id: string) => (id === 'sess_child' ? session(id, 'running', { parent_session: 'sess_parent' }) : id === 'sess_other' ? session(id, 'running') : null),
+      get: (id: string) =>
+        id === 'sess_child' ? session(id, 'running', { parent_session: 'sess_parent' }) : id === 'sess_other' ? session(id, 'running') : id === 'sess_intake' ? session(id, 'running', { kind: 'intake' }) : null,
       mustGet: (id: string) => session(id, 'running'),
       cost: () => ({ cost_usd: spentUsd, tokens_in: 0, tokens_out: 0 }),
       costIncludingChildren: () => spentUsd,
@@ -208,6 +209,13 @@ describe('call: dispatch, validation, gating', () => {
 
     const granted = subagentPrincipal(f, grants({ primitives: ['create_task'] }));
     expect(await prims.call('create_task', { title: 't', body: 'b', draft: true }, granted)).toEqual({ uid: 'TSK00000000000000001', status: 'draft' });
+  });
+
+  it('create_task from an idea-shaping (intake) session makes a draft unless told otherwise', async () => {
+    const shaper = subagentPrincipal(f, grants({ primitives: ['create_task'] }), { session_id: 'sess_intake' });
+    expect(await prims.call('create_task', { title: 't', body: 'b' }, shaper, { session_id: 'sess_intake' })).toMatchObject({ status: 'draft' });
+    expect(await prims.call('create_task', { title: 't', body: 'b', draft: false }, shaper, { session_id: 'sess_intake' })).toMatchObject({ status: 'queued' });
+    expect(await prims.call('create_task', { title: 't', body: 'b' }, shaper, { session_id: 'sess_other' })).toMatchObject({ status: 'queued' });
   });
 
   it('step tools_override narrows the subagent surface', async () => {
