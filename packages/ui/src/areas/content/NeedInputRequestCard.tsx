@@ -7,7 +7,7 @@ import { useCurrentUser } from '../../lib/auth';
 import { errorMessage } from '../../lib/api';
 import { toast } from '../../lib/toast';
 import { cn } from '../../components/cn';
-import { ActorLabel, Badge, Button, ConfirmDialog, SessionChip, TextArea, TimeAgo } from '../../components';
+import { ActorLabel, Badge, Button, ConfirmDialog, Markdown, SessionChip, TextArea, TimeAgo } from '../../components';
 
 export function asRequest(r: Record<string, unknown>): NeedInputRequest {
   return {
@@ -93,7 +93,7 @@ export function NeedInputRequestCard({
         </span>
       </div>
       {request.prompt ? (
-        <p className={cn('whitespace-pre-wrap text-[13.5px] text-fg', compact && 'line-clamp-3')}>{request.prompt}</p>
+        <Markdown source={request.prompt} size="sm" className={cn('text-fg', compact && 'line-clamp-3')} />
       ) : (
         <p className="text-[13px] italic text-fg-subtle">No prompt given.</p>
       )}
@@ -128,7 +128,6 @@ function ResolveDialog({ nodeUid, request, onClose }: { nodeUid: string; request
       open
       onClose={onClose}
       title="Resolve request"
-      description={request.prompt ?? undefined}
       confirmLabel="Resolve"
       onConfirm={async () => {
         try {
@@ -140,6 +139,7 @@ function ResolveDialog({ nodeUid, request, onClose }: { nodeUid: string; request
         }
       }}
     >
+      <Markdown source={request.prompt} size="sm" className="text-fg-muted" />
       <TextArea label="Response (optional)" hint="Posted as a comment on the node." rows={4} value={comment} onChange={(e) => setComment(e.target.value)} autoFocus />
     </ConfirmDialog>
   );
