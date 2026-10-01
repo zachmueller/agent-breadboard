@@ -127,7 +127,8 @@ export interface ExecutionDto {
   error?: string | null;
   cost_units?: number | string;
   log_ref?: string | null;
-  logs?: string | null;
+  /** `ctx.log` entries (journal), or legacy plain text. */
+  logs?: Array<{ at?: string; level: string; message: string; data?: unknown }> | string | null;
   log_text?: string | null;
   started_at: string;
   ended_at: string | null;

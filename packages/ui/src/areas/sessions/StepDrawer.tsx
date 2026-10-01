@@ -167,9 +167,17 @@ function CodeDetail({ sessionId, stepId }: { sessionId: string; stepId: string }
   );
 }
 
+/** Journaled `ctx.log` entries as one line each: time, level, message, data. */
+export function formatLogs(logs: ExecutionDto['logs']): string | null {
+  if (!logs) return null;
+  if (typeof logs === 'string') return logs || null;
+  if (!logs.length) return null;
+  return logs.map((l) => [l.at?.slice(11, 23), l.level.toUpperCase(), l.message, l.data === undefined ? '' : JSON.stringify(l.data)].filter(Boolean).join('  ')).join('\n');
+}
+
 export function ExecutionCard({ exec: x, showStep }: { exec: ExecutionDto; showStep?: boolean }) {
   const [open, setOpen] = useState<'output' | 'input' | 'logs'>(x.error ? 'logs' : 'output');
-  const logs = x.logs ?? x.log_text ?? null;
+  const logs = formatLogs(x.logs) ?? x.log_text ?? null;
   const tone = x.status === 'failed' ? 'danger' : x.status === 'completed' ? 'ok' : 'info';
   return (
     <section className="rounded-lg border border-line bg-surface">

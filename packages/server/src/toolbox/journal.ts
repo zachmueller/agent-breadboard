@@ -70,9 +70,21 @@ export interface ExecutionRow {
   error: string | null;
   cost_units: number;
   log_ref: string | null;
+  /** The execution's `ctx.log` entries (the last LOGS_KEPT). */
+  logs: ToolLogEntry[] | null;
   started_at: string;
   ended_at: string | null;
 }
+
+export interface ToolLogEntry {
+  at?: string;
+  level: string;
+  message: string;
+  data?: unknown;
+}
+
+const LOGS_KEPT = 200;
+const keptLogs = (logs: ToolLogEntry[] | undefined) => (logs?.length ? JSON.stringify(logs.slice(-LOGS_KEPT)) : null);
 
 export interface BeginInput extends JournalCoordinates {
   execution_key: string;
@@ -81,7 +93,7 @@ export interface BeginInput extends JournalCoordinates {
   input_hash: string;
 }
 
-const COLS = 'execution_key, session_id, step_id, attempt, call_index, tool_uid, tool_commit, input_hash, status, output, output_ref, error, cost_units, log_ref, started_at, ended_at';
+const COLS = 'execution_key, session_id, step_id, attempt, call_index, tool_uid, tool_commit, input_hash, status, output, output_ref, error, cost_units, log_ref, logs, started_at, ended_at';
 
 function rowOut(r: any): ExecutionRow {
   return {
@@ -118,7 +130,7 @@ export class ToolJournal {
     );
   }
 
-  async complete(key: string, r: { output: unknown; cost_units: number; log_ref?: string | null }): Promise<void> {
+  async complete(key: string, r: { output: unknown; cost_units: number; log_ref?: string | null; logs?: ToolLogEntry[] }): Promise<void> {
     const json = JSON.stringify(r.output === undefined ? null : r.output);
     let inline: string | null = json;
     let ref: string | null = null;
@@ -127,16 +139,16 @@ export class ToolJournal {
       inline = null;
     }
     await this.db.query(
-      `UPDATE tool_executions SET status = 'completed', output = $2::jsonb, output_ref = $3, cost_units = $4, log_ref = $5, error = NULL, ended_at = now()
+      `UPDATE tool_executions SET status = 'completed', output = $2::jsonb, output_ref = $3, cost_units = $4, log_ref = $5, logs = $6::jsonb, error = NULL, ended_at = now()
        WHERE execution_key = $1`,
-      [key, inline, ref, r.cost_units, r.log_ref ?? null],
+      [key, inline, ref, r.cost_units, r.log_ref ?? null, keptLogs(r.logs)],
     );
   }
 
-  async fail(key: string, r: { error: string; cost_units: number; log_ref?: string | null }): Promise<void> {
+  async fail(key: string, r: { error: string; cost_units: number; log_ref?: string | null; logs?: ToolLogEntry[] }): Promise<void> {
     await this.db.query(
-      `UPDATE tool_executions SET status = 'failed', error = $2, cost_units = $3, log_ref = $4, ended_at = now() WHERE execution_key = $1`,
-      [key, r.error.slice(0, 8000), r.cost_units, r.log_ref ?? null],
+      `UPDATE tool_executions SET status = 'failed', error = $2, cost_units = $3, log_ref = $4, logs = $5::jsonb, ended_at = now() WHERE execution_key = $1`,
+      [key, r.error.slice(0, 8000), r.cost_units, r.log_ref ?? null, keptLogs(r.logs)],
     );
   }
 

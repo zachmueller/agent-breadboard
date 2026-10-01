@@ -192,7 +192,7 @@ export class ToolboxImpl implements Toolbox {
       const last = outcome(run.messages);
       if (!last || last.kind === 'error') {
         const message = last?.message ?? 'tool produced no result';
-        await this.journal.fail(key, { error: message, cost_units: cost, log_ref: run.log_ref });
+        await this.journal.fail(key, { error: message, cost_units: cost, log_ref: run.log_ref, logs });
         throw new BreadboardError('internal', message, {
           execution_key: key,
           tool: uid,
@@ -209,11 +209,11 @@ export class ToolboxImpl implements Toolbox {
         const v = validateAgainst(tool.output, isStep ? (output as any).output : output);
         if (!v.ok) {
           const message = `tool ${tool.slug} returned output that does not match its output schema: ${v.errors.join('; ')}`;
-          await this.journal.fail(key, { error: message, cost_units: cost, log_ref: run.log_ref });
+          await this.journal.fail(key, { error: message, cost_units: cost, log_ref: run.log_ref, logs });
           throw new BreadboardError('validation-failed', message, { execution_key: key, errors: v.errors });
         }
       }
-      await this.journal.complete(key, { output, cost_units: cost, log_ref: run.log_ref });
+      await this.journal.complete(key, { output, cost_units: cost, log_ref: run.log_ref, logs });
       return { output, logs, execution_key: key, replayed: false, cost_units: cost, duration_ms: run.duration_ms };
     } catch (e) {
       if (!(e instanceof BreadboardError)) {

@@ -249,6 +249,8 @@ describe(`ToolboxImpl.invoke (${TEST_RUNNER} runner)`, () => {
     const row = await toolbox.journal.lookup(r.execution_key);
     expect(row?.status).toBe('completed');
     expect(row?.tool_commit).toBe(tsTool.commit);
+    // ctx.log entries are journaled, so the code-step drawer can show them.
+    expect(row?.logs).toEqual([expect.objectContaining({ level: 'info', message: 'hi', data: { n: 21 } })]);
   });
 
   it.skipIf(!hasPython)('runs a Python tool through the same contract', async () => {
