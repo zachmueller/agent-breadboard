@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import { defaultHighlightStyle } from '@codemirror/language';
-import { codeHighlightStyle, hasLocalEdit, syncValueSpec } from './CodeEditor';
+import { codeHighlightStyle, hasLocalEdit, settleInFlight, syncValueSpec } from './CodeEditor';
 
 describe('CodeEditor value sync', () => {
   it('skips the sync when the document already matches', () => {
@@ -23,6 +23,19 @@ describe('CodeEditor value sync', () => {
     // A batch that mixes a sync with a keystroke still reports the keystroke.
     const sync = typed.state.update(syncValueSpec(typed.state, 'a: 1')!);
     expect(hasLocalEdit([sync, sync.state.update({ changes: { from: 0, insert: '#' } })])).toBe(true);
+  });
+});
+
+describe('settleInFlight', () => {
+  it('treats a lagging value that the editor itself emitted as a late echo', () => {
+    // Typed "a", "ab", "abc"; the parent re-renders with "ab" after "abc" was already typed.
+    expect(settleInFlight(['a', 'ab', 'abc'], 'ab')).toEqual(['abc']);
+    expect(settleInFlight(['a', 'ab', 'abc'], 'abc')).toEqual([]);
+  });
+
+  it('treats any other value as an external change', () => {
+    expect(settleInFlight(['a', 'ab'], 'reset')).toBeNull();
+    expect(settleInFlight([], 'a')).toBeNull();
   });
 });
 

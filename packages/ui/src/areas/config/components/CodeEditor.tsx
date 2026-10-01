@@ -74,6 +74,19 @@ export function hasLocalEdit(transactions: readonly Transaction[]): boolean {
   return transactions.some((tr) => tr.docChanged && !tr.annotation(valueSync));
 }
 
+/** How many emitted texts to remember while waiting for `value` to catch up. */
+const MAX_IN_FLIGHT = 32;
+
+/**
+ * Texts this editor sent through onChange that `value` hasn't caught up with yet (oldest first). When
+ * `value` is one of them it is our own edit arriving late, not an external change: returns the texts
+ * still in flight (the document is already ahead and must not be reset). Returns null otherwise.
+ */
+export function settleInFlight(inFlight: readonly string[], value: string): string[] | null {
+  const i = inFlight.lastIndexOf(value);
+  return i < 0 ? null : inFlight.slice(i + 1);
+}
+
 /** CodeMirror's default token colors (fixed, light-only hex) mapped to theme tokens that have light and dark values. */
 const TOKEN_COLORS: Record<string, string> = {
   '#404740': 'var(--bb-fg-muted)', // meta
@@ -121,6 +134,7 @@ export function CodeEditor({ value, onChange, language = 'text', readOnly, exten
   const view = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const inFlight = useRef<string[]>([]);
   const comp = useRef({ lang: new Compartment(), ro: new Compartment(), extra: new Compartment(), gutters: new Compartment() });
 
   useEffect(() => {
@@ -145,7 +159,10 @@ export function CodeEditor({ value, onChange, language = 'text', readOnly, exten
         c.ro.of([EditorState.readOnly.of(!!readOnly), EditorView.editable.of(!readOnly)]),
         c.extra.of(extensions ?? []),
         EditorView.updateListener.of((u) => {
-          if (u.docChanged && hasLocalEdit(u.transactions)) onChangeRef.current?.(u.state.doc.toString());
+          if (!u.docChanged || !hasLocalEdit(u.transactions)) return;
+          const text = u.state.doc.toString();
+          inFlight.current = [...inFlight.current.slice(1 - MAX_IN_FLIGHT), text];
+          onChangeRef.current?.(text);
         }),
       ],
     });
@@ -159,6 +176,12 @@ export function CodeEditor({ value, onChange, language = 'text', readOnly, exten
   useEffect(() => {
     const v = view.current;
     if (!v) return;
+    const pending = settleInFlight(inFlight.current, value);
+    if (pending) {
+      inFlight.current = pending;
+      return;
+    }
+    inFlight.current = [];
     const spec = syncValueSpec(v.state, value);
     if (spec) v.dispatch(spec);
   }, [value]);
