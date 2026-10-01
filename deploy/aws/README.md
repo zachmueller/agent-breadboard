@@ -58,17 +58,36 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 
 ## Secrets
 
-Secrets Manager generates all three secrets, so their values never appear in the template, in CDK output, or on the deployer's machine:
+Secrets Manager generates all four secrets, so their values never appear in the template, in CDK output, or on the deployer's machine:
 
 - `breadboard-<name>/db`: RDS credentials (`username`, `password`). The bootstrap script builds `DATABASE_URL` from these plus the RDS endpoint.
 - `breadboard-<name>/token-signing-key`: `TOKEN_SIGNING_KEY`.
 - `breadboard-<name>/broker-master-key`: `BROKER_MASTER_KEY`. 43 alphanumeric characters, which decode as base64 to exactly 32 bytes.
+- `breadboard-<name>/admin-token`: `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN`, the break-glass sign-in for `bootstrap-admin` (see First sign-in).
+
+## First sign-in
+
+The image runs with `NODE_ENV=production`, which refuses the seed's well-known `*-change-me` tokens. Sign in with the
+generated bootstrap admin token, then switch `auth.mode` to OIDC (or set real local tokens) and deactivate
+`bootstrap-admin` in Admin:
+
+```bash
+aws secretsmanager get-secret-value --secret-id breadboard-<name>/admin-token --query SecretString --output text
+```
+
+## Upgrading the server
+
+Deploy with a new image tag: `npx cdk deploy … -c serverImage=$R:server-v0.2` (same for the sandbox images). The images
+live in the instance's CloudFormation::Init metadata, not in its user data, so the deploy neither restarts nor replaces
+the host. cfn-hup on the host notices the metadata change within a minute or two, pulls the images, and recreates the
+`breadboard` container (`/usr/local/bin/breadboard-apply`; log in `/var/log/cfn-hup.log`). The config repo on
+`/var/breadboard` is untouched.
 
 ## Behaviour to know about
 
 - **The AMI is pinned on first synth** (`cdk.context.json`). A new AMI would replace the host, and the config repo lives on the host's root volume at `/var/breadboard`. To move to a newer AMI on purpose, mirror the config repo first (see Backup/DR), then run `npx cdk context --reset <key>`.
 - **RDS modifications** made through a deploy (for example, a new instance class) are expected to apply during the deploy rather than in the maintenance window. CloudFormation has no equivalent of deferring them. This is not yet confirmed; see `docs/verification-plan.md` §7.
-- **Destroy keeps the state.** `npx cdk destroy` leaves a final DB snapshot, all three secrets, and the objects bucket (`DeletionPolicy: RetainExceptOnCreate`, so a failed *first* deploy rolls back completely and can simply be retried). Deletion protection blocks a destroy, so first deploy with `-c dbDeletionProtection=false`. The retained secrets and bucket keep their names, so a new deploy with the same `name` fails until you delete them.
+- **Destroy keeps the state.** `npx cdk destroy` leaves a final DB snapshot, all four secrets, and the objects bucket (`DeletionPolicy: RetainExceptOnCreate`, so a failed *first* deploy rolls back completely and can simply be retried). Deletion protection blocks a destroy, so first deploy with `-c dbDeletionProtection=false`. The retained secrets and bucket keep their names, so a new deploy with the same `name` fails until you delete them.
 
 The server reaches Postgres only through `DATABASE_URL` (+ `DATABASE_SSL=require`); any other managed Postgres works identically through the same seam. The bundled `deploy/compose.yaml` local-Postgres profile remains the dev/quickstart path.
 

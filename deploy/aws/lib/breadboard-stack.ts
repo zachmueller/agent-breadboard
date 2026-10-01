@@ -72,6 +72,21 @@ export const DEFAULTS = {
 const KEEP = RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE;
 
 const USER_DATA = readFileSync(new URL('./user-data.sh', import.meta.url), 'utf8');
+const APPLY_SCRIPT = readFileSync(new URL('./breadboard-apply.sh', import.meta.url), 'utf8');
+
+/** cfn-hup as a systemd service (the AL2023 package may not ship a unit; this one takes precedence if it does). */
+const CFN_HUP_UNIT = `[Unit]
+Description=cfn-hup: apply CloudFormation::Init metadata changes
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/aws/bin/cfn-hup
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+`;
 
 /** A container image reference (`[registry[:port]/]path[:tag][@sha256:digest]`, lowercase path components). */
 const IMAGE_REF = /^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::\d+)?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[\w][\w.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$/;
@@ -179,6 +194,8 @@ export class BreadboardStack extends Stack {
     // 43 alphanumeric chars are valid base64 for exactly 32 bytes (~256 bits), which the broker uses directly
     // (packages/server/src/toolbox/broker.ts, deriveBrokerKey).
     const brokerKey = generated('BrokerMasterKey', 'broker-master-key', 'BROKER_MASTER_KEY: encrypts broker credentials at rest', 43);
+    // Production refuses the seed's well-known local tokens; this is how the operator signs in to configure OIDC.
+    const adminToken = generated('BootstrapAdminToken', 'admin-token', 'BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: break-glass admin sign-in', 48);
     const dbSecret = db.secret!;
 
     // --- Object storage (optional S3-compatible) --------------------------------
@@ -202,7 +219,7 @@ export class BreadboardStack extends Stack {
       }),
     );
     role.addToPolicy(new iam.PolicyStatement({ actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'], resources: ['*'] }));
-    for (const secret of [dbSecret, tokenKey, brokerKey]) secret.grantRead(role);
+    for (const secret of [dbSecret, tokenKey, brokerKey, adminToken]) secret.grantRead(role);
     // Pull access to the ECR repositories the images live in (the bootstrap logs in to their registries).
     const repos = [...new Set([p.serverImage, p.sandboxImageTs, p.sandboxImagePy].map(ecrRepositoryArn).filter((a): a is string => a !== null))];
     if (repos.length) {
@@ -212,6 +229,29 @@ export class BreadboardStack extends Stack {
     db.grantConnect(role, 'breadboard');
     bucket?.grantRead(role);
     bucket?.grantPut(role);
+
+    // One-time host setup; CloudFormation::Init (below) appends cfn-init and the creation signal.
+    const userData = ec2.UserData.forLinux();
+    userData.addCommands(
+      renderUserData({
+        region: this.region,
+        db_secret_arn: dbSecret.secretArn,
+        db_host: db.dbInstanceEndpointAddress,
+        db_port: db.dbInstanceEndpointPort,
+        db_name: 'breadboard',
+        token_secret_arn: tokenKey.secretArn,
+        broker_secret_arn: brokerKey.secretArn,
+        admin_secret_arn: adminToken.secretArn,
+        // CloudFormation cannot reference the instance's own IP inside its user data either; the bootstrap
+        // script resolves this placeholder at runtime via IMDS when `publicUrl` is left empty.
+        public_url: p.publicUrl || `http://__IMDS__:${p.serverPort}`,
+        server_port: String(p.serverPort),
+        object_store: bucket ? 's3' : 'fs',
+        s3_bucket: bucket?.bucketName ?? '',
+        sandbox_runner: p.sandboxRunner,
+        model_provider: 'bedrock',
+      }),
+    );
 
     const server = new ec2.Instance(this, 'Server', {
       instanceName: `${prefix}-server`,
@@ -236,29 +276,34 @@ export class BreadboardStack extends Stack {
           volume: ec2.BlockDeviceVolume.ebs(p.serverRootVolumeGb, { volumeType: ec2.EbsDeviceVolumeType.GP3, encrypted: true }),
         },
       ],
-      userData: ec2.UserData.custom(
-        renderUserData({
-          image: p.serverImage,
-          sandbox_image_ts: p.sandboxImageTs,
-          sandbox_image_py: p.sandboxImagePy,
-          region: this.region,
-          db_secret_arn: dbSecret.secretArn,
-          db_host: db.dbInstanceEndpointAddress,
-          db_port: db.dbInstanceEndpointPort,
-          db_name: 'breadboard',
-          token_secret_arn: tokenKey.secretArn,
-          broker_secret_arn: brokerKey.secretArn,
-          // CloudFormation cannot reference the instance's own IP inside its user data either; the bootstrap
-          // script resolves this placeholder at runtime via IMDS when `publicUrl` is left empty.
-          public_url: p.publicUrl || `http://__IMDS__:${p.serverPort}`,
-          server_port: String(p.serverPort),
-          object_store: bucket ? 's3' : 'fs',
-          s3_bucket: bucket?.bucketName ?? '',
-          sandbox_runner: p.sandboxRunner,
-          model_provider: 'bedrock',
-        }),
-      ),
+      userData,
     });
+
+    // --- Deployed images: CloudFormation::Init + cfn-hup ---------------------------
+    // The images live in instance metadata, not in user data (which runs once per instance): cfn-init applies them on
+    // first boot, and cfn-hup re-applies them in place when a deploy changes the metadata. No fingerprint in the user
+    // data, so an image change neither restarts nor replaces the host (the config repo lives on its root volume).
+    const serverId = this.getLogicalId(server.instance);
+    const deployEnv = [`SERVER_IMAGE=${p.serverImage}`, `SANDBOX_IMAGE_TS=${p.sandboxImageTs}`, `SANDBOX_IMAGE_PY=${p.sandboxImagePy}`, `SERVER_PORT=${p.serverPort}`, ''].join('\n');
+    server.applyCloudFormationInit(
+      ec2.CloudFormationInit.fromElements(
+        ec2.InitFile.fromString('/etc/breadboard/deploy.env', deployEnv, { mode: '000644' }),
+        ec2.InitFile.fromString('/usr/local/bin/breadboard-apply', APPLY_SCRIPT, { mode: '000755' }),
+        ec2.InitFile.fromString('/etc/cfn/cfn-hup.conf', `[main]\nstack=${this.stackId}\nregion=${this.region}\ninterval=1\n`, { mode: '000400' }),
+        // Re-running cfn-init rewrites the files above and runs the commands below again; breadboard-apply is a no-op
+        // when the deployment is unchanged.
+        ec2.InitFile.fromString(
+          '/etc/cfn/hooks.d/breadboard.conf',
+          `[breadboard]\ntriggers=post.update\npath=Resources.${serverId}.Metadata.AWS::CloudFormation::Init\naction=/opt/aws/bin/cfn-init -v --stack ${this.stackName} --resource ${serverId} --region ${this.region}\nrunas=root\n`,
+          { mode: '000400' },
+        ),
+        ec2.InitFile.fromString('/etc/systemd/system/cfn-hup.service', CFN_HUP_UNIT, { mode: '000644' }),
+        ec2.InitCommand.shellCommand('/usr/local/bin/breadboard-apply', { key: '10-apply' }),
+        ec2.InitCommand.shellCommand('systemctl daemon-reload && systemctl enable --now cfn-hup', { key: '20-cfn-hup' }),
+      ),
+      // A failed bootstrap fails the deploy instead of leaving a host that serves nothing.
+      { timeout: Duration.minutes(20), embedFingerprint: false },
+    );
 
     // The resolved AMI id is pinned on purpose (above), so CloudFormation's portability lint does not apply.
     Validations.of(server).acknowledge({ id: 'CloudFormation-Validate::W9010', reason: 'AMI pinned in cdk.context.json so a new AMI never replaces the host' });
@@ -272,6 +317,7 @@ export class BreadboardStack extends Stack {
     new CfnOutput(this, 'DbSecretArn', { description: 'RDS-generated credentials (username, password).', value: dbSecret.secretArn });
     new CfnOutput(this, 'TokenSigningKeySecretArn', { value: tokenKey.secretArn });
     new CfnOutput(this, 'BrokerMasterKeySecretArn', { value: brokerKey.secretArn });
+    new CfnOutput(this, 'AdminTokenSecretArn', { description: 'BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: sign in as bootstrap-admin to configure OIDC.', value: adminToken.secretArn });
     if (bucket) new CfnOutput(this, 'ObjectsBucket', { value: bucket.bucketName });
   }
 }

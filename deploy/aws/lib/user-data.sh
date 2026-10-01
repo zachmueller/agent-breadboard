@@ -1,9 +1,10 @@
 #!/bin/bash
-# Bootstrap the Breadboard reference host: Docker + the server container, secrets from Secrets Manager.
+# One-time setup of the Breadboard reference host: packages, Docker, secrets from Secrets Manager into
+# /etc/breadboard.env, and the sandbox network. cfn-init then installs and runs breadboard-apply (images + container).
 # Rendered by the stack (renderUserData): every dollar-brace placeholder is a stack value, so shell variables
 # here are always written brace-less ($NAME). The stack refuses to synth if a placeholder has no value.
 set -euo pipefail
-dnf install -y docker jq git
+dnf install -y docker jq git aws-cfn-bootstrap
 systemctl enable --now docker
 
 REGION="${region}"
@@ -13,6 +14,7 @@ secret() { aws secretsmanager get-secret-value --region "$REGION" --secret-id "$
 DATABASE_URL=$(secret "${db_secret_arn}" | jq -r '"postgres://\(.username|@uri):\(.password|@uri)@${db_host}:${db_port}/${db_name}"')
 TOKEN_SIGNING_KEY=$(secret "${token_secret_arn}")
 BROKER_MASTER_KEY=$(secret "${broker_secret_arn}")
+BOOTSTRAP_ADMIN_TOKEN=$(secret "${admin_secret_arn}")
 
 PUBLIC_URL="${public_url}"
 if [[ "$PUBLIC_URL" == *"__IMDS__"* ]]; then
@@ -36,36 +38,11 @@ SANDBOX_EGRESS_PROXY_HOST=breadboard
 SANDBOX_API_URL=http://breadboard:${server_port}
 TOKEN_SIGNING_KEY=$TOKEN_SIGNING_KEY
 BROKER_MASTER_KEY=$BROKER_MASTER_KEY
+BREADBOARD_BOOTSTRAP_ADMIN_TOKEN=$BOOTSTRAP_ADMIN_TOKEN
 LOG_PRETTY=false
 ENV
 chmod 600 /etc/breadboard.env
 
-# Private ECR registries need a login (the instance role grants pull on the image repositories).
-pull() {
-  local host region
-  host=$(echo "$1" | cut -d/ -f1)
-  if [[ "$host" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]]; then
-    region=$(echo "$host" | cut -d. -f4)
-    aws ecr get-login-password --region "$region" | docker login --username AWS --password-stdin "$host"
-  fi
-  docker pull "$1"
-}
-
 docker network create --internal breadboard-sandbox || true
-pull "${image}"
-# Tool sandbox images, tagged with the names breadboard.yaml uses by default (sandbox.images).
-if [[ -n "${sandbox_image_ts}" ]]; then pull "${sandbox_image_ts}" && docker tag "${sandbox_image_ts}" breadboard-sandbox-ts:local; fi
-if [[ -n "${sandbox_image_py}" ]]; then pull "${sandbox_image_py}" && docker tag "${sandbox_image_py}" breadboard-sandbox-py:local; fi
-docker rm -f breadboard || true
-# Root in the container: it holds the Docker socket (root-equivalent anyway) and writes the root-owned
-# /var/breadboard bind mount. Tool code runs in unprivileged sibling containers.
-docker create --name breadboard --restart unless-stopped --user root \
-  --env-file /etc/breadboard.env \
-  -p ${server_port}:${server_port} \
-  -v /var/breadboard:/var/breadboard \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  "${image}"
-# Tool containers live on the internal-only sandbox network; joining it lets them reach the egress proxy and the
-# API at the container name `breadboard` (SANDBOX_EGRESS_PROXY_HOST, SANDBOX_API_URL above).
-docker network connect breadboard-sandbox breadboard
-docker start breadboard
+# The images and the server container are managed by /usr/local/bin/breadboard-apply, which cfn-init installs and
+# runs next (and cfn-hup re-runs when a deploy changes the images).

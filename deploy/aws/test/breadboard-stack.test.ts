@@ -74,6 +74,14 @@ function userData(t: Template): { text: string; refs: string[] } {
   };
 }
 
+/** CloudFormation::Init files on the server instance: path → content (token parts dropped). */
+function initFiles(t: Template): Record<string, string> {
+  const instance = Object.values(t.findResources('AWS::EC2::Instance'))[0];
+  const files = instance.Metadata['AWS::CloudFormation::Init'].config.files as Record<string, { content: unknown }>;
+  const text = (c: unknown): string => (typeof c === 'string' ? c : ((c as any)['Fn::Join'][1] as unknown[]).filter((x) => typeof x === 'string').join(''));
+  return Object.fromEntries(Object.entries(files).map(([path, f]) => [path, text(f.content)]));
+}
+
 function logicalId(t: Template, type: string, props: Record<string, unknown>): string {
   const ids = Object.keys(t.findResources(type, { Properties: props }));
   expect(ids).toHaveLength(1);
@@ -150,10 +158,11 @@ describe('BreadboardStack', () => {
     expect(pulls).toHaveLength(1);
     expect([pulls[0]!.Resource].flat().sort()).toEqual(['arn:aws:ecr:us-east-1:123456789012:repository/agent-breadboard', 'arn:aws:ecr:us-east-1:123456789012:repository/sandboxes']);
     expect(statements(withSandboxes)).toContainEqual(expect.objectContaining({ Action: 'ecr:GetAuthorizationToken', Resource: '*' }));
-    const { text } = userData(withSandboxes);
-    expect(text).toContain('aws ecr get-login-password');
-    expect(text).toContain(`docker tag "${ts}" breadboard-sandbox-ts:local`);
-    expect(text).toContain(`docker tag "${py}" breadboard-sandbox-py:local`);
+    const files = initFiles(withSandboxes);
+    expect(files['/usr/local/bin/breadboard-apply']).toContain('aws ecr get-login-password');
+    expect(files['/usr/local/bin/breadboard-apply']).toContain('docker tag "$SANDBOX_IMAGE_TS" breadboard-sandbox-ts:local');
+    expect(files['/usr/local/bin/breadboard-apply']).toContain('docker tag "$SANDBOX_IMAGE_PY" breadboard-sandbox-py:local');
+    expect(files['/etc/breadboard/deploy.env']).toContain(`SANDBOX_IMAGE_TS=${ts}\nSANDBOX_IMAGE_PY=${py}\n`);
     // A non-ECR image needs no ECR grant.
     const hub = synth({ serverImage: 'ghcr.io/example/agent-breadboard:v1' });
     expect(statements(hub).filter((s) => [s.Action].flat().some((a: string) => a.startsWith('ecr:')))).toEqual([]);
@@ -174,9 +183,9 @@ describe('BreadboardStack', () => {
     closed.resourceCountIs('AWS::EC2::SecurityGroupIngress', 1); // only Postgres from the server
   });
 
-  it('generates all three secrets in Secrets Manager and retains them', () => {
+  it('generates all four secrets in Secrets Manager and retains them', () => {
     const secrets = t.findResources('AWS::SecretsManager::Secret');
-    expect(Object.keys(secrets)).toHaveLength(3);
+    expect(Object.keys(secrets)).toHaveLength(4);
     for (const secret of Object.values(secrets)) {
       expect(secret.DeletionPolicy).toBe('RetainExceptOnCreate');
       expect(secret.Properties.SecretString).toBeUndefined();
@@ -195,6 +204,10 @@ describe('BreadboardStack', () => {
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'breadboard-test/broker-master-key',
       GenerateSecretString: { PasswordLength: 43, ExcludePunctuation: true, IncludeSpace: false },
+    });
+    t.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'breadboard-test/admin-token',
+      GenerateSecretString: { PasswordLength: 48, ExcludePunctuation: true, IncludeSpace: false },
     });
   });
 
@@ -219,7 +232,10 @@ describe('BreadboardStack', () => {
     const attachment = logicalId(t, 'AWS::SecretsManager::SecretTargetAttachment', {});
     const tokenKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/token-signing-key' });
     const brokerKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/broker-master-key' });
-    expect(secretReads.sort()).toEqual([attachment, brokerKey, tokenKey].map((id) => JSON.stringify({ Ref: id })).sort());
+    const adminToken = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/admin-token' });
+    expect(secretReads.sort()).toEqual([attachment, brokerKey, tokenKey, adminToken].map((id) => JSON.stringify({ Ref: id })).sort());
+    // cfn-init and cfn-hup read the instance metadata and signal creation.
+    expect(actions(t)).toEqual(expect.arrayContaining(['cloudformation:DescribeStackResource', 'cloudformation:SignalResource']));
 
     const connect = all.find((s) => s.Action === 'rds-db:connect');
     expect(JSON.stringify(connect?.Resource)).toMatch(/:dbuser:.*DbiResourceId.*\/breadboard/);
@@ -277,25 +293,33 @@ describe('BreadboardStack', () => {
       'MODEL_PROVIDER=bedrock',
       'OBJECT_STORE=s3',
       'SANDBOX_RUNNER=docker',
-      `pull "${IMAGE}"`, // the ECR-login-aware pull helper
       // The server joins the sandbox network so tool containers reach its proxy and API by container name.
       'SANDBOX_EGRESS_PROXY_HOST=breadboard',
       'SANDBOX_API_URL=http://breadboard:4000',
-      'docker network connect breadboard-sandbox breadboard',
-      '--user root',
+      'BREADBOARD_BOOTSTRAP_ADMIN_TOKEN=$BOOTSTRAP_ADMIN_TOKEN',
+      'aws-cfn-bootstrap',
+      'docker network create --internal breadboard-sandbox',
     ]) {
       expect(text).toContain(line);
     }
     expect(text).toContain('http://__IMDS__:4000');
+    // The images and the container are not in the one-time user data; cfn-init runs breadboard-apply.
+    expect(text).not.toContain(IMAGE);
+    expect(text).toContain('/opt/aws/bin/cfn-init');
+    const apply = initFiles(t)['/usr/local/bin/breadboard-apply']!;
+    for (const line of ['pull "$SERVER_IMAGE"', 'docker network connect breadboard-sandbox breadboard', '--user root', '--env-file /etc/breadboard.env']) expect(apply).toContain(line);
+    expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(`SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\n`);
     const attachment = logicalId(t, 'AWS::SecretsManager::SecretTargetAttachment', {});
     const tokenKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/token-signing-key' });
     const brokerKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/broker-master-key' });
+    const adminToken = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/admin-token' });
     const db = logicalId(t, 'AWS::RDS::DBInstance', {});
     expect(refs).toEqual(
       expect.arrayContaining([
         JSON.stringify({ Ref: attachment }),
         JSON.stringify({ Ref: tokenKey }),
         JSON.stringify({ Ref: brokerKey }),
+        JSON.stringify({ Ref: adminToken }),
         JSON.stringify({ 'Fn::GetAtt': [db, 'Endpoint.Address'] }),
       ]),
     );
@@ -317,9 +341,23 @@ describe('BreadboardStack', () => {
     priv.hasOutput('ServerIp', { Value: { 'Fn::GetAtt': [instance, 'PrivateIp'] } });
   });
 
+  it('upgrades images in place: cfn-hup watches the metadata, and an image change leaves the user data alone', () => {
+    const server = logicalId(t, 'AWS::EC2::Instance', {});
+    const hook = initFiles(t)['/etc/cfn/hooks.d/breadboard.conf']!;
+    expect(hook).toContain('triggers=post.update');
+    expect(hook).toContain(`path=Resources.${server}.Metadata.AWS::CloudFormation::Init`);
+    expect(hook).toContain(`--resource ${server}`);
+    expect(initFiles(t)['/etc/systemd/system/cfn-hup.service']).toContain('ExecStart=/opt/aws/bin/cfn-hup');
+    t.hasResource('AWS::EC2::Instance', { CreationPolicy: { ResourceSignal: { Count: 1, Timeout: 'PT20M' } } });
+    const next = synth({ serverImage: '123456789012.dkr.ecr.us-east-1.amazonaws.com/agent-breadboard:v0.2' });
+    const ud = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
+    expect(ud(next)).toBe(ud(t)); // no restart, no replacement
+    expect(initFiles(next)['/etc/breadboard/deploy.env']).toContain('SERVER_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/agent-breadboard:v0.2');
+  });
+
   it('emits the operator outputs', () => {
     expect(Object.keys(t.findOutputs('*')).sort()).toEqual(
-      ['BrokerMasterKeySecretArn', 'DbSecretArn', 'ObjectsBucket', 'RdsEndpoint', 'ServerIp', 'ServerUrl', 'TokenSigningKeySecretArn'].sort(),
+      ['AdminTokenSecretArn', 'BrokerMasterKeySecretArn', 'DbSecretArn', 'ObjectsBucket', 'RdsEndpoint', 'ServerIp', 'ServerUrl', 'TokenSigningKeySecretArn'].sort(),
     );
   });
 
