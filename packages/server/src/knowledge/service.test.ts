@@ -183,6 +183,23 @@ describe('KnowledgeService', () => {
     expect(hybrid[0]!.source).toBe('hybrid');
   });
 
+  it('embeds new notes and unchanged connector bodies without waiting for a live edit', async () => {
+    await kit.close();
+    kit = await createKnowledgeKit({ embedDebounceMs: 10 });
+    const chunks = async (uid: string) => (await kit.f.db.query(`SELECT count(*)::int AS n FROM knowledge_chunks WHERE uid = $1`, [uid])).rows[0].n as number;
+    const eventually = async (uid: string) => {
+      for (let i = 0; i < 100 && (await chunks(uid)) === 0; i++) await new Promise((r) => setTimeout(r, 20));
+      return chunks(uid);
+    };
+    const created = await kit.knowledge.createNote({ title: 'Freezer inventory', markdown: 'Count the freezer racks every Friday.', domains: ['ops'], by: kit.f.memberPrincipal });
+    expect(await eventually(created.uid)).toBe(1);
+    // The connector path: the node is created with its body, then replaced with the same markdown.
+    const md = 'Synced from the wiki.';
+    const synced = await kit.f.nodes.create({ type: 'knowledge', title: 'Wiki page', properties: { domains: ['ops'] }, body_text: md, crdt: true, tags: [], scope: 'team', created_by: { kind: 'service', id: 'connector' } });
+    await kit.knowledge.replaceBody({ uid: synced.uid, markdown: md, by: { kind: 'service', id: 'connector' }, label: 'connector-sync' });
+    expect(await eventually(synced.uid)).toBe(1);
+  });
+
   it('falls back to text search when embeddings fail in hybrid mode', async () => {
     await kit.close();
     kit = await createKnowledgeKit({ gatewayFail: true });

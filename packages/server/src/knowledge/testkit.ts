@@ -95,7 +95,7 @@ export interface KnowledgeKit {
   close(): Promise<void>;
 }
 
-export async function createKnowledgeKit(opts: { settings?: BreadboardConfig; gatewayFail?: boolean; debounceMs?: number } = {}): Promise<KnowledgeKit> {
+export async function createKnowledgeKit(opts: { settings?: BreadboardConfig; gatewayFail?: boolean; debounceMs?: number; embedDebounceMs?: number } = {}): Promise<KnowledgeKit> {
   const f = await createFoundation();
   const settings = opts.settings ?? testSettings();
   const events = fakeEvents();
@@ -121,7 +121,7 @@ export async function createKnowledgeKit(opts: { settings?: BreadboardConfig; ga
     maxDebounceMs: 200,
     compactIntervalMs: 0,
   });
-  const knowledge = createKnowledgeService({ db: f.db, team_id: f.team_id, nodes: f.nodes, linkIndexer: f.linkIndexer, sync, gateway, settings: () => settings, events, log: f.log, embedDebounceMs: 0 });
+  const knowledge = createKnowledgeService({ db: f.db, team_id: f.team_id, nodes: f.nodes, linkIndexer: f.linkIndexer, sync, gateway, settings: () => settings, events, log: f.log, embedDebounceMs: opts.embedDebounceMs ?? 0 });
   return {
     f,
     sync,

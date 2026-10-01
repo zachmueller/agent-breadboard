@@ -223,6 +223,8 @@ export class KnowledgeServiceImpl implements KnowledgeService {
     });
     const doc = await this.liveDoc(node.uid);
     await this.snapshot(node.uid, doc, ['publish'], by.actor);
+    // Seeding the live doc is an internal change, so no sync listener fires for a new note.
+    this.autoReindex(node.uid);
     await this.deps.events.publish('node.updated', { uid: node.uid, type: 'knowledge', title: node.title, created: true }, nodeVisibility({ ...node, session_id: by.session_id ?? null })).catch(() => undefined);
     return this.deps.nodes.mustGet(node.uid);
   }
@@ -349,6 +351,8 @@ export class KnowledgeServiceImpl implements KnowledgeService {
       const live = await this.liveDoc(uid);
       const r = reconcile(cloneDoc(live), markdown, { actor: by });
       if (changes(r) > 0) await this.deps.sync.transact(uid, by, (doc) => Y.applyUpdate(doc, r.update));
+      // Also when nothing changed: a connector creates the node with its body, then replaces it with the same text.
+      else this.autoReindex(uid);
       const snap = await this.snapshot(uid, live, [label], by);
       return { revision: snap.revision.revision_id };
     });
@@ -481,6 +485,11 @@ export class KnowledgeServiceImpl implements KnowledgeService {
   }
 
   // --- Embeddings -------------------------------------------------------------------------------
+
+  /** Debounced embedding refresh, when auto-reindex is on (live edits reach it through the sync listener). */
+  private autoReindex(uid: string): void {
+    if ((this.deps.embedDebounceMs ?? 3000) > 0) this.scheduleReindex(uid);
+  }
 
   private scheduleReindex(uid: string): void {
     const wait = this.deps.embedDebounceMs ?? 3000;
