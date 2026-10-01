@@ -157,12 +157,34 @@ function forcedToolInstruction(name: string): string {
   return `You must respond by calling the \`${name}\` tool now. Do not reply with plain text.`;
 }
 
-function contentToConverse(c: ChatContent, modelId: string): ContentBlock | null {
+/**
+ * Tool names as sent to the model. Nova's tool-call grammar fails on names outside `[A-Za-z0-9_]` ("Model produced
+ * invalid sequence as part of ToolUse" for `search-scholarly`; verified 2026-10-01), and tool-extension slugs are
+ * hyphenated, so Nova gets underscore aliases (deduplicated in tool order). Null for every other model family.
+ */
+export function toolNameAliases(modelId: string, names: string[]): Map<string, string> | null {
+  if (modelFamily(modelId) !== 'nova' || !names.some((n) => /[^A-Za-z0-9_]/.test(n))) return null;
+  const out = new Map<string, string>();
+  const used = new Set<string>();
+  for (const name of names) {
+    const base = name.replace(/[^A-Za-z0-9_]/g, '_');
+    let alias = base;
+    for (let i = 2; used.has(alias); i++) alias = `${base}_${i}`;
+    used.add(alias);
+    out.set(name, alias);
+  }
+  return out;
+}
+
+type Rename = (name: string) => string;
+const asIs: Rename = (n) => n;
+
+function contentToConverse(c: ChatContent, modelId: string, rename: Rename = asIs): ContentBlock | null {
   switch (c.type) {
     case 'text':
       return c.text.length ? ({ text: c.text } as ContentBlock) : null;
     case 'tool_use':
-      return { toolUse: { toolUseId: c.id, name: c.name, input: (c.input ?? {}) as any } } as ContentBlock;
+      return { toolUse: { toolUseId: c.id, name: rename(c.name), input: (c.input ?? {}) as any } } as ContentBlock;
     case 'tool_result': {
       const anthropic = modelFamily(modelId) === 'anthropic';
       const text = c.content.length ? c.content : c.is_error ? 'error' : '(empty)';
@@ -182,7 +204,7 @@ function contentToConverse(c: ChatContent, modelId: string): ContentBlock | null
  * Converse requires alternating user/assistant turns starting with `user`. Our `system`/`tool` roles fold into
  * user turns; consecutive same-role messages merge (tool results first, as Claude requires).
  */
-export function toConverseMessages(messages: ChatMessage[], modelId: string): Message[] {
+export function toConverseMessages(messages: ChatMessage[], modelId: string, rename: Rename = asIs): Message[] {
   const out: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] }> = [];
   const normalized = normalizeModelId(modelId);
   for (const m of messages as BedrockChatMessage[]) {
@@ -191,7 +213,7 @@ export function toConverseMessages(messages: ChatMessage[], modelId: string): Me
     if (role === 'assistant' && m.bedrock_raw && normalizeModelId(m.bedrock_raw.model_id) === normalized) {
       blocks = m.bedrock_raw.content;
     } else {
-      blocks = m.content.map((c) => contentToConverse(c, modelId)).filter((b): b is ContentBlock => b !== null);
+      blocks = m.content.map((c) => contentToConverse(c, modelId, rename)).filter((b): b is ContentBlock => b !== null);
       if (m.role === 'system') blocks = blocks.map((b) => ('text' in b && b.text ? ({ text: `[system] ${b.text}` } as ContentBlock) : b));
     }
     if (!blocks.length) continue;
@@ -209,13 +231,38 @@ export function toConverseMessages(messages: ChatMessage[], modelId: string): Me
   return out as Message[];
 }
 
+/**
+ * Nova reads only `type`, `properties`, and `required` at a tool schema's top level (Nova user guide, "Troubleshooting
+ * tool calls"), so local `#/defs/…` and `#/$defs/…` refs are inlined before the other top-level keys are dropped.
+ */
+export function novaToolSchema(schema: unknown): Record<string, unknown> {
+  const root = (schema && typeof schema === 'object' ? schema : {}) as Record<string, any>;
+  const defs: Record<string, unknown> = { ...(root.$defs ?? {}), ...(root.defs ?? {}) };
+  const inline = (v: unknown, depth: number): unknown => {
+    if (Array.isArray(v)) return v.map((x) => inline(x, depth));
+    if (!v || typeof v !== 'object') return v;
+    const o = v as Record<string, unknown>;
+    const m = typeof o.$ref === 'string' ? /^#\/\$?defs\/(.+)$/.exec(o.$ref) : null;
+    if (m && defs[m[1]!] !== undefined && depth < 8) {
+      const { $ref: _ref, ...rest } = o;
+      return inline({ ...(defs[m[1]!] as object), ...rest }, depth + 1);
+    }
+    return Object.fromEntries(Object.entries(o).map(([k, x]) => [k, inline(x, depth)]));
+  };
+  const required = Array.isArray(root.required) && root.required.length ? { required: root.required } : {};
+  return { type: 'object', properties: inline(root.properties ?? {}, 0), ...required };
+}
+
 export function toConverseRequest(req: ProviderRequest): ConverseCommandInput {
   const modelId = req.model_id;
+  const nova = modelFamily(modelId) === 'nova';
+  const aliases = toolNameAliases(modelId, (req.tools ?? []).map((t) => t.name));
+  const rename: Rename = aliases ? (n) => aliases.get(n) ?? n.replace(/[^A-Za-z0-9_]/g, '_') : asIs;
   const system: string[] = [];
   if (req.system?.trim()) system.push(req.system);
   const input: ConverseCommandInput = {
     modelId,
-    messages: toConverseMessages(req.messages, modelId),
+    messages: toConverseMessages(req.messages, modelId, rename),
     inferenceConfig: {
       maxTokens: req.max_tokens ?? defaultMaxTokens(modelId),
       ...(req.temperature !== undefined && acceptsTemperature(modelId) ? { temperature: req.temperature } : {}),
@@ -224,13 +271,19 @@ export function toConverseRequest(req: ProviderRequest): ConverseCommandInput {
   if (req.tools?.length) {
     input.toolConfig = {
       tools: req.tools.map((t) => ({
-        toolSpec: { name: t.name, description: t.description || t.name, inputSchema: { json: (t.input_schema ?? { type: 'object' }) as any } },
+        toolSpec: { name: rename(t.name), description: t.description || t.name, inputSchema: { json: (nova ? novaToolSchema(t.input_schema) : (t.input_schema ?? { type: 'object' })) as any } },
       })),
     };
+    // Nova calls tools reliably only with greedy decoding; otherwise it fails with "Model produced invalid sequence
+    // as part of ToolUse" (Nova user guide, "Troubleshooting tool calls").
+    if (nova) {
+      input.inferenceConfig = { ...input.inferenceConfig, temperature: 0 };
+      input.additionalModelRequestFields = { inferenceConfig: { topK: 1 } };
+    }
     if (req.force_tool && req.tools.some((t) => t.name === req.force_tool)) {
-      const choice = toolChoiceFor(modelId, req.force_tool, req.tools.length);
+      const choice = toolChoiceFor(modelId, rename(req.force_tool), req.tools.length);
       if (choice) input.toolConfig.toolChoice = choice;
-      else system.push(forcedToolInstruction(req.force_tool));
+      else system.push(forcedToolInstruction(rename(req.force_tool)));
     }
   }
   if (system.length) input.system = system.map((text) => ({ text }));
@@ -276,9 +329,11 @@ function contentFromConverse(blocks: ContentBlock[]): ChatContent[] {
   return out;
 }
 
-export function fromConverseResponse(out: Pick<ConverseCommandOutput, 'output' | 'stopReason' | 'usage'>, modelId: string, latencyMs: number, provider = 'bedrock'): ProviderResponse {
+/** `aliases` (original → sent, from `toolNameAliases`) maps tool calls back to the real tool names; `bedrock_raw` keeps the aliases for replay. */
+export function fromConverseResponse(out: Pick<ConverseCommandOutput, 'output' | 'stopReason' | 'usage'>, modelId: string, latencyMs: number, provider = 'bedrock', aliases: Map<string, string> | null = null): ProviderResponse {
   const raw = (out.output && 'message' in out.output ? out.output.message?.content : undefined) ?? [];
-  const content = contentFromConverse(raw);
+  const original = aliases ? new Map([...aliases].map(([name, alias]) => [alias, name])) : null;
+  const content = contentFromConverse(raw).map((c) => (original && c.type === 'tool_use' && original.has(c.name) ? { ...c, name: original.get(c.name)! } : c));
   let stop = mapStopReason(out.stopReason);
   if (stop !== 'tool_use' && content.some((c) => c.type === 'tool_use') && stop === 'other') stop = 'tool_use';
   const message: BedrockChatMessage = { role: 'assistant', content };
@@ -377,6 +432,7 @@ export class BedrockProvider implements ModelProvider {
 
   async invoke(req: ProviderRequest): Promise<ProviderResponse> {
     let input = toConverseRequest(req);
+    const aliases = toolNameAliases(req.model_id, (req.tools ?? []).map((t) => t.name));
     const started = Date.now();
     const out: ConverseCommandOutput = await this.withRetry(req.model_id, async () => {
       try {
@@ -384,17 +440,18 @@ export class BedrockProvider implements ModelProvider {
       } catch (e) {
         if (req.force_tool && input.toolConfig?.toolChoice && classifyBedrockError(e) === 'forced-tool-rejected') {
           this.log?.info({ model_id: req.model_id }, 'model rejected forced tool_choice; retrying with auto + instruction');
-          input = withoutForcedToolChoice(input, req.force_tool);
+          input = withoutForcedToolChoice(input, aliases?.get(req.force_tool) ?? req.force_tool);
           return await this.client.send(new ConverseCommand(input));
         }
         throw e;
       }
     });
-    return fromConverseResponse(out, req.model_id, Date.now() - started, this.name);
+    return fromConverseResponse(out, req.model_id, Date.now() - started, this.name, aliases);
   }
 
   async *stream(req: ProviderRequest): AsyncIterable<{ type: 'text'; text: string } | { type: 'done'; response: ProviderResponse }> {
     const input = toConverseRequest(req);
+    const aliases = toolNameAliases(req.model_id, (req.tools ?? []).map((t) => t.name));
     const started = Date.now();
     // Retries only apply to opening the stream (before any event was yielded).
     const res = await this.withRetry(req.model_id, () => this.client.send(new ConverseStreamCommand(input)));
@@ -456,6 +513,7 @@ export class BedrockProvider implements ModelProvider {
       req.model_id,
       Date.now() - started,
       this.name,
+      aliases,
     );
     yield { type: 'done', response };
   }

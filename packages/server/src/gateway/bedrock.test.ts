@@ -10,6 +10,8 @@ import {
   supportsForcedToolChoice,
   toConverseMessages,
   toConverseRequest,
+  novaToolSchema,
+  toolNameAliases,
 } from './bedrock.js';
 import { isProviderUnavailable } from './errors.js';
 import { DEFAULT_PRICE, computeCost, lookupPrice, normalizeModelId, priceFor } from './pricing.js';
@@ -50,6 +52,61 @@ describe('toConverseRequest', () => {
     const m: ChatMessage[] = [{ role: 'user', content: [{ type: 'text', text: 'x' }] }];
     expect(toConverseRequest({ system: '', model_id: OPUS55, messages: m, temperature: 0.2 }).inferenceConfig?.temperature).toBeUndefined();
     expect(toConverseRequest({ system: '', model_id: 'amazon.nova-pro-v1:0', messages: m, temperature: 0.2 }).inferenceConfig?.temperature).toBe(0.2);
+  });
+
+  it('uses greedy decoding and top-level-only tool schemas for Nova tool calls', () => {
+    const m: ChatMessage[] = [{ role: 'user', content: [{ type: 'text', text: 'x' }] }];
+    const schema = {
+      type: 'object',
+      required: ['exit', 'output'],
+      additionalProperties: false,
+      properties: { exit: { type: 'string' }, output: { type: 'object', properties: { a: { $ref: '#/defs/ref', description: 'the ref' } } } },
+      defs: { ref: { type: 'object', required: ['uid'], properties: { uid: { type: 'string' } } } },
+    };
+    const tools = [{ name: 'breadboard_finish', description: 'finish', input_schema: schema }];
+    const nova = toConverseRequest({ system: '', model_id: 'us.amazon.nova-pro-v1:0', messages: m, tools, temperature: 0.7 });
+    expect(nova.inferenceConfig?.temperature).toBe(0);
+    expect(nova.additionalModelRequestFields).toEqual({ inferenceConfig: { topK: 1 } });
+    const json = nova.toolConfig?.tools?.[0]?.toolSpec?.inputSchema?.json as any;
+    expect(Object.keys(json).sort()).toEqual(['properties', 'required', 'type']);
+    expect(json.properties.output.properties.a).toEqual({ type: 'object', required: ['uid'], properties: { uid: { type: 'string' } }, description: 'the ref' });
+    // Claude keeps the schema as given and gets no Nova-specific fields; Nova without tools keeps its temperature.
+    const claude = toConverseRequest({ system: '', model_id: OPUS5, messages: m, tools });
+    expect(claude.toolConfig?.tools?.[0]?.toolSpec?.inputSchema?.json).toEqual(schema);
+    expect(claude.additionalModelRequestFields).toBeUndefined();
+    expect(toConverseRequest({ system: '', model_id: 'us.amazon.nova-pro-v1:0', messages: m, temperature: 0.7 }).inferenceConfig?.temperature).toBe(0.7);
+    expect(novaToolSchema(undefined)).toEqual({ type: 'object', properties: {} });
+  });
+
+  it('aliases hyphenated tool names for Nova and maps tool calls back', () => {
+    const NOVA = 'us.amazon.nova-pro-v1:0';
+    const tools = [
+      { name: 'search-scholarly', description: 's', input_schema: { type: 'object', properties: {} } },
+      { name: 'search_scholarly', description: 'clash', input_schema: { type: 'object', properties: {} } },
+      { name: 'breadboard_finish', description: 'f', input_schema: { type: 'object', properties: {} } },
+    ];
+    const aliases = toolNameAliases(NOVA, tools.map((t) => t.name))!;
+    expect([...aliases]).toEqual([['search-scholarly', 'search_scholarly'], ['search_scholarly', 'search_scholarly_2'], ['breadboard_finish', 'breadboard_finish']]);
+    expect(toolNameAliases(OPUS5, tools.map((t) => t.name))).toBeNull();
+    expect(toolNameAliases(NOVA, ['breadboard_finish'])).toBeNull();
+    const messages: ChatMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'search-scholarly', input: { query: 'x' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '[]' }] },
+    ];
+    const input = toConverseRequest({ system: '', model_id: NOVA, messages, tools, force_tool: 'search-scholarly' });
+    expect(input.toolConfig?.tools?.map((t) => t.toolSpec?.name)).toEqual(['search_scholarly', 'search_scholarly_2', 'breadboard_finish']);
+    expect(input.toolConfig?.toolChoice).toEqual({ tool: { name: 'search_scholarly' } });
+    expect((input.messages?.[1]?.content?.[0] as any).toolUse.name).toBe('search_scholarly');
+    const res = fromConverseResponse(
+      { output: { message: { role: 'assistant', content: [{ toolUse: { toolUseId: 't2', name: 'search_scholarly', input: { query: 'y' } } }] } }, stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+      NOVA,
+      5,
+      'bedrock',
+      aliases,
+    );
+    expect(res.message.content).toEqual([{ type: 'tool_use', id: 't2', name: 'search-scholarly', input: { query: 'y' } }]);
+    expect((res.message as any).bedrock_raw.content[0].toolUse.name).toBe('search_scholarly'); // replayed to Nova as sent
   });
 
   it('marks non-Claude tool errors in text instead of status', () => {
