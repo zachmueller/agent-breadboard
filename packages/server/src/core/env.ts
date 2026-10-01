@@ -78,7 +78,7 @@ export function loadEnv(overrides: Partial<Record<keyof Env, string | boolean | 
       let v = m[2]!;
       const quoted = /^(["']).*\1$/.test(v);
       if (quoted) v = v.slice(1, -1);
-      else v = v.replace(/\s+#.*$/, '').trim(); // strip inline comments
+      else v = v.replace(/(^|\s+)#.*$/, '').trim(); // strip inline comments, including after an empty value
       fileVars[m[1]!] = v;
     }
   }
