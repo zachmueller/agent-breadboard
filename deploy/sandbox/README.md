@@ -32,7 +32,16 @@ docker run -i --rm --read-only --tmpfs /work --network none \
   -v "$PWD/my-tool:/tool:ro" breadboard-sandbox-ts:local < request.json
 ```
 
-Python tools that need third-party packages can either vendor them in the tool directory or use a derived image (`FROM breadboard-sandbox-py:local`) referenced from `sandbox.images.python`.
+Python tools that need third-party packages can either vendor them in the tool directory or use a derived image referenced from `sandbox.images.python`. The base image has no pip, so restore it for the install and remove it again:
+
+```dockerfile
+FROM breadboard-sandbox-py:local
+USER root
+RUN python3 -m ensurepip \
+ && python3 -m pip install --no-cache-dir strands-agents \
+ && python3 -m pip uninstall -y pip
+USER 10001:10001
+```
 
 ## Runner modes
 
@@ -83,30 +92,42 @@ If a network with that name exists but is **not** internal, the server logs an e
 
 ### Making the proxy reachable from the sandbox network
 
-Containers reach the proxy at `SANDBOX_EGRESS_PROXY_HOST`, which defaults to `host.docker.internal`. Each container maps that name to the host gateway through `ExtraHosts`. Whether the host gateway is reachable from an `--internal` network depends on the platform:
+Containers reach the proxy at `SANDBOX_EGRESS_PROXY_HOST`, which defaults to `host.docker.internal`. Each container maps that name to the host gateway through `ExtraHosts`. An `--internal` network has no route off its own bridge, so whether the host gateway is reachable depends on where the server runs:
 
-- **Docker Desktop:** works out of the box.
-- **Linux, with the server running on the host:** it usually works. The proxy must listen on the bridge gateway address; it binds `0.0.0.0` by default. Firewall rules must allow the `breadboard-sandbox` bridge to reach port 4100.
-- **Linux, with the server in a container** (`deploy/compose.yaml`, profile `sandbox-docker`): the recommended topology is to attach the server container to `breadboard-sandbox` as well and point the sandboxes at its name:
+- **Server in a container** (recommended; `deploy/compose.sandbox-docker.yaml`, and the AWS host in `deploy/aws`): attach the server container to `breadboard-sandbox` as well and point the sandboxes at its name. Verified on Colima (macOS) with the compose override:
 
   ```yaml
   services:
-    server-docker-sandbox:
+    server:
       environment:
         SANDBOX_RUNNER: docker
-        SANDBOX_EGRESS_PROXY_HOST: server-docker-sandbox   # the server's DNS name on breadboard-sandbox
-        PUBLIC_URL: http://server-docker-sandbox:4000      # the URL tool code uses for ctx primitives
-      networks: [default, breadboard-sandbox]
+        SANDBOX_EGRESS_PROXY_HOST: server       # the server's DNS name on breadboard-sandbox
+        SANDBOX_API_URL: http://server:4000     # the URL tool code uses for ctx primitives
+      networks: [default, sandbox]
   networks:
-    breadboard-sandbox:
-      external: true
+    sandbox:
+      name: breadboard-sandbox
+      internal: true
   ```
 
   On this topology the sandboxes still have no route to the internet. Their only reachable peer is the server, whose proxy enforces the allowlists.
+- **Server on a macOS host with Colima:** the host gateway is *not* reachable from the internal network (`ENETUNREACH`; verified 2026-10-01). Run a relay container that sits on both networks and forwards only the proxy port, then point the sandboxes at it:
+
+  ```sh
+  docker run -d --name bb-egress-relay --restart unless-stopped --add-host host.docker.internal:host-gateway \
+    alpine/socat TCP-LISTEN:4100,fork,reuseaddr TCP:host.docker.internal:4100
+  docker network connect breadboard-sandbox bb-egress-relay
+  # .env: SANDBOX_EGRESS_PROXY_HOST=bb-egress-relay
+  #       SANDBOX_DOCKER_SOCKET=$HOME/.colima/default/docker.sock
+  ```
+
+  Colima delivers the relay's traffic to the host's loopback, so `PUBLIC_URL=http://localhost:4000` works as the API destination. The relay only reaches the proxy, which still requires per-execution credentials.
+- **Docker Desktop, server on the host:** not yet verified. If the host gateway turns out to be unreachable from the internal network, use the relay above.
+- **Linux, server on the host:** not yet verified. The proxy binds `0.0.0.0` by default; firewall rules must allow the `breadboard-sandbox` bridge to reach port 4100.
 
 **Tool code calls back into the Breadboard API** for ctx primitives such as `createArtifact` and `runTool`:
-- It uses `BREADBOARD_API_URL` (the server's `PUBLIC_URL`) and an execution-scoped actor token. The token's TTL is the tool timeout plus 60 s.
-- In docker mode these calls also go through the proxy, with the API host as the implicit destination. `PUBLIC_URL` must therefore resolve and be reachable *from the proxy*.
+- It uses `BREADBOARD_API_URL` (`SANDBOX_API_URL`, else the server's `PUBLIC_URL`) and an execution-scoped actor token. The token's TTL is the tool timeout plus 60 s.
+- In docker mode these calls also go through the proxy, with the API host as the implicit destination. `SANDBOX_API_URL` (or `PUBLIC_URL`) must therefore resolve and be reachable *from the proxy*. Set `SANDBOX_API_URL` when the server joins the sandbox network under a container name, so `PUBLIC_URL` can stay browser-facing.
 
 ## Credentials
 

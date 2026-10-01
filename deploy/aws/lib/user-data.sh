@@ -32,6 +32,8 @@ AWS_REGION=$REGION
 OBJECT_STORE=${object_store}
 OBJECT_STORE_S3_BUCKET=${s3_bucket}
 SANDBOX_RUNNER=${sandbox_runner}
+SANDBOX_EGRESS_PROXY_HOST=breadboard
+SANDBOX_API_URL=http://breadboard:${server_port}
 TOKEN_SIGNING_KEY=$TOKEN_SIGNING_KEY
 BROKER_MASTER_KEY=$BROKER_MASTER_KEY
 LOG_PRETTY=false
@@ -41,9 +43,15 @@ chmod 600 /etc/breadboard.env
 docker network create --internal breadboard-sandbox || true
 docker pull "${image}"
 docker rm -f breadboard || true
-docker run -d --name breadboard --restart unless-stopped \
+# Root in the container: it holds the Docker socket (root-equivalent anyway) and writes the root-owned
+# /var/breadboard bind mount. Tool code runs in unprivileged sibling containers.
+docker create --name breadboard --restart unless-stopped --user root \
   --env-file /etc/breadboard.env \
   -p ${server_port}:${server_port} \
   -v /var/breadboard:/var/breadboard \
   -v /var/run/docker.sock:/var/run/docker.sock \
   "${image}"
+# Tool containers live on the internal-only sandbox network; joining it lets them reach the egress proxy and the
+# API at the container name `breadboard` (SANDBOX_EGRESS_PROXY_HOST, SANDBOX_API_URL above).
+docker network connect breadboard-sandbox breadboard
+docker start breadboard

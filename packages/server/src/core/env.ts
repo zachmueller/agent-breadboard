@@ -35,6 +35,8 @@ const zEnv = z.object({
   SANDBOX_WARM_POOL_SIZE: z.coerce.number().int().nonnegative().default(2),
   SANDBOX_EGRESS_PROXY_PORT: z.coerce.number().int().positive().default(4100),
   SANDBOX_EGRESS_PROXY_HOST: z.string().optional(),
+  /** Base URL tool code uses to call back into the API (through the egress proxy in docker mode). Defaults to PUBLIC_URL. */
+  SANDBOX_API_URL: z.string().optional(),
   BROKER_MASTER_KEY: z.string().optional(),
   TOKEN_SIGNING_KEY: z.string().default('dev-only-change-me'),
   UI_DIST_DIR: z.string().optional(),

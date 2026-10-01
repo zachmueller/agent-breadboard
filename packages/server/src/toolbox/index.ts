@@ -16,7 +16,7 @@ export interface SandboxDeps {
   log: Logger;
   proxy: EgressProxy | null;
   objects: ObjectStore | null;
-  /** Public base URL tool code calls back to (routed through the egress proxy in docker mode). */
+  /** Base URL tool code calls back to: `SANDBOX_API_URL`, else `PUBLIC_URL` (routed through the egress proxy in docker mode). */
   publicUrl: string;
   settings: () => Promise<BreadboardConfig>;
 }

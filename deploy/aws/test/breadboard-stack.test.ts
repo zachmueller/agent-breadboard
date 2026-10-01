@@ -237,7 +237,19 @@ describe('BreadboardStack', () => {
   it('bootstraps from secret ARNs with every placeholder filled', () => {
     const { text, refs } = userData(t);
     expect(text).not.toMatch(/\$\{/);
-    for (const line of ['DATABASE_SSL=require', 'PORT=4000', 'MODEL_PROVIDER=bedrock', 'OBJECT_STORE=s3', 'SANDBOX_RUNNER=docker', `docker pull "${IMAGE}"`]) {
+    for (const line of [
+      'DATABASE_SSL=require',
+      'PORT=4000',
+      'MODEL_PROVIDER=bedrock',
+      'OBJECT_STORE=s3',
+      'SANDBOX_RUNNER=docker',
+      `docker pull "${IMAGE}"`,
+      // The server joins the sandbox network so tool containers reach its proxy and API by container name.
+      'SANDBOX_EGRESS_PROXY_HOST=breadboard',
+      'SANDBOX_API_URL=http://breadboard:4000',
+      'docker network connect breadboard-sandbox breadboard',
+      '--user root',
+    ]) {
       expect(text).toContain(line);
     }
     expect(text).toContain('http://__IMDS__:4000');

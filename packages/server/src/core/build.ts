@@ -112,9 +112,12 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
 
   // --- toolbox -------------------------------------------------------------------------------------
   const broker = await createCredentialBroker({ db, team_id, masterKey: env.BROKER_MASTER_KEY, fallbackKey: env.TOKEN_SIGNING_KEY, log });
-  const proxy = createEgressProxy(env, { db, log, publicUrl: env.PUBLIC_URL });
-  const sandbox = createSandboxRunner(env, { log, proxy, objects, publicUrl: env.PUBLIC_URL, settings });
-  const toolbox = createToolbox({ config, sandbox, proxy, auth, objects, db, team_id, publicUrl: env.PUBLIC_URL, log, settings, pythonBin: env.PYTHON_BIN });
+  // Tool code reaches the API at SANDBOX_API_URL, which differs from the browser-facing PUBLIC_URL when the server
+  // joins the sandbox network under its container name (deploy/sandbox/README.md).
+  const sandboxApiUrl = env.SANDBOX_API_URL ?? env.PUBLIC_URL;
+  const proxy = createEgressProxy(env, { db, log, publicUrl: sandboxApiUrl });
+  const sandbox = createSandboxRunner(env, { log, proxy, objects, publicUrl: sandboxApiUrl, settings });
+  const toolbox = createToolbox({ config, sandbox, proxy, auth, objects, db, team_id, publicUrl: sandboxApiUrl, log, settings, pythonBin: env.PYTHON_BIN });
   const mcpClients = createMcpClientManager({ config, broker, log });
   const primitives = createPrimitives({ content, knowledge, tasks, orchestrator: orchestratorLazy.proxy, sessions, evals: evalsLazy.proxy, config, toolbox: () => toolbox, broker, db, log });
   const subagents = createSubagentRuntime({ config, knowledge, toolbox, mcp: mcpClients, primitives, gateway, sessions, team_id, log });

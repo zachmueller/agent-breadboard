@@ -1,0 +1,22 @@
+# Override for compose.yaml: run tool sandboxes as sibling containers through the mounted Docker socket, on the
+# internal-only `breadboard-sandbox` network (deploy/sandbox/README.md).
+#   docker compose -f deploy/compose.yaml -f deploy/compose.sandbox-docker.yaml --profile local-postgres up --build
+services:
+  server:
+    environment:
+      SANDBOX_RUNNER: docker
+      # The server joins the sandbox network, so tool containers reach the egress proxy and the API by its
+      # service name. PUBLIC_URL stays browser-facing.
+      SANDBOX_EGRESS_PROXY_HOST: server
+      SANDBOX_API_URL: http://server:4000
+    networks:
+      - default
+      - sandbox
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: root  # needed for the docker socket; tool code still runs in unprivileged sibling containers
+
+networks:
+  sandbox:
+    name: breadboard-sandbox
+    internal: true

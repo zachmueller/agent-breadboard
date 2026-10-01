@@ -24,7 +24,7 @@ On first boot the server runs migrations, creates the config repo at `CONFIG_REP
 docker compose -f deploy/compose.yaml --profile local-postgres up --build
 ```
 
-Point `DATABASE_URL` at an external Postgres 16+ (RDS recommended) to drop the `local-postgres` profile. Add `--profile sandbox-docker` to run tool sandboxes as sibling containers via the Docker socket (see `deploy/sandbox/README.md` for the egress posture and images).
+Point `DATABASE_URL` at an external Postgres 16+ (RDS recommended) to drop the `local-postgres` profile. Add `-f deploy/compose.sandbox-docker.yaml` to run tool sandboxes as sibling containers via the Docker socket; build the sandbox images first (see `deploy/sandbox/README.md` for the egress posture and images).
 
 ## 3. Production on AWS
 
@@ -38,7 +38,8 @@ Point `DATABASE_URL` at an external Postgres 16+ (RDS recommended) to drop the `
 | `SANDBOX_RUNNER=docker` | isolated per-execution containers; `process` is an unisolated dev fallback |
 | `TOKEN_SIGNING_KEY` | HMAC key for user/actor tokens — long and random |
 | `BROKER_MASTER_KEY` | 32-byte base64 key encrypting broker credentials at rest |
-| `PUBLIC_URL` | reachable from sandbox containers (they call back into the API) |
+| `PUBLIC_URL` | the browser-facing base URL (OIDC redirect, links) |
+| `SANDBOX_EGRESS_PROXY_HOST`, `SANDBOX_API_URL` | how sandbox containers reach the egress proxy and the API; set both to the server's name on `breadboard-sandbox` when the server runs in a container (`SANDBOX_API_URL` defaults to `PUBLIC_URL`) |
 | `OBJECT_STORE=s3`, `OBJECT_STORE_S3_BUCKET` | large blobs off the host disk |
 
 Then switch auth to OIDC in `breadboard.yaml` (`auth.mode: oidc`, issuer, client id, secret env var, group mappings) through the Subagents/Config editor or a direct commit.

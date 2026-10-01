@@ -1,9 +1,11 @@
 # Reference single-instance deployment ([12] §1).
 #   docker compose -f deploy/compose.yaml --profile local-postgres up --build
-# Profiles:
+# Profile:
 #   local-postgres  — bundled Postgres 16 + pgvector (dev/quickstart). Omit to point DATABASE_URL at
 #                     an external managed instance (AWS RDS is the recommended production default).
-#   sandbox-docker  — run tool sandboxes in sibling containers via the mounted Docker socket.
+# Docker tool sandboxes: add the override file, which mounts the Docker socket and joins the server to the
+# internal sandbox network (deploy/sandbox/README.md):
+#   docker compose -f deploy/compose.yaml -f deploy/compose.sandbox-docker.yaml --profile local-postgres up --build
 name: agent-breadboard
 services:
   server:
@@ -37,29 +39,11 @@ services:
         condition: service_healthy
         required: false
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4000/api/v1/health"]
+      # 127.0.0.1, not localhost: Alpine resolves localhost to ::1 first and the server binds IPv4 (HOST=0.0.0.0).
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/v1/health"]
       interval: 15s
       timeout: 5s
       retries: 10
-
-  # Sandbox runner variant: same image, Docker socket mounted so tool sandboxes run as sibling containers
-  # on the internal-only network (see deploy/sandbox/README.md). Enable with --profile sandbox-docker.
-  server-docker-sandbox:
-    extends: server
-    profiles: ["sandbox-docker"]
-    environment:
-      SANDBOX_RUNNER: docker
-      # Tool containers live on the internal-only `breadboard-sandbox` network; the server joins it too so
-      # the egress proxy and the API are reachable by container name (see deploy/sandbox/README.md).
-      SANDBOX_EGRESS_PROXY_HOST: server-docker-sandbox
-      PUBLIC_URL: http://server-docker-sandbox:4000
-    networks:
-      - default
-      - sandbox
-    volumes:
-      - breadboard-data:/var/breadboard
-      - /var/run/docker.sock:/var/run/docker.sock
-    user: root  # needed for the docker socket; the server still runs tool code in unprivileged sibling containers
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -84,6 +68,3 @@ volumes:
 networks:
   default:
     name: breadboard
-  sandbox:
-    name: breadboard-sandbox
-    internal: true
