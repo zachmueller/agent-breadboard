@@ -340,6 +340,46 @@ describe('orchestrator: sub-circuits', () => {
     }
   });
 
+  it('a parent parked behind a gated child resumes with it when the reviewer requests changes', async () => {
+    const writer = mintUid();
+    k.llm.set(writer, async ({ input, kit }) => ({ exit: 'done', output: { doc: await kit.artifact(input, 'Child doc') } }));
+    const child = k.config.add({
+      slug: 'looping-child',
+      exits: [{ name: 'ok' }],
+      entry: 'draft',
+      steps: [
+        { id: 'draft', kind: 'llm', subagent: writer, prompt_inline: 'd', output: docOutput, exits: [{ name: 'done', to: 'review' }] },
+        { id: 'review', kind: 'gate', review: { artifacts: ['$steps.draft.output.doc'], reviewers: {} }, output: { type: 'object' }, exits: [{ name: 'approve', to: '$exit.ok' }, { name: 'changes', to: 'draft' }] },
+      ],
+    });
+    const parent = k.config.add({ slug: 'looping-parent', exits: [{ name: 'done' }], entry: 'sub', steps: [{ id: 'sub', kind: 'circuit', circuit: child.uid, exits: [{ name: 'ok', to: '$exit.done' }] }] });
+    k.dispatcher.start();
+    try {
+      const s = await k.orch.enqueue({ circuit_uid: parent.uid, input: {}, created_by: BY });
+      const first = await k.orch.waitFor(s.session_id, 20000);
+      expect(first.state_detail.reason).toBe('child-gated');
+      const kidId = first.state_detail.child_session_id as string;
+      const gateRequest = async () => ((await k.sessions.mustGet(kidId)).state_detail.requests as any[] | undefined)?.[0];
+      const r1 = await gateRequest();
+      await k.orch.gateVerdict({ node_uid: r1.uid, request_id: r1.request_id, verdict: 'request-changes', comment: 'tighten it', by: k.f.memberPrincipal });
+      // The parent woke with the child instead of staying "awaiting review", and parks again at the child's next gate.
+      const resumed = async () => (await k.sessions.events(s.session_id)).some((e) => e.event_type === 'session-resumed' && (e.payload as any).reason === 'child-resumed');
+      for (let i = 0; i < 100 && !(await resumed()); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(await resumed()).toBe(true);
+      let r2 = await gateRequest();
+      for (let i = 0; i < 200 && (!r2 || r2.request_id === r1.request_id || (await k.sessions.mustGet(s.session_id)).state !== 'suspended-gate'); i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        r2 = await gateRequest();
+      }
+      expect((await k.sessions.mustGet(s.session_id)).state_detail.reason).toBe('child-gated');
+      await k.orch.gateVerdict({ node_uid: r2.uid, request_id: r2.request_id, verdict: 'approve', by: k.f.memberPrincipal });
+      for (let i = 0; i < 200 && (await k.sessions.mustGet(s.session_id)).state !== 'completed'; i++) await new Promise((r) => setTimeout(r, 50));
+      expect((await k.sessions.mustGet(s.session_id)).state).toBe('completed');
+    } finally {
+      await k.dispatcher.stop();
+    }
+  });
+
   it('a gated child suspends the parent, which resumes when the child completes', async () => {
     const writer = mintUid();
     k.llm.set(writer, async ({ input, kit }) => ({ exit: 'done', output: { doc: await kit.artifact(input, 'Child doc') } }));

@@ -1016,7 +1016,10 @@ export class OrchestratorImpl implements Orchestrator {
       for (const w of [...(this.waiters.get(id) ?? [])]) w();
     }
     if (s.state === 'queued') this.notifyQueued(id);
-    if (s.parent_session && (s.state === 'completed' || s.state === 'suspended-error')) {
+    // A child leaving suspension (gate resolved, operator retry/resume) also wakes a parent parked behind it: the
+    // parent re-attaches and waits instead of reporting a gate or an error that is no longer there.
+    const resumed = s.state === 'queued' && !!s.state_detail?.resumed_from;
+    if (s.parent_session && (s.state === 'completed' || s.state === 'suspended-error' || resumed)) {
       await this.onChildSettled(s).catch((e) => this.d.log.warn({ err: e, session_id: id }, 'parent wake-up failed'));
     }
     return s;
@@ -1028,7 +1031,7 @@ export class OrchestratorImpl implements Orchestrator {
     const parent = await this.d.sessions.get(child.parent_session);
     if (!parent || (parent.state !== 'suspended-gate' && parent.state !== 'suspended-error')) return;
     if (parent.state_detail.child_session_id !== child.session_id) return;
-    await this.event(parent.session_id, 'session-resumed', { reason: 'child-settled', child_session_id: child.session_id, child_state: child.state });
+    await this.event(parent.session_id, 'session-resumed', { reason: child.state === 'queued' ? 'child-resumed' : 'child-settled', child_session_id: child.session_id, child_state: child.state });
     await this.transition(parent.session_id, { state: 'queued', state_detail: { ...preserve(parent.state_detail), resumed_from: 'child' } });
   }
 
