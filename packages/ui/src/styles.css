@@ -1,0 +1,188 @@
+@import "tailwindcss";
+
+/*
+ * Breadboard design tokens. Components use the semantic Tailwind colors below
+ * (bg-surface, text-fg-muted, border-line, bg-accent, text-danger-fg, …) — never raw hex.
+ * Light and dark are both selected values (not an automatic inversion).
+ */
+@custom-variant dark (@media (prefers-color-scheme: dark));
+
+:root {
+  color-scheme: light;
+  --bb-page: #f5f5f3;
+  --bb-surface: #ffffff;
+  --bb-raised: #f0efec;
+  --bb-sunken: #f9f9f7;
+  --bb-hover: rgba(11, 11, 11, 0.045);
+  --bb-line: #e3e2dc;
+  --bb-line-strong: #c3c2b7;
+  --bb-fg: #161615;
+  --bb-fg-muted: #52514e;
+  --bb-fg-subtle: #7d7c76;
+  --bb-accent: #2a78d6;
+  --bb-accent-hover: #256abf;
+  --bb-accent-fg: #ffffff;
+  --bb-accent-text: #1c5cab;
+  --bb-accent-soft: #e8f1fc;
+  --bb-danger: #d03b3b;
+  --bb-danger-fg: #b02a2a;
+  --bb-danger-soft: #fbeaea;
+  --bb-warn: #fab219;
+  --bb-warn-fg: #8a5a00;
+  --bb-warn-soft: #fdf3dc;
+  --bb-ok: #0ca30c;
+  --bb-ok-fg: #006300;
+  --bb-ok-soft: #e6f5e6;
+  --bb-info: #4a3aa7;
+  --bb-info-fg: #4a3aa7;
+  --bb-info-soft: #eeecf9;
+  --bb-chart-grid: #e1e0d9;
+  --bb-chart-axis: #c3c2b7;
+  --bb-shadow: 0 1px 2px rgba(11, 11, 11, 0.06), 0 4px 16px rgba(11, 11, 11, 0.06);
+  --bb-focus: #2a78d6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bb-page: #0f0f0e;
+    --bb-surface: #1a1a19;
+    --bb-raised: #252523;
+    --bb-sunken: #141413;
+    --bb-hover: rgba(255, 255, 255, 0.05);
+    --bb-line: #2c2c2a;
+    --bb-line-strong: #43433f;
+    --bb-fg: #f2f2ef;
+    --bb-fg-muted: #c3c2b7;
+    --bb-fg-subtle: #8f8e88;
+    --bb-accent: #3987e5;
+    --bb-accent-hover: #5598e7;
+    --bb-accent-fg: #ffffff;
+    --bb-accent-text: #86b6ef;
+    --bb-accent-soft: rgba(57, 135, 229, 0.16);
+    --bb-danger: #e66767;
+    --bb-danger-fg: #f08a8a;
+    --bb-danger-soft: rgba(230, 103, 103, 0.14);
+    --bb-warn: #fab219;
+    --bb-warn-fg: #fac35a;
+    --bb-warn-soft: rgba(250, 178, 25, 0.13);
+    --bb-ok: #0ca30c;
+    --bb-ok-fg: #3fc23f;
+    --bb-ok-soft: rgba(12, 163, 12, 0.14);
+    --bb-info: #9085e9;
+    --bb-info-fg: #a99ff0;
+    --bb-info-soft: rgba(144, 133, 233, 0.15);
+    --bb-chart-grid: #2c2c2a;
+    --bb-chart-axis: #383835;
+    --bb-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.35);
+    --bb-focus: #5598e7;
+  }
+}
+
+@theme inline {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-page: var(--bb-page);
+  --color-surface: var(--bb-surface);
+  --color-raised: var(--bb-raised);
+  --color-sunken: var(--bb-sunken);
+  --color-hover: var(--bb-hover);
+  --color-line: var(--bb-line);
+  --color-line-strong: var(--bb-line-strong);
+  --color-fg: var(--bb-fg);
+  --color-fg-muted: var(--bb-fg-muted);
+  --color-fg-subtle: var(--bb-fg-subtle);
+  --color-accent: var(--bb-accent);
+  --color-accent-hover: var(--bb-accent-hover);
+  --color-accent-fg: var(--bb-accent-fg);
+  --color-accent-text: var(--bb-accent-text);
+  --color-accent-soft: var(--bb-accent-soft);
+  --color-danger: var(--bb-danger);
+  --color-danger-fg: var(--bb-danger-fg);
+  --color-danger-soft: var(--bb-danger-soft);
+  --color-warn: var(--bb-warn);
+  --color-warn-fg: var(--bb-warn-fg);
+  --color-warn-soft: var(--bb-warn-soft);
+  --color-ok: var(--bb-ok);
+  --color-ok-fg: var(--bb-ok-fg);
+  --color-ok-soft: var(--bb-ok-soft);
+  --color-info: var(--bb-info);
+  --color-info-fg: var(--bb-info-fg);
+  --color-info-soft: var(--bb-info-soft);
+  --color-chart-grid: var(--bb-chart-grid);
+  --color-chart-axis: var(--bb-chart-axis);
+  --color-focus: var(--bb-focus);
+  --shadow-pop: var(--bb-shadow);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--bb-page);
+    color: var(--bb-fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  :focus-visible {
+    outline: 2px solid var(--bb-focus);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--bb-accent) 28%, transparent);
+  }
+  dialog::backdrop {
+    background: rgba(10, 10, 10, 0.42);
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Rendered Markdown (bodies, comments, chat turns). Restrained, document-like. */
+@layer components {
+  .bb-prose {
+    color: var(--bb-fg);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+  .bb-prose > :first-child { margin-top: 0; }
+  .bb-prose > :last-child { margin-bottom: 0; }
+  .bb-prose p, .bb-prose ul, .bb-prose ol, .bb-prose pre, .bb-prose blockquote, .bb-prose table { margin: 0.65em 0; }
+  .bb-prose h1, .bb-prose h2, .bb-prose h3, .bb-prose h4 { font-weight: 600; line-height: 1.3; margin: 1.3em 0 0.5em; }
+  .bb-prose h1 { font-size: 1.45em; }
+  .bb-prose h2 { font-size: 1.25em; padding-bottom: 0.25em; border-bottom: 1px solid var(--bb-line); }
+  .bb-prose h3 { font-size: 1.08em; }
+  .bb-prose h4 { font-size: 1em; color: var(--bb-fg-muted); }
+  .bb-prose ul { list-style: disc; padding-left: 1.4em; }
+  .bb-prose ol { list-style: decimal; padding-left: 1.4em; }
+  .bb-prose li { margin: 0.2em 0; }
+  .bb-prose li > input[type="checkbox"] { margin-right: 0.4em; vertical-align: -1px; }
+  .bb-prose a { color: var(--bb-accent-text); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--bb-accent) 40%, transparent); text-underline-offset: 2px; }
+  .bb-prose a:hover { text-decoration-color: currentColor; }
+  .bb-prose blockquote { border-left: 3px solid var(--bb-line-strong); padding-left: 0.9em; color: var(--bb-fg-muted); }
+  .bb-prose code { font-family: var(--font-mono); font-size: 0.88em; background: var(--bb-raised); border-radius: 4px; padding: 0.1em 0.35em; }
+  .bb-prose pre { background: var(--bb-sunken); border: 1px solid var(--bb-line); border-radius: 6px; padding: 0.75em 0.9em; overflow-x: auto; font-size: 0.86em; line-height: 1.5; }
+  .bb-prose pre code { background: none; padding: 0; font-size: inherit; }
+  .bb-prose table { border-collapse: collapse; width: auto; display: block; overflow-x: auto; }
+  .bb-prose th, .bb-prose td { border: 1px solid var(--bb-line); padding: 0.35em 0.7em; text-align: left; }
+  .bb-prose th { background: var(--bb-sunken); font-weight: 600; }
+  .bb-prose hr { border: 0; border-top: 1px solid var(--bb-line); margin: 1.4em 0; }
+  .bb-prose img { max-width: 100%; border-radius: 4px; }
+  .bb-prose .bb-wikilink { color: var(--bb-accent-text); text-decoration: none; background: var(--bb-accent-soft); border-radius: 4px; padding: 0 0.3em; }
+  .bb-prose .bb-wikilink:hover { text-decoration: underline; }
+  .bb-prose .bb-wikilink-broken { color: var(--bb-danger-fg); background: var(--bb-danger-soft); text-decoration: line-through dotted; border-radius: 4px; padding: 0 0.3em; cursor: help; }
+  .bb-prose-sm { font-size: 13px; line-height: 1.55; }
+}
