@@ -85,6 +85,8 @@ let slowTool: Awaited<ReturnType<typeof makeToolDir>>;
 let costlyTool: Awaited<ReturnType<typeof makeToolDir>>;
 let oomTool: Awaited<ReturnType<typeof makeToolDir>>;
 let runner: SandboxRunner;
+/** The runner reads `sandbox.images` per run, so tests may switch images by mutating this object. */
+const sandboxImages = defaultSettings().sandbox.images;
 
 function subagentPrincipal(tools: Record<string, Record<string, unknown>>, override: string[] | null = null): Principal {
   return {
@@ -156,7 +158,7 @@ beforeAll(async () => {
   proxy = new EgressProxy({ ...testProxyListen(), db: f.db, log: f.log, implicitAllow: apiEgressRule(publicUrl) });
   await proxy.start();
 
-  const inner = createTestSandboxRunner({ log: f.log, proxy, apiUrl: publicUrl, pythonBin: PYTHON, objects: f.objects, images: defaultSettings().sandbox.images });
+  const inner = createTestSandboxRunner({ log: f.log, proxy, apiUrl: publicUrl, pythonBin: PYTHON, objects: f.objects, images: sandboxImages });
   runner = inner;
   await inner.start();
   const counting: SandboxRunner = {
@@ -374,6 +376,36 @@ describe.runIf(DOCKER)('ToolboxImpl.invoke (docker isolation)', () => {
   it('OOM-kills a tool that allocates beyond limits.memory_mb and journals it as failed', async () => {
     const err = await expectError(toolbox.invoke({ tool_uid: oomTool.uid, input: { n: 0, mode: 'oom' }, principal: f.adminPrincipal, ambient: { invocation: 'tool-call' } }), 'internal', /exit 137|without a result/);
     expect((await toolbox.journal.lookup((err.detail as any).execution_key))?.status).toBe('failed');
+  });
+
+  it('never runs a warm container started from a previous sandbox image', async () => {
+    const warmPython = async () => (await sandboxContainers()).filter((c) => c.Labels['breadboard.language'] === 'python' && c.Labels['breadboard.state'] === 'warm').map((c) => c.Id);
+    let stale = await warmPython();
+    for (let i = 0; i < 100 && stale.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      stale = await warmPython();
+    }
+    expect(stale.length).toBeGreaterThan(0);
+    const original = sandboxImages.python;
+    const repo = original.split(':')[0]!;
+    await docker.getImage(original).tag({ repo, tag: 'warm-pool-test' });
+    const since = Math.floor(Date.now() / 1000) - 1;
+    sandboxImages.python = `${repo}:warm-pool-test`;
+    try {
+      await toolbox.invoke({ tool_uid: pyTool.uid, input: { n: 3 }, principal: f.adminPrincipal, ambient: { invocation: 'code-step' } });
+    } finally {
+      sandboxImages.python = original;
+    }
+    const events = await new Promise<string>((resolve, reject) =>
+      docker.getEvents({ since, until: Math.floor(Date.now() / 1000) + 1, filters: { container: stale } }, (err, stream) => {
+        if (err || !stream) return reject(err);
+        let out = '';
+        stream.on('data', (b: Buffer) => (out += b.toString()));
+        stream.on('end', () => resolve(out));
+      }),
+    );
+    expect(events).not.toContain('exec_create');
+    await docker.getImage(`${repo}:warm-pool-test`).remove().catch(() => undefined);
   });
 
   it('removes the container after one execution; only warm, unused containers remain', async () => {

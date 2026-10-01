@@ -150,7 +150,8 @@ const CAPTURE_MAX = 8 * 1024 * 1024;
 export class DockerSandboxRunner implements SandboxRunner {
   readonly kind = 'docker' as const;
   private docker: Docker;
-  private pools = new Map<Language, Docker.Container[]>([
+  /** Warm containers with the image each was started from (`sandbox.images` can change while they wait). */
+  private pools = new Map<Language, Array<{ container: Docker.Container; image: string }>>([
     ['typescript', []],
     ['python', []],
   ]);
@@ -176,7 +177,7 @@ export class DockerSandboxRunner implements SandboxRunner {
     await Promise.allSettled([...this.filling.values()]);
     const all = [...this.pools.values()].flat();
     for (const p of this.pools.values()) p.length = 0;
-    await Promise.allSettled(all.map((c) => c.remove({ force: true, v: true })));
+    await Promise.allSettled(all.map((w) => w.container.remove({ force: true, v: true })));
   }
 
   async health(): Promise<{ ok: boolean; detail: string; warm: Record<string, number> }> {
@@ -212,9 +213,9 @@ export class DockerSandboxRunner implements SandboxRunner {
     return language === 'typescript' ? images.typescript : images.python;
   }
 
-  private async createContainer(language: Language, limits: Tool['limits'], state: 'warm' | 'cold', bindToolDir: string | null = null): Promise<Docker.Container> {
+  private async createContainer(language: Language, limits: Tool['limits'], state: 'warm' | 'cold', bindToolDir: string | null = null, image?: string): Promise<Docker.Container> {
     const c = await this.docker.createContainer(
-      buildCreateOptions({ image: await this.image(language), language, limits, network: this.network, runtime: this.opts.ociRuntime, bindToolDir, state }),
+      buildCreateOptions({ image: image ?? (await this.image(language)), language, limits, network: this.network, runtime: this.opts.ociRuntime, bindToolDir, state }),
     );
     try {
       await c.start();
@@ -232,7 +233,8 @@ export class DockerSandboxRunner implements SandboxRunner {
       const pool = this.pools.get(language)!;
       while (!this.stopped && pool.length < this.opts.warmPoolSize) {
         try {
-          pool.push(await this.createContainer(language, DEFAULT_LIMITS, 'warm'));
+          const image = await this.image(language);
+          pool.push({ container: await this.createContainer(language, DEFAULT_LIMITS, 'warm', null, image), image });
         } catch (e) {
           this.opts.log.error({ err: (e as Error).message, language }, 'warm pool refill failed');
           break;
@@ -243,21 +245,29 @@ export class DockerSandboxRunner implements SandboxRunner {
     return p;
   }
 
-  /** A pre-started, never-used container with this tool's limits applied; cold-started when the pool is empty. */
+  /**
+   * A pre-started, never-used container of the currently configured image with this tool's limits applied;
+   * cold-started when the pool has none. Warm containers of a previous image are discarded.
+   */
   private async acquire(language: Language, limits: Tool['limits']): Promise<Docker.Container> {
     const pool = this.pools.get(language)!;
-    const warm = pool.shift();
+    const image = await this.image(language);
+    let warm = pool.shift();
+    while (warm && warm.image !== image) {
+      void warm.container.remove({ force: true, v: true }).catch(() => undefined);
+      warm = pool.shift();
+    }
     void this.refill(language);
     if (warm) {
       try {
-        await warm.update(resourceLimits(limits));
-        return warm;
+        await warm.container.update(resourceLimits(limits));
+        return warm.container;
       } catch (e) {
         this.opts.log.warn({ err: (e as Error).message }, 'could not apply limits to warm container; cold-starting');
-        await warm.remove({ force: true, v: true }).catch(() => undefined);
+        await warm.container.remove({ force: true, v: true }).catch(() => undefined);
       }
     }
-    return this.createContainer(language, limits, 'cold');
+    return this.createContainer(language, limits, 'cold', null, image);
   }
 
   async run(input: SandboxRunInput): Promise<SandboxRunResult> {
