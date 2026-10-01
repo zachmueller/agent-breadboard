@@ -1,7 +1,7 @@
 // Agent Breadboard — AWS reference deployment ([12] §1, §9): RDS Postgres (recommended production default)
 // + one reference server host running the container image. One deployment = one Breadboard ([00] §4.1).
 import { readFileSync } from 'node:fs';
-import { CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import { CfnOutput, Duration, RemovalPolicy, Stack, Validations, type StackProps } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as rds from 'aws-cdk-lib/aws-rds';
@@ -243,6 +243,9 @@ export class BreadboardStack extends Stack {
         }),
       ),
     });
+
+    // The resolved AMI id is pinned on purpose (above), so CloudFormation's portability lint does not apply.
+    Validations.of(server).acknowledge({ id: 'CloudFormation-Validate::W9010', reason: 'AMI pinned in cdk.context.json so a new AMI never replaces the host' });
 
     // --- Outputs ---------------------------------------------------------------
     // PublicIp only exists on instances that have one; fall back to the private IP otherwise.
