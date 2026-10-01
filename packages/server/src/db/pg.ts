@@ -39,7 +39,21 @@ export class PgDb implements Db {
     const db = new PgDb(pool);
     // Probe once so misconfiguration fails fast.
     await db.query('select 1');
+    db.features.pgvector = await db.ensureVector();
     return db;
+  }
+
+  /**
+   * pgvector when the server has it: already installed, or creatable by this role (on RDS, the master user).
+   * Without it, migrations store embeddings as real[] and semantic search ranks in process.
+   */
+  private async ensureVector(): Promise<boolean> {
+    try {
+      await this.query('CREATE EXTENSION IF NOT EXISTS vector');
+      return true;
+    } catch {
+      return (await this.query(`SELECT 1 FROM pg_extension WHERE extname = 'vector'`)).rows.length > 0;
+    }
   }
 
   async query<T = any>(sql: string, params?: unknown[]): Promise<QueryResult<T>> {

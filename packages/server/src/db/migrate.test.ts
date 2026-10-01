@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { connectDb } from './index.js';
 import { migrate } from './migrate.js';
+import { connectTestDb } from '../test/harness.js';
 
-describe('migrations on pglite', () => {
+describe('migrations (PGlite, or Postgres with TEST_DATABASE_URL)', () => {
   it('applies all migrations and is idempotent', async () => {
-    const db = await connectDb({ url: 'pglite://memory' });
+    const db = await connectTestDb();
     const r1 = await migrate(db);
     expect(r1.applied.length).toBeGreaterThanOrEqual(4);
     const r2 = await migrate(db);
@@ -21,6 +21,8 @@ describe('migrations on pglite', () => {
     const tags = await db.query<{ tags: string[] }>(`SELECT tags FROM nodes WHERE tags @> '{a}'`);
     expect(tags.rows[0]!.tags).toEqual(['a', 'b']);
     expect(db.features.pgvector).toBe(true);
+    const col = await db.query<{ udt_name: string }>(`SELECT udt_name FROM information_schema.columns WHERE table_name = 'knowledge_chunks' AND column_name = 'embedding'`);
+    expect(col.rows[0]!.udt_name).toBe('vector');
     await db.query(`INSERT INTO knowledge_chunks (uid, chunk_idx, chunk_text, embedding) VALUES ('N0000000000000000000', 0, 'x', '[1,0,0]')`);
     const sim = await db.query<{ d: number }>(`SELECT embedding <=> '[1,0,0]' AS d FROM knowledge_chunks`);
     expect(sim.rows[0]!.d).toBeCloseTo(0);

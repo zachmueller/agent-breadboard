@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { connectDb, type Db } from '../db/index.js';
+import type { Db } from '../db/index.js';
+import { connectTestDb } from '../test/harness.js';
 import { migrate } from '../db/migrate.js';
 import { NodeStore } from './nodes.js';
 import { EdgeStore } from './edges.js';
@@ -16,7 +17,7 @@ let indexer: LinkIndexer;
 const svc = SERVICE_ACTOR('test');
 
 beforeAll(async () => {
-  db = await connectDb({ url: 'pglite://memory' });
+  db = await connectTestDb();
   await migrate(db);
   const id = new IdentityStore(db);
   const team = await id.ensureTeam('t');

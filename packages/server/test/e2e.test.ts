@@ -1,6 +1,7 @@
 /**
- * End-to-end: boot the real service container against the shipped config seed (PGlite in-memory, mock model
- * provider, process sandbox), then drive the Phase 6 acceptance path from specs/13-roadmap.md through the REST API:
+ * End-to-end: boot the real service container against the shipped config seed (PGlite in-memory, or Postgres with
+ * TEST_DATABASE_URL; mock model provider, process sandbox), then drive the Phase 6 acceptance path from
+ * specs/13-roadmap.md through the REST API:
  * task → auto-dispatch → triage → lit-review (LLM + code steps) → gate → review queue → verdict → done, with lineage.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -10,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import type { FastifyInstance } from 'fastify';
 import { loadEnv } from '../src/core/env.js';
+import { testDatabaseUrl } from '../src/test/harness.js';
 import { silentLogger } from '../src/core/logger.js';
 import { buildServices, startBackground, stopServices, type BuiltServices } from '../src/core/build.js';
 import { buildApp } from '../src/app.js';
@@ -31,6 +33,7 @@ async function freePort(): Promise<number> {
 let services: BuiltServices;
 let app: FastifyInstance;
 let tmp: string;
+let dropDb: () => Promise<void> = async () => undefined;
 
 async function api(method: string, path: string, token = ADMIN, body?: unknown) {
   const res = await app.inject({ method: method as any, url: `/api/v1${path}`, headers: { authorization: `Bearer ${token}`, ...(method === 'GET' ? {} : { 'content-type': 'application/json' }) }, payload: JSON.stringify(body ?? (method === 'GET' ? undefined : {})) });
@@ -54,8 +57,10 @@ beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'bb-e2e-'));
   const port = await freePort();
   const proxyPort = await freePort();
+  const testDb = await testDatabaseUrl();
+  dropDb = testDb.drop;
   const env = loadEnv({
-    DATABASE_URL: 'pglite://memory',
+    DATABASE_URL: testDb.url,
     CONFIG_REPO_DIR: join(tmp, 'repo'),
     CONFIG_WORKTREE_CACHE_DIR: join(tmp, 'trees'),
     CONFIG_SEED_DIR: resolve(ROOT, 'config-seed'),
@@ -77,6 +82,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await app?.close();
   if (services) await stopServices(services);
+  await dropDb();
   rmSync(tmp, { recursive: true, force: true });
 });
 
