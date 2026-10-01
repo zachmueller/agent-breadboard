@@ -46,5 +46,16 @@ export async function migrate(db: Db, log?: { info: (o: any, msg?: string) => vo
     result.applied.push(f);
     log?.info({ migration: f }, 'applied migration');
   }
+  // Databases migrated while pgvector was unavailable store embeddings as real[]. Once the extension is there, the
+  // column must be vector too, or semantic search and embedding writes take the vector path against real[].
+  if (db.features.pgvector) {
+    const col = await db.query<{ udt_name: string }>(
+      `SELECT udt_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'knowledge_chunks' AND column_name = 'embedding'`,
+    );
+    if (col.rows[0]?.udt_name === '_float4') {
+      await db.exec(`ALTER TABLE knowledge_chunks ALTER COLUMN embedding TYPE vector USING embedding::vector`);
+      log?.info({}, 'upgraded knowledge_chunks.embedding from real[] to vector');
+    }
+  }
   return result;
 }

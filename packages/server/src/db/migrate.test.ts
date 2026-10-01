@@ -28,4 +28,21 @@ describe('migrations (PGlite, or Postgres with TEST_DATABASE_URL)', () => {
     expect(sim.rows[0]!.d).toBeCloseTo(0);
     await db.close();
   });
+
+  it('upgrades a real[] embedding column to vector once pgvector is available', async () => {
+    const db = await connectTestDb();
+    db.features.pgvector = false; // as migrated by a server that could not see the extension
+    await migrate(db);
+    const udt = async () => (await db.query<{ udt_name: string }>(`SELECT udt_name FROM information_schema.columns WHERE table_name = 'knowledge_chunks' AND column_name = 'embedding'`)).rows[0]!.udt_name;
+    expect(await udt()).toBe('_float4');
+    await db.query(`INSERT INTO teams (team_id, name) VALUES ('T0000000000000000000', 'team')`);
+    await db.query(`INSERT INTO nodes (uid, team_id, type, title, created_by) VALUES ('N0000000000000000000','T0000000000000000000','knowledge','n','{"kind":"service","id":"t"}')`);
+    await db.query(`INSERT INTO knowledge_chunks (uid, chunk_idx, chunk_text, embedding) VALUES ('N0000000000000000000', 0, 'x', '{0.6,0.8}'::real[])`);
+    db.features.pgvector = true;
+    expect((await migrate(db)).applied).toEqual([]);
+    expect(await udt()).toBe('vector');
+    const sim = await db.query<{ d: number }>(`SELECT embedding <=> '[0.6,0.8]'::vector AS d FROM knowledge_chunks`);
+    expect(sim.rows[0]!.d).toBeCloseTo(0);
+    await db.close();
+  });
 });
