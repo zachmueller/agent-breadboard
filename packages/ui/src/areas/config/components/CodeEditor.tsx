@@ -1,7 +1,7 @@
 /** Thin CodeMirror 6 wrapper: controlled value, language by name/extension, extra extensions. */
 import { useEffect, useRef } from 'react';
 import clsx from 'clsx';
-import { EditorState, Compartment, type Extension } from '@codemirror/state';
+import { Annotation, EditorState, Compartment, type Extension, type Transaction, type TransactionSpec } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, placeholder as cmPlaceholder } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput, foldGutter, foldKeymap } from '@codemirror/language';
@@ -57,6 +57,23 @@ const theme = EditorView.theme({
   '.cm-placeholder': { color: 'var(--bb-fg-subtle)' },
 });
 
+/** Marks the transaction that syncs the document to a new `value` prop, so it is not echoed to `onChange`. */
+const valueSync = Annotation.define<boolean>();
+
+/** Replace the document with `value` (annotated as a sync), or null when it already matches. */
+export function syncValueSpec(state: EditorState, value: string): TransactionSpec | null {
+  const cur = state.doc.toString();
+  return cur === value ? null : { changes: { from: 0, to: cur.length, insert: value }, annotations: valueSync.of(true) };
+}
+
+/**
+ * Whether an update's transactions include a document edit made in the editor. The `value` sync is
+ * excluded: echoing it back lets a lagging `value` overwrite newer keystrokes and ping-pong with them.
+ */
+export function hasLocalEdit(transactions: readonly Transaction[]): boolean {
+  return transactions.some((tr) => tr.docChanged && !tr.annotation(valueSync));
+}
+
 export interface CodeEditorProps {
   value: string;
   onChange?: (value: string) => void;
@@ -101,7 +118,7 @@ export function CodeEditor({ value, onChange, language = 'text', readOnly, exten
         c.ro.of([EditorState.readOnly.of(!!readOnly), EditorView.editable.of(!readOnly)]),
         c.extra.of(extensions ?? []),
         EditorView.updateListener.of((u) => {
-          if (u.docChanged) onChangeRef.current?.(u.state.doc.toString());
+          if (u.docChanged && hasLocalEdit(u.transactions)) onChangeRef.current?.(u.state.doc.toString());
         }),
       ],
     });
@@ -115,8 +132,8 @@ export function CodeEditor({ value, onChange, language = 'text', readOnly, exten
   useEffect(() => {
     const v = view.current;
     if (!v) return;
-    const cur = v.state.doc.toString();
-    if (cur !== value) v.dispatch({ changes: { from: 0, to: cur.length, insert: value } });
+    const spec = syncValueSpec(v.state, value);
+    if (spec) v.dispatch(spec);
   }, [value]);
 
   useEffect(() => {
