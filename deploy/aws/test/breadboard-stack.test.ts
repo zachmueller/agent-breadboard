@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
-import { BreadboardStack, renderUserData, type BreadboardStackProps } from '../lib/breadboard-stack.js';
+import { BreadboardStack, ecrRepositoryArn, renderUserData, type BreadboardStackProps } from '../lib/breadboard-stack.js';
 
 const VPC_ID = 'vpc-0a1b2c3d4e5f60718';
 const PUBLIC_A = 'subnet-0aaaaaaaaaaaaaaa1';
@@ -142,6 +142,24 @@ describe('BreadboardStack', () => {
     expect(userData(custom).text).toContain('PORT=8443');
   });
 
+  it('grants ECR pull on the image repositories and pulls and tags the sandbox images', () => {
+    const ts = '123456789012.dkr.ecr.us-east-1.amazonaws.com/agent-breadboard:sandbox-ts-1';
+    const py = '123456789012.dkr.ecr.us-east-1.amazonaws.com/sandboxes:py-1';
+    const withSandboxes = synth({ sandboxImageTs: ts, sandboxImagePy: py });
+    const pulls = statements(withSandboxes).filter((s) => [s.Action].flat().includes('ecr:BatchGetImage'));
+    expect(pulls).toHaveLength(1);
+    expect([pulls[0]!.Resource].flat().sort()).toEqual(['arn:aws:ecr:us-east-1:123456789012:repository/agent-breadboard', 'arn:aws:ecr:us-east-1:123456789012:repository/sandboxes']);
+    expect(statements(withSandboxes)).toContainEqual(expect.objectContaining({ Action: 'ecr:GetAuthorizationToken', Resource: '*' }));
+    const { text } = userData(withSandboxes);
+    expect(text).toContain('aws ecr get-login-password');
+    expect(text).toContain(`docker tag "${ts}" breadboard-sandbox-ts:local`);
+    expect(text).toContain(`docker tag "${py}" breadboard-sandbox-py:local`);
+    // A non-ECR image needs no ECR grant.
+    const hub = synth({ serverImage: 'ghcr.io/example/agent-breadboard:v1' });
+    expect(statements(hub).filter((s) => [s.Action].flat().some((a: string) => a.startsWith('ecr:')))).toEqual([]);
+    expect(ecrRepositoryArn('123456789012.dkr.ecr.eu-west-1.amazonaws.com/team/bb@sha256:abc')).toBe('arn:aws:ecr:eu-west-1:123456789012:repository/team/bb');
+  });
+
   it('adds no inbound rule to the server when no CIDRs are allowed (SSM-only access)', () => {
     const closed = synth({ allowedCidrs: [] });
     closed.hasResourceProperties('AWS::EC2::SecurityGroup', { GroupDescription: 'Breadboard server host', SecurityGroupIngress: Match.absent() });
@@ -249,7 +267,7 @@ describe('BreadboardStack', () => {
       'MODEL_PROVIDER=bedrock',
       'OBJECT_STORE=s3',
       'SANDBOX_RUNNER=docker',
-      `docker pull "${IMAGE}"`,
+      `pull "${IMAGE}"`, // the ECR-login-aware pull helper
       // The server joins the sandbox network so tool containers reach its proxy and API by container name.
       'SANDBOX_EGRESS_PROXY_HOST=breadboard',
       'SANDBOX_API_URL=http://breadboard:4000',

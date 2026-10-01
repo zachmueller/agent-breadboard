@@ -57,6 +57,8 @@ const props: BreadboardStackProps = {
   serverRootVolumeGb: num('serverRootVolumeGb'),
   publicUrl: str('publicUrl'),
   sandboxRunner,
+  sandboxImageTs: str('sandboxImageTs'),
+  sandboxImagePy: str('sandboxImagePy'),
   dbEngineVersion: str('dbEngineVersion'),
   dbInstanceClass: str('dbInstanceClass'),
   dbAllocatedStorageGb: num('dbAllocatedStorageGb'),

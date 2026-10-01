@@ -40,8 +40,22 @@ LOG_PRETTY=false
 ENV
 chmod 600 /etc/breadboard.env
 
+# Private ECR registries need a login (the instance role grants pull on the image repositories).
+pull() {
+  local host region
+  host=$(echo "$1" | cut -d/ -f1)
+  if [[ "$host" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]]; then
+    region=$(echo "$host" | cut -d. -f4)
+    aws ecr get-login-password --region "$region" | docker login --username AWS --password-stdin "$host"
+  fi
+  docker pull "$1"
+}
+
 docker network create --internal breadboard-sandbox || true
-docker pull "${image}"
+pull "${image}"
+# Tool sandbox images, tagged with the names breadboard.yaml uses by default (sandbox.images).
+if [[ -n "${sandbox_image_ts}" ]]; then pull "${sandbox_image_ts}" && docker tag "${sandbox_image_ts}" breadboard-sandbox-ts:local; fi
+if [[ -n "${sandbox_image_py}" ]]; then pull "${sandbox_image_py}" && docker tag "${sandbox_image_py}" breadboard-sandbox-py:local; fi
 docker rm -f breadboard || true
 # Root in the container: it holds the Docker socket (root-equivalent anyway) and writes the root-owned
 # /var/breadboard bind mount. Tool code runs in unprivileged sibling containers.

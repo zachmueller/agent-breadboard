@@ -9,16 +9,20 @@ A TypeScript CDK app that provisions the recommended production shape from [12 â
 This directory is a standalone npm package, not part of the root workspaces, so the CDK libraries stay out of the server build.
 
 ```bash
-# 1. Build and push the image
-docker build -t <account>.dkr.ecr.<region>.amazonaws.com/agent-breadboard:v0.1 .
-docker push <account>.dkr.ecr.<region>.amazonaws.com/agent-breadboard:v0.1
+# 1. Build and push the images (the reference host is x86_64)
+npm run build -w @breadboard/sandbox-runtime
+R=<account>.dkr.ecr.<region>.amazonaws.com/agent-breadboard
+docker buildx build --platform linux/amd64 -t $R:server-v0.1 --push .
+docker buildx build --platform linux/amd64 -f deploy/sandbox/Dockerfile.ts -t $R:sandbox-ts-v0.1 --push .
+docker buildx build --platform linux/amd64 -f deploy/sandbox/Dockerfile.py -t $R:sandbox-py-v0.1 --push .
 
 # 2. Deploy (AWS credentials via the normal chain; bootstrap once per account and region)
 cd deploy/aws
 npm ci
 npx cdk bootstrap
 npx cdk deploy -c name=myteam -c vpcId=vpc-â€¦ -c dbSubnetIds=subnet-a,subnet-b \
-  -c serverSubnetId=subnet-c -c serverImage=<account>.dkr.ecr.<region>.amazonaws.com/agent-breadboard:v0.1
+  -c serverSubnetId=subnet-c -c serverImage=$R:server-v0.1 \
+  -c sandboxImageTs=$R:sandbox-ts-v0.1 -c sandboxImagePy=$R:sandbox-py-v0.1
 ```
 
 `npx cdk diff` with the same `-c` flags previews changes. `npm test` checks the synthesized template without an AWS account.
@@ -34,6 +38,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `dbSubnetIds` | required | Private subnets for RDS, in at least 2 AZs. |
 | `serverSubnetId` | required | Must be a public subnet when `serverPublicIp` is true. Synth fails otherwise. |
 | `serverImage` | required | The container image pushed above. |
+| `sandboxImageTs` / `sandboxImagePy` | none | Tool sandbox images (`deploy/sandbox`). The host pulls them and tags them `breadboard-sandbox-ts:local` / `breadboard-sandbox-py:local`, the names `breadboard.yaml` uses by default. Without them no tool can run. |
 | `region` | `CDK_DEFAULT_REGION`, else `us-east-1` | |
 | `serverPublicIp` | `true` | |
 | `allowedCidrs` | `0.0.0.0/0` | CIDRs allowed to reach the server port. `none` adds no inbound rule; reach the server with SSM port forwarding (`aws ssm start-session --document-name AWS-StartPortForwardingSession`). |

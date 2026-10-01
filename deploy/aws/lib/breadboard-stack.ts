@@ -18,6 +18,12 @@ export interface BreadboardStackProps extends StackProps {
   serverSubnetId: string;
   /** Container image for the Breadboard server (push the Dockerfile build to ECR and reference it here). */
   serverImage: string;
+  /**
+   * Tool sandbox images (deploy/sandbox builds). The host pulls them and tags them `breadboard-sandbox-ts:local` /
+   * `breadboard-sandbox-py:local`, the names `breadboard.yaml` uses by default. Without them, tools cannot run.
+   */
+  sandboxImageTs?: string;
+  sandboxImagePy?: string;
   serverPublicIp?: boolean;
   /** CIDRs allowed to reach the server port. */
   allowedCidrs?: string[];
@@ -47,6 +53,8 @@ export const DEFAULTS = {
   serverRootVolumeGb: 100,
   publicUrl: '',
   sandboxRunner: 'docker',
+  sandboxImageTs: '',
+  sandboxImagePy: '',
   dbEngineVersion: '16',
   dbInstanceClass: 'db.t4g.medium',
   dbAllocatedStorageGb: 50,
@@ -61,6 +69,12 @@ export const DEFAULTS = {
 const PUNCTUATION = ' !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
 
 const USER_DATA = readFileSync(new URL('./user-data.sh', import.meta.url), 'utf8');
+
+/** `<account>.dkr.ecr.<region>.amazonaws.com/<repo>[:tag|@digest]` → the repository ARN, or null for other registries. */
+export function ecrRepositoryArn(image: string): string | null {
+  const m = /^(\d{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com\/([^:@]+)/.exec(image);
+  return m ? `arn:aws:ecr:${m[2]}:${m[1]}:repository/${m[3]}` : null;
+}
 
 /**
  * Fill the bootstrap script's dollar-brace placeholders. Values may be CDK tokens; CDK turns the resulting string
@@ -173,6 +187,12 @@ export class BreadboardStack extends Stack {
     );
     role.addToPolicy(new iam.PolicyStatement({ actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'], resources: ['*'] }));
     for (const secret of [dbSecret, tokenKey, brokerKey]) secret.grantRead(role);
+    // Pull access to the ECR repositories the images live in (the bootstrap logs in to their registries).
+    const repos = [...new Set([p.serverImage, p.sandboxImageTs, p.sandboxImagePy].map(ecrRepositoryArn).filter((a): a is string => a !== null))];
+    if (repos.length) {
+      role.addToPolicy(new iam.PolicyStatement({ actions: ['ecr:GetAuthorizationToken'], resources: ['*'] }));
+      role.addToPolicy(new iam.PolicyStatement({ actions: ['ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchCheckLayerAvailability'], resources: repos }));
+    }
     db.grantConnect(role, 'breadboard');
     bucket?.grantRead(role);
     bucket?.grantPut(role);
@@ -203,6 +223,8 @@ export class BreadboardStack extends Stack {
       userData: ec2.UserData.custom(
         renderUserData({
           image: p.serverImage,
+          sandbox_image_ts: p.sandboxImageTs,
+          sandbox_image_py: p.sandboxImagePy,
           region: this.region,
           db_secret_arn: dbSecret.secretArn,
           db_host: db.dbInstanceEndpointAddress,
