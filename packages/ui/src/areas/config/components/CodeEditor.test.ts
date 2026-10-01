@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EditorState } from '@codemirror/state';
-import { hasLocalEdit, syncValueSpec } from './CodeEditor';
+import { defaultHighlightStyle } from '@codemirror/language';
+import { codeHighlightStyle, hasLocalEdit, syncValueSpec } from './CodeEditor';
 
 describe('CodeEditor value sync', () => {
   it('skips the sync when the document already matches', () => {
@@ -22,5 +23,15 @@ describe('CodeEditor value sync', () => {
     // A batch that mixes a sync with a keystroke still reports the keystroke.
     const sync = typed.state.update(syncValueSpec(typed.state, 'a: 1')!);
     expect(hasLocalEdit([sync, sync.state.update({ changes: { from: 0, insert: '#' } })])).toBe(true);
+  });
+});
+
+describe('codeHighlightStyle', () => {
+  it('keeps every default token style but colors them only with theme tokens', () => {
+    expect(codeHighlightStyle.specs).toHaveLength(defaultHighlightStyle.specs.length);
+    const colors = codeHighlightStyle.specs.map((s) => s.color).filter(Boolean);
+    expect(colors.length).toBe(defaultHighlightStyle.specs.filter((s) => s.color).length);
+    for (const c of colors) expect(c).toMatch(/^var\(--bb-[a-z-]+\)$/);
+    expect(codeHighlightStyle.module?.getRules()).not.toMatch(/#[0-9a-f]{3,6}\b/i);
   });
 });

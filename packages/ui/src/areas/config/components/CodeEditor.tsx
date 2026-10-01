@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import { Annotation, EditorState, Compartment, type Extension, type Transaction, type TransactionSpec } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, placeholder as cmPlaceholder } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput, foldGutter, foldKeymap } from '@codemirror/language';
+import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, bracketMatching, indentOnInput, foldGutter, foldKeymap, type TagStyle } from '@codemirror/language';
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
 import { yaml } from '@codemirror/lang-yaml';
 import { markdown } from '@codemirror/lang-markdown';
@@ -74,6 +74,33 @@ export function hasLocalEdit(transactions: readonly Transaction[]): boolean {
   return transactions.some((tr) => tr.docChanged && !tr.annotation(valueSync));
 }
 
+/** CodeMirror's default token colors (fixed, light-only hex) mapped to theme tokens that have light and dark values. */
+const TOKEN_COLORS: Record<string, string> = {
+  '#404740': 'var(--bb-fg-muted)', // meta
+  '#708': 'var(--bb-info-fg)', // keyword
+  '#219': 'var(--bb-accent-text)', // atom, bool, url, label
+  '#164': 'var(--bb-ok-fg)', // literal (numbers), inserted
+  '#a11': 'var(--bb-danger-fg)', // string, deleted
+  '#e40': 'var(--bb-warn-fg)', // regexp, escape
+  '#00f': 'var(--bb-accent-text)', // variable definition
+  '#30a': 'var(--bb-info-fg)', // local variable
+  '#085': 'var(--bb-ok-fg)', // type, namespace
+  '#167': 'var(--bb-ok-fg)', // class
+  '#256': 'var(--bb-accent-text)', // special variable, macro
+  '#00c': 'var(--bb-accent-text)', // property definition (YAML keys)
+  '#940': 'var(--bb-fg-subtle)', // comment
+  '#f00': 'var(--bb-danger)', // invalid
+};
+
+/**
+ * The default highlight style's tags and font styles with theme-token colors, so code follows the
+ * app's light/dark mode (the default's dark blues are unreadable on the dark surface). An unmapped
+ * color is dropped (inherits the editor foreground) rather than kept as a light-only hex.
+ */
+export const codeHighlightStyle = HighlightStyle.define(
+  defaultHighlightStyle.specs.map(({ color, ...rest }): TagStyle => (color && TOKEN_COLORS[color] ? { ...rest, color: TOKEN_COLORS[color] } : rest)),
+);
+
 export interface CodeEditorProps {
   value: string;
   onChange?: (value: string) => void;
@@ -108,7 +135,7 @@ export function CodeEditor({ value, onChange, language = 'text', readOnly, exten
         bracketMatching(),
         closeBrackets(),
         highlightActiveLine(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        syntaxHighlighting(codeHighlightStyle, { fallback: true }),
         autocompletion({ activateOnTyping: true }),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, indentWithTab]),
         theme,
