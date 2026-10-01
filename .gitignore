@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.vite/
+coverage/
+*.log
+.env
+.env.local
+/data/
+/var/
+.DS_Store
+.terraform/
+*.tfstate
+*.tfstate.backup
+packages/ui/dist
+packages/server/dist
+packages/shared/dist
+packages/sandbox-runtime/dist

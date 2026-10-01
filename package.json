@@ -1,0 +1,30 @@
+{
+  "name": "agent-breadboard",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A highly extensible, open-source framework for architecting, executing, and maintaining AI circuits.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=26" },
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "npm run build -w @breadboard/shared && npm run build -w @breadboard/sandbox-runtime && npm run build -w @breadboard/server && npm run build -w @breadboard/ui",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint packages/*/src --ext .ts,.tsx",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "npm run dev -w @breadboard/server",
+    "dev:ui": "npm run dev -w @breadboard/ui",
+    "migrate": "npm run migrate -w @breadboard/server",
+    "seed": "npm run seed -w @breadboard/server",
+    "start": "node packages/server/dist/main.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24.10.0",
+    "eslint": "^9.39.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vitest": "^4.1.11"
+  }
+}
