@@ -1,0 +1,79 @@
+# Reference single-instance deployment ([12] §1).
+#   docker compose -f deploy/compose.yaml --profile local-postgres up --build
+# Profiles:
+#   local-postgres  — bundled Postgres 16 + pgvector (dev/quickstart). Omit to point DATABASE_URL at
+#                     an external managed instance (AWS RDS is the recommended production default).
+#   sandbox-docker  — run tool sandboxes in sibling containers via the mounted Docker socket.
+name: agent-breadboard
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: agent-breadboard:local
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://breadboard:breadboard@postgres:5432/breadboard}
+      DATABASE_SSL: ${DATABASE_SSL:-prefer}
+      DATABASE_IAM_AUTH: ${DATABASE_IAM_AUTH:-false}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:4000}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-mock}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      SANDBOX_RUNNER: ${SANDBOX_RUNNER:-process}
+      SANDBOX_DOCKER_SOCKET: /var/run/docker.sock
+      SANDBOX_EGRESS_PROXY_HOST: server
+      TOKEN_SIGNING_KEY: ${TOKEN_SIGNING_KEY:-dev-only-change-me}
+      BROKER_MASTER_KEY: ${BROKER_MASTER_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - breadboard-data:/var/breadboard
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # Sandbox runner variant: same image, Docker socket mounted so tool sandboxes run as sibling containers
+  # on the internal-only network (see deploy/sandbox/README.md). Enable with --profile sandbox-docker.
+  server-docker-sandbox:
+    extends: server
+    profiles: ["sandbox-docker"]
+    environment:
+      SANDBOX_RUNNER: docker
+    volumes:
+      - breadboard-data:/var/breadboard
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: root  # needed for the docker socket; the server still runs tool code in unprivileged sibling containers
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    profiles: ["local-postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: breadboard
+      POSTGRES_PASSWORD: breadboard
+      POSTGRES_DB: breadboard
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U breadboard -d breadboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  breadboard-data:
+  postgres-data:
+
+networks:
+  default:
+    name: breadboard
