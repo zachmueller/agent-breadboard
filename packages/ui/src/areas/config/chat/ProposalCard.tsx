@@ -46,6 +46,7 @@ export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, bu
     },
     onSuccess: async (keepEdits) => {
       setMergeAsk(false);
+      setExpanded(false);
       notify('Proposal merged to main', 'ok');
       refresh();
       await wt.reload({ keepEdits });
@@ -55,6 +56,7 @@ export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, bu
   const discard = useMutation({
     mutationFn: () => configApi.discard(proposalId),
     onSuccess: () => {
+      setExpanded(false);
       notify('Proposal discarded', 'info');
       refresh();
     },
