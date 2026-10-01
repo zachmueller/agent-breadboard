@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton, type ButtonVariant } from './Button';
 import { cn } from './cn';
@@ -13,19 +13,40 @@ interface BaseProps {
   className?: string;
 }
 
-/** Native `<dialog>` modal: focus trap, Esc, top layer for free. Backdrop click closes. */
-function useNativeDialog(open: boolean, onClose: () => void) {
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+
+/**
+ * Shows a native `<dialog>` modally while `open`; render its content only when `shown`. Content mounts
+ * after showModal(): React applies `autoFocus` by calling focus() as the element mounts, which is a
+ * no-op inside a still-closed dialog, and showModal() would then focus the first focusable element
+ * (the header Close button). Without an autoFocus target, focus goes there anyway, as showModal() would.
+ */
+export function useModalDialog(open: boolean) {
   const ref = useRef<HTMLDialogElement>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
+  const [modal, setModal] = useState(false);
+  useLayoutEffect(() => {
     const d = ref.current;
-    if (!d) return;
-    if (open && !d.open) {
+    if (d && open && !d.open) {
       if (typeof d.showModal === 'function') d.showModal();
       else d.setAttribute('open', '');
-    } else if (!open && d.open) d.close();
+    } else if (d && !open && d.open) d.close();
+    setModal(open);
   }, [open]);
+  useLayoutEffect(() => {
+    const d = ref.current;
+    if (!modal || !d) return;
+    const active = document.activeElement;
+    if (active && active !== d && d.contains(active)) return;
+    d.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+  }, [modal]);
+  return { ref, shown: open && modal };
+}
+
+/** Native `<dialog>` modal: focus trap, Esc, top layer for free. Backdrop click closes. */
+function useNativeDialog(open: boolean, onClose: () => void) {
+  const { ref, shown } = useModalDialog(open);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -39,7 +60,7 @@ function useNativeDialog(open: boolean, onClose: () => void) {
   const onBackdrop = (e: MouseEvent<HTMLDialogElement>) => {
     if (e.target === e.currentTarget) closeRef.current();
   };
-  return { ref, onBackdrop };
+  return { ref, shown, onBackdrop };
 }
 
 export interface DialogProps extends BaseProps {
@@ -47,11 +68,11 @@ export interface DialogProps extends BaseProps {
 }
 
 export function Dialog({ open, onClose, title, description, children, footer, className, size = 'md' }: DialogProps) {
-  const { ref, onBackdrop } = useNativeDialog(open, onClose);
+  const { ref, shown, onBackdrop } = useNativeDialog(open, onClose);
   const w = { sm: 'w-[min(420px,calc(100vw-2rem))]', md: 'w-[min(540px,calc(100vw-2rem))]', lg: 'w-[min(760px,calc(100vw-2rem))]', xl: 'w-[min(1040px,calc(100vw-2rem))]' }[size];
   return (
     <dialog ref={ref} onMouseDown={onBackdrop} className={cn('m-auto max-h-[calc(100dvh-4rem)] overflow-hidden rounded-xl border border-line bg-surface p-0 text-fg shadow-pop backdrop:backdrop-blur-[1px]', w, className)}>
-      {open && (
+      {shown && (
         <div className="flex max-h-[calc(100dvh-4rem)] flex-col">
           {(title || description) && (
             <header className="flex items-start gap-3 border-b border-line px-5 py-4">
@@ -80,7 +101,7 @@ export interface DrawerProps extends BaseProps {
 
 /** Right-side panel (modal). */
 export function Drawer({ open, onClose, title, description, children, footer, className, width = 'lg', actions }: DrawerProps) {
-  const { ref, onBackdrop } = useNativeDialog(open, onClose);
+  const { ref, shown, onBackdrop } = useNativeDialog(open, onClose);
   const w = { md: 'w-[min(480px,100vw)]', lg: 'w-[min(720px,100vw)]', xl: 'w-[min(1000px,100vw)]' }[width];
   return (
     <dialog
@@ -88,7 +109,7 @@ export function Drawer({ open, onClose, title, description, children, footer, cl
       onMouseDown={onBackdrop}
       className={cn('fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh max-w-none border-l border-line bg-surface p-0 text-fg shadow-pop', w, className)}
     >
-      {open && (
+      {shown && (
         <div className="flex h-full flex-col">
           <header className="flex items-start gap-3 border-b border-line px-5 py-3.5">
             <div className="min-w-0 flex-1">

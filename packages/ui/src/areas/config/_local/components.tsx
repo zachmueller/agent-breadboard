@@ -2,11 +2,12 @@
  * Minimal local UI primitives for the config-plane editors. Used as fallbacks for shell
  * components (`src/components`) and for editor-specific widgets the shell doesn't provide.
  */
-import { useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
 import clsx from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { X, Loader2, AlertTriangle } from 'lucide-react';
+import { useModalDialog } from '../../../components/Dialog';
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
@@ -104,13 +105,8 @@ export function TabBar<T extends string>({ tabs, value, onChange, className }: {
 }
 
 export function Modal({ open, onClose, title, children, footer, wide }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const d = ref.current;
-    if (!d) return;
-    if (open && !d.open) d.showModal?.();
-    if (!open && d.open) d.close?.();
-  }, [open]);
+  // Content mounts once the dialog is modal, so a field's `autoFocus` takes effect (see useModalDialog).
+  const { ref, shown } = useModalDialog(open);
   if (!open) return null;
   return (
     <dialog
@@ -121,14 +117,18 @@ export function Modal({ open, onClose, title, children, footer, wide }: { open: 
       }}
       className={clsx('m-auto rounded-lg border border-line bg-surface p-0 text-fg shadow-pop', wide ? 'w-[min(960px,92vw)]' : 'w-[min(520px,92vw)]')}
     >
-      <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <button type="button" aria-label="Close" onClick={onClose} className="rounded p-1 text-fg-subtle hover:bg-hover">
-          <X className="size-4" />
-        </button>
-      </div>
-      <div className="max-h-[70vh] overflow-auto px-4 py-3">{children}</div>
-      {footer && <div className="flex justify-end gap-2 border-t border-line px-4 py-2.5">{footer}</div>}
+      {shown && (
+        <>
+          <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+            <h2 className="text-sm font-semibold">{title}</h2>
+            <button type="button" aria-label="Close" onClick={onClose} className="rounded p-1 text-fg-subtle hover:bg-hover">
+              <X className="size-4" />
+            </button>
+          </div>
+          <div className="max-h-[70vh] overflow-auto px-4 py-3">{children}</div>
+          {footer && <div className="flex justify-end gap-2 border-t border-line px-4 py-2.5">{footer}</div>}
+        </>
+      )}
     </dialog>
   );
 }
