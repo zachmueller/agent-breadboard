@@ -17,7 +17,7 @@ const PUBLIC_PATHS = new Set([`${API_PREFIX}/health`, `${API_PREFIX}/auth/login`
 
 export async function buildApp(services: Services): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: services.log as any,
+    loggerInstance: services.log as any,
     bodyLimit: 32 * 1024 * 1024,
     trustProxy: true,
     disableRequestLogging: services.env.NODE_ENV !== 'development',

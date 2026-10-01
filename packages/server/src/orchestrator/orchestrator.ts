@@ -394,7 +394,9 @@ export class OrchestratorImpl implements Orchestrator {
       const verdicts = (detail.verdicts ?? []) as Array<Record<string, any>>;
       if (verdicts.some((v) => v.request_id === input.request_id)) throw new BreadboardError('conflict', `request ${input.request_id} already has a verdict`);
       // Targeting ([02] §5.4): only targeted reviewers record verdicts; there is no admin bypass on gates.
-      if (by.actor.kind !== 'service') {
+      // Server-internal principals (token_kind 'internal') may act on behalf of resolved verdicts; API service
+      // tokens (actor kind `service`, token_kind 'service') may not.
+      if (by.token_kind !== 'internal') {
         if (!by.user || !requestTargetsUser(req!, { handle: by.user.handle, roles: by.roles })) {
           throw new BreadboardError('forbidden', `request ${input.request_id} targets ${[req!.role && `role=${req!.role}`, req!.username && `username=${req!.username}`].filter(Boolean).join(',') || 'nobody'}`);
         }

@@ -46,6 +46,9 @@ export interface ToolboxDeps {
 
 /** Can this principal invoke the tool at all? (Exported for the subagent tool surface / MCP layer.) */
 export function canInvokeTool(p: Principal, toolUid: string): boolean {
+  // A circuit code step invoking its own declared tool needs no grant: the circuit's flow is the authority
+  // ([05] §2.3 — grants govern a Subagent's *discretionary* invocations, not the orchestration layer's).
+  if (p.actor.kind === 'code-step' && p.actor.id === toolUid && !p.grants) return true;
   if (p.actor.kind === 'subagent' || p.actor.kind === 'code-step') {
     if (!p.grants) return false; // AI principals without resolved grants are fail-closed
     if (!p.grants.tools.has(toolUid)) return false;
