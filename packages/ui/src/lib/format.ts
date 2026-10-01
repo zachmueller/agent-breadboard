@@ -59,7 +59,8 @@ export function formatRelative(at: string | number | Date | null | undefined, no
   const future = d < 0;
   const a = Math.abs(d);
   let out: string;
-  if (a < 45) return future ? 'in a moment' : 'just now';
+  // A timestamp up to a minute ahead is clock skew against the server (or a just-created item), not a future time.
+  if (a < 45 || (future && a < 60)) return 'just now';
   else if (a < 3600) out = `${Math.round(a / 60)}m`;
   else if (a < 86400) out = `${Math.round(a / 3600)}h`;
   else if (a < 86400 * 30) out = `${Math.round(a / 86400)}d`;

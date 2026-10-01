@@ -34,6 +34,10 @@ describe('format helpers', () => {
     expect(formatRelative('2026-09-30T11:59:50Z', now)).toBe('just now');
     expect(formatRelative('2026-09-30T11:55:00Z', now)).toBe('5m ago');
     expect(formatRelative('2026-09-30T14:00:00Z', now)).toBe('in 2h');
+    // Slightly-future timestamps (clock skew, fresh server rows) read as now.
+    expect(formatRelative('2026-09-30T12:00:01Z', now)).toBe('just now');
+    expect(formatRelative('2026-09-30T12:00:50Z', now)).toBe('just now');
+    expect(formatRelative('2026-09-30T12:05:00Z', now)).toBe('in 5m');
     expect(formatRelative('2026-09-27T12:00:00Z', now)).toBe('3d ago');
   });
 
