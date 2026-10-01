@@ -16,10 +16,8 @@ export function LazyInput({ value, onCommit, validate, className, placeholder, m
   const err = v !== value && validate ? validate(v) : null;
   const apply = () => {
     if (v === value) return;
-    if (validate && validate(v)) {
-      setV(value);
-      return;
-    }
+    // An invalid value stays in the field with its message (Esc reverts) instead of silently reverting.
+    if (validate && validate(v)) return;
     onCommit(v);
   };
   return (
