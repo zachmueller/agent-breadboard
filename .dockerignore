@@ -1,0 +1,7 @@
+# Build context for the server image (Dockerfile) and the sandbox images (deploy/sandbox/). Keep `dist`: the
+# sandbox images copy the host-built packages/sandbox-runtime/dist.
+**/node_modules
+.git
+.env
+var
+deploy/aws/cdk.out

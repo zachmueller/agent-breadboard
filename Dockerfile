@@ -14,6 +14,9 @@ COPY tsconfig.base.json ./
 COPY packages ./packages
 COPY config-seed ./config-seed
 RUN npm run build
+# npm nests a dependency under a workspace when the root holds another version of it (e.g. ajv@8 under
+# packages/shared while a dev tool hoists ajv@6), so each runtime workspace's node_modules is copied too.
+RUN mkdir -p packages/shared/node_modules packages/sandbox-runtime/node_modules packages/server/node_modules
 
 FROM node:26-alpine AS runtime
 ENV NODE_ENV=production
@@ -24,11 +27,14 @@ COPY --from=build /src/package.json /src/package-lock.json ./
 COPY --from=build /src/node_modules ./node_modules
 COPY --from=build /src/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build /src/packages/shared/dist ./packages/shared/dist
+COPY --from=build /src/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=build /src/packages/sandbox-runtime/package.json ./packages/sandbox-runtime/package.json
 COPY --from=build /src/packages/sandbox-runtime/dist ./packages/sandbox-runtime/dist
 COPY --from=build /src/packages/sandbox-runtime/python ./packages/sandbox-runtime/python
+COPY --from=build /src/packages/sandbox-runtime/node_modules ./packages/sandbox-runtime/node_modules
 COPY --from=build /src/packages/server/package.json ./packages/server/package.json
 COPY --from=build /src/packages/server/dist ./packages/server/dist
+COPY --from=build /src/packages/server/node_modules ./packages/server/node_modules
 COPY --from=build /src/packages/ui/dist ./packages/ui/dist
 COPY --from=build /src/config-seed ./config-seed
 RUN mkdir -p /var/breadboard && chown -R breadboard:breadboard /var/breadboard /app
