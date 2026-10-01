@@ -71,7 +71,7 @@ settings:
     description: Optional HTTPS git URL cloned as the workspace (its host must be in egress.allow). Empty = scratch dir.
   model_id:
     type: string
-    default: anthropic.claude-sonnet-5
+    default: us.anthropic.claude-sonnet-5
     description: Bedrock model the harness drives.
   aws_region:
     type: string

@@ -4,7 +4,7 @@ circuit: 01J8CR11TREV00000000          # lit-review
 judge:
   subagent: 01J8SAEVA1JVDGE00000       # eval-judge
   provider: bedrock
-  model_id: anthropic.claude-sonnet-5  # pinned so scores stay comparable across model-regression runs ([04] §6)
+  model_id: us.anthropic.claude-sonnet-5  # pinned so scores stay comparable across model-regression runs ([04] §6)
 
 dimensions:
   - key: coverage

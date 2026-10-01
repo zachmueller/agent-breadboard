@@ -51,11 +51,13 @@ UIDs are 20 characters of Crockford base32 (digits and uppercase letters except 
 ```yaml
 schema: breadboard/presets@v1
 presets:
-  small:  [{ provider: bedrock, model_id: anthropic.claude-haiku-4-5 }, { provider: bedrock, model_id: amazon.nova-lite-v2 }]
-  medium: [{ provider: bedrock, model_id: anthropic.claude-sonnet-5 }, { provider: bedrock, model_id: anthropic.claude-haiku-4-5 }]
-  large:  [{ provider: bedrock, model_id: anthropic.claude-opus-5, requires: [structured-output, tool-use] }, { provider: bedrock, model_id: anthropic.claude-sonnet-5 }]
-embeddings: { provider: bedrock, model_id: amazon.titan-embed-text-v2:0 }
+  small:  [{ provider: bedrock, model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0" }, { provider: bedrock, model_id: "us.amazon.nova-2-lite-v1:0" }]
+  medium: [{ provider: bedrock, model_id: us.anthropic.claude-sonnet-5 }, { provider: bedrock, model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0" }]
+  large:  [{ provider: bedrock, model_id: us.anthropic.claude-opus-5, requires: [structured-output, tool-use] }, { provider: bedrock, model_id: us.anthropic.claude-sonnet-5 }]
+embeddings: { provider: bedrock, model_id: "amazon.titan-embed-text-v2:0" }
 ```
+
+Use the exact Bedrock ids: Claude and Nova 2 models are invocable only through an inference profile (`us.…`, `eu.…`, `apac.…`, `global.…`), while Titan embeddings take the bare model id. `aws bedrock list-inference-profiles` lists what an account can call.
 
 Each entry: `provider` (must have an installed adapter — v1 ships `bedrock`, plus `mock` for dev), `model_id`, optional `requires` (capabilities the entry must satisfy or be skipped during fallback), optional `pricing {input_per_m, output_per_m}` override.
 

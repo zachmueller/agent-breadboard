@@ -205,7 +205,7 @@ def handler(input, ctx):
     except Exception as e:
         return _ret(ctx, "failed", {"error": str(e)})
 
-    model_id = settings.get("model_id") or "anthropic.claude-sonnet-5"
+    model_id = settings.get("model_id") or "us.anthropic.claude-sonnet-5"
     forward = _Forwarder(ctx)
     agent = Agent(
         model=BedrockModel(model_id=model_id, region_name=settings.get("aws_region") or "us-west-2"),

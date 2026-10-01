@@ -105,6 +105,11 @@ describe('end-to-end against the shipped seed', () => {
     expect(items.filter((e: any) => e.kind === 'subagent').length).toBeGreaterThanOrEqual(13);
     const validation = await services.config.validateTree();
     expect(validation.errors).toEqual([]);
+    // Claude and Nova 2 models are invocable on Bedrock only through an inference profile, not the bare model id.
+    const presets = await services.config.presets();
+    for (const entry of Object.values(presets.presets).flat()) {
+      if (/anthropic\.|nova-2/.test(entry.model_id)) expect(entry.model_id).toMatch(/^(us|eu|apac|global)\./);
+    }
   });
 
   it('runs a task through triage → lit-review → gate → verdict → done with lineage', async () => {
