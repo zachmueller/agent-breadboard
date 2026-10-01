@@ -93,9 +93,15 @@ export function pluralize(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** Title-case a slug-ish token: `suspended-gate` → `Suspended gate`. */
+/** Words humanize() writes as acronyms (`llm` step kind, `api` origin, `aws` credential kind, …). */
+const ACRONYMS: Record<string, string> = { llm: 'LLM', mcp: 'MCP', api: 'API', ai: 'AI', aws: 'AWS', oauth2: 'OAuth2', id: 'ID', uid: 'UID', url: 'URL' };
+
+/** Title-case a slug-ish token: `suspended-gate` → `Suspended gate`, `llm` → `LLM`. */
 export function humanize(s: string | null | undefined): string {
   if (!s) return '';
-  const t = s.replace(/[-_]+/g, ' ').trim();
+  const t = s
+    .replace(/[-_]+/g, ' ')
+    .trim()
+    .replace(/[a-z0-9]+/g, (w) => ACRONYMS[w] ?? w);
   return t.charAt(0).toUpperCase() + t.slice(1);
 }

@@ -46,5 +46,9 @@ describe('format helpers', () => {
     expect(shortId('short')).toBe('short');
     expect(shortCommit('0123456789abcdef')).toBe('01234567');
     expect(humanize('suspended-gate')).toBe('Suspended gate');
+    expect(humanize('llm')).toBe('LLM');
+    expect(humanize('pre-ai-edit')).toBe('Pre AI edit');
+    expect(humanize('oauth2')).toBe('OAuth2');
+    expect(humanize('email')).toBe('Email');
   });
 });
