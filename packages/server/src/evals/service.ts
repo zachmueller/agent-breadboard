@@ -392,7 +392,8 @@ export class EvalServiceImpl implements EvalService {
           const res = await this.d.toolbox.invoke({
             tool_uid: dim.tool,
             commit: ctx.commit,
-            input: { fixture, output: { exit: outcome.exit, output: outcome.output }, session_id: sessionId },
+            // The assertion-tool contract (seed tools/assert-*): the exit taken and the terminal output, side by side.
+            input: { fixture, exit: outcome.exit, output: outcome.output, session_id: sessionId, circuit_uid: ctx.circuit_uid },
             settings,
             principal: this.svc,
             ambient: { invocation: 'eval', session_id: sessionId, step_id: `eval:${dim.key}`, attempt: 1, settings },

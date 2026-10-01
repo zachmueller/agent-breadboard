@@ -234,6 +234,26 @@ describe('EvalService', () => {
     expect(run.results[0].aggregate.gates).toHaveLength(1);
   });
 
+  it('passes tool-extension assertions the exit, the terminal output, and the circuit', async () => {
+    const TOOL = mintUid();
+    const calls: any[] = [];
+    const toolbox = {
+      invoke: async (inv: any) => {
+        calls.push(inv);
+        return { output: { pass: inv.input.exit === 'done' && inv.input.output?.answer === 'A', detail: 'checked' } };
+      },
+    } as unknown as Toolbox;
+    rubric.dimensions.push({ key: 'shape', type: 'programmatic', tool: TOOL } as Rubric['dimensions'][number]);
+    try {
+      const run = (await make({ toolbox }).startRun({ circuit: CIRCUIT, ref: null, fixture_tags: ['core'], model_overrides: null, by: f.adminPrincipal })) as any;
+      expect(calls[0].tool_uid).toBe(TOOL);
+      expect(calls[0].input).toMatchObject({ exit: 'done', output: { answer: 'A' }, circuit_uid: CIRCUIT, fixture: { fixture_id: 'fx-a' } });
+      expect(run.results[0].dimensions.find((d: any) => d.dimension === 'shape').value).toMatchObject({ pass: true });
+    } finally {
+      rubric.dimensions.pop();
+    }
+  });
+
   it('scores a failed session as 0 and skips the judge', async () => {
     behavior.b!.fail = true;
     const run = (await svc.startRun({ circuit: CIRCUIT, ref: null, fixture_tags: ['edge'], model_overrides: null, by: f.adminPrincipal })) as any;
