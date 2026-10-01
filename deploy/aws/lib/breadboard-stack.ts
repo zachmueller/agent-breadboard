@@ -73,6 +73,14 @@ const KEEP = RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE;
 
 const USER_DATA = readFileSync(new URL('./user-data.sh', import.meta.url), 'utf8');
 
+/** A container image reference (`[registry[:port]/]path[:tag][@sha256:digest]`, lowercase path components). */
+const IMAGE_REF = /^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::\d+)?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[\w][\w.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$/;
+
+/** Fail at synth on a malformed image: the host would otherwise boot, fail its one-time bootstrap, and serve nothing. */
+export function assertImageRef(key: string, image: string): void {
+  if (!IMAGE_REF.test(image)) throw new Error(`${key} is not a valid image reference: ${image}`);
+}
+
 /** `<account>.dkr.ecr.<region>.amazonaws.com/<repo>[:tag|@digest]` → the repository ARN, or null for other registries. */
 export function ecrRepositoryArn(image: string): string | null {
   const m = /^(\d{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com\/([^:@]+)/.exec(image);
@@ -95,6 +103,9 @@ export class BreadboardStack extends Stack {
     super(scope, id, props);
     const p = { ...DEFAULTS, ...props };
     const prefix = `breadboard-${p.name}`;
+    assertImageRef('serverImage', p.serverImage);
+    if (p.sandboxImageTs) assertImageRef('sandboxImageTs', p.sandboxImageTs);
+    if (p.sandboxImagePy) assertImageRef('sandboxImagePy', p.sandboxImagePy);
 
     // --- Network --------------------------------------------------------------
     // Subnet IDs are resolved against the looked-up VPC so their AZ and public/private kind come from AWS.

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
-import { BreadboardStack, ecrRepositoryArn, renderUserData, type BreadboardStackProps } from '../lib/breadboard-stack.js';
+import { BreadboardStack, assertImageRef, ecrRepositoryArn, renderUserData, type BreadboardStackProps } from '../lib/breadboard-stack.js';
 
 const VPC_ID = 'vpc-0a1b2c3d4e5f60718';
 const PUBLIC_A = 'subnet-0aaaaaaaaaaaaaaa1';
@@ -158,6 +158,14 @@ describe('BreadboardStack', () => {
     const hub = synth({ serverImage: 'ghcr.io/example/agent-breadboard:v1' });
     expect(statements(hub).filter((s) => [s.Action].flat().some((a: string) => a.startsWith('ecr:')))).toEqual([]);
     expect(ecrRepositoryArn('123456789012.dkr.ecr.eu-west-1.amazonaws.com/team/bb@sha256:abc')).toBe('arn:aws:ecr:eu-west-1:123456789012:repository/team/bb');
+  });
+
+  it('rejects malformed image references at synth', () => {
+    for (const ok of [IMAGE, 'ghcr.io/example/agent-breadboard:v1', 'localhost:5000/bb@sha256:' + 'a'.repeat(64), 'agent-breadboard']) expect(() => assertImageRef('x', ok)).not.toThrow();
+    // What an unquoted `$R:server-…` in zsh produced (the `:s` history modifier ate the tag): caught before a deploy.
+    const mangled = '123456789012.dkr.ecr.us-east-1.amazonaws.com/agent-breadboardTs=123456789012.dkr.ecr.us-east-1.amazonaws.com/agent-breadboard';
+    expect(() => synth({ serverImage: mangled })).toThrow(/serverImage is not a valid image reference/);
+    expect(() => synth({ sandboxImagePy: 'Bad Image' })).toThrow(/sandboxImagePy/);
   });
 
   it('adds no inbound rule to the server when no CIDRs are allowed (SSM-only access)', () => {
