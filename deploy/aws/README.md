@@ -36,7 +36,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `serverImage` | required | The container image pushed above. |
 | `region` | `CDK_DEFAULT_REGION`, else `us-east-1` | |
 | `serverPublicIp` | `true` | |
-| `allowedCidrs` | `0.0.0.0/0` | CIDRs allowed to reach the server port. |
+| `allowedCidrs` | `0.0.0.0/0` | CIDRs allowed to reach the server port. `none` adds no inbound rule; reach the server with SSM port forwarding (`aws ssm start-session --document-name AWS-StartPortForwardingSession`). |
 | `serverPort` | `4000` | |
 | `serverInstanceType` | `t3.large` | x86_64, matching the AMI. |
 | `serverRootVolumeGb` | `100` | |

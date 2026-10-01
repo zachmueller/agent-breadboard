@@ -142,6 +142,12 @@ describe('BreadboardStack', () => {
     expect(userData(custom).text).toContain('PORT=8443');
   });
 
+  it('adds no inbound rule to the server when no CIDRs are allowed (SSM-only access)', () => {
+    const closed = synth({ allowedCidrs: [] });
+    closed.hasResourceProperties('AWS::EC2::SecurityGroup', { GroupDescription: 'Breadboard server host', SecurityGroupIngress: Match.absent() });
+    closed.resourceCountIs('AWS::EC2::SecurityGroupIngress', 1); // only Postgres from the server
+  });
+
   it('generates all three secrets in Secrets Manager and retains them', () => {
     const secrets = t.findResources('AWS::SecretsManager::Secret');
     expect(Object.keys(secrets)).toHaveLength(3);

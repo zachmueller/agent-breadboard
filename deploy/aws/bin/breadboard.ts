@@ -50,7 +50,8 @@ const props: BreadboardStackProps = {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: str('region') ?? process.env.CDK_DEFAULT_REGION ?? 'us-east-1' },
   description: 'Agent Breadboard reference deployment: RDS Postgres + one server host',
   serverPublicIp: bool('serverPublicIp'),
-  allowedCidrs: list('allowedCidrs'),
+  // `none`: no inbound rule at all (reach the server through SSM port forwarding).
+  allowedCidrs: str('allowedCidrs') === 'none' ? [] : list('allowedCidrs'),
   serverPort: num('serverPort'),
   serverInstanceType: str('serverInstanceType'),
   serverRootVolumeGb: num('serverRootVolumeGb'),
