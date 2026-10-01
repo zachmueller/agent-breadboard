@@ -1,9 +1,42 @@
-/** Test-only helpers for toolbox tests: temp tool directories and a fake ConfigService. */
+/** Test-only helpers for toolbox tests: temp tool directories, a fake ConfigService, and the runner under test. */
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { mintUid, parseConfigYaml, toYaml, zBreadboardConfig, type BreadboardConfig, type McpServer, type Tool } from '@breadboard/shared';
-import type { ConfigService, LoadedTool } from '../core/services.js';
+import type { ConfigService, LoadedTool, SandboxRunner } from '../core/services.js';
+import type { Logger } from '../core/logger.js';
+import type { ObjectStore } from '../core/object-store.js';
+import type { EgressProxy } from './egress-proxy.js';
+import { DockerSandboxRunner } from './sandbox/docker.js';
+import { ProcessSandboxRunner } from './sandbox/process.js';
+
+/**
+ * `SANDBOX_RUNNER=docker` runs the toolbox suite against real containers (images from `deploy/sandbox`, network
+ * `breadboard-sandbox`); anything else uses the process runner. Docker mode also reads `SANDBOX_DOCKER_SOCKET`,
+ * `SANDBOX_EGRESS_PROXY_HOST`, and `SANDBOX_EGRESS_PROXY_PORT` (see `deploy/sandbox/README.md` for hosts where
+ * the sandbox network cannot reach the host gateway).
+ */
+export const TEST_RUNNER: 'docker' | 'process' = process.env.SANDBOX_RUNNER === 'docker' ? 'docker' : 'process';
+
+/** Proxy listen options: an ephemeral loopback port for the process runner, a fixed all-interfaces port for docker. */
+export function testProxyListen(): { port: number; bindHost: string } {
+  return TEST_RUNNER === 'docker' ? { port: Number(process.env.SANDBOX_EGRESS_PROXY_PORT ?? 4100), bindHost: '0.0.0.0' } : { port: 0, bindHost: '127.0.0.1' };
+}
+
+export function createTestSandboxRunner(o: { log: Logger; proxy: EgressProxy; apiUrl: string; objects: ObjectStore; pythonBin: string; images: BreadboardConfig['sandbox']['images'] }): SandboxRunner {
+  if (TEST_RUNNER === 'docker') {
+    return new DockerSandboxRunner({
+      log: o.log,
+      proxy: o.proxy,
+      socket: process.env.SANDBOX_DOCKER_SOCKET ?? '/var/run/docker.sock',
+      images: async () => o.images,
+      warmPoolSize: 1,
+      proxyHost: process.env.SANDBOX_EGRESS_PROXY_HOST ?? 'host.docker.internal',
+      objects: o.objects,
+    });
+  }
+  return new ProcessSandboxRunner({ log: o.log, proxy: o.proxy, apiUrl: o.apiUrl, pythonBin: o.pythonBin, objects: o.objects, killGraceMs: 1000 });
+}
 
 export async function makeToolDir(manifest: Record<string, unknown>, files: Record<string, string>): Promise<LoadedTool> {
   const uid = (manifest.uid as string) ?? mintUid();

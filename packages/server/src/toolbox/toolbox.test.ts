@@ -1,18 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
+import Docker from 'dockerode';
 import { mintSessionId, mintUid, BreadboardError } from '@breadboard/shared';
 import { createFoundation, type Foundation } from '../test/harness.js';
 import type { AuthService, SandboxRunInput, SandboxRunner, SandboxRunResult } from '../core/services.js';
 import type { Principal } from '../core/principal.js';
-import { ProcessSandboxRunner } from './sandbox/process.js';
 import { EgressProxy } from './egress-proxy.js';
+import { apiEgressRule } from './index.js';
+import { SANDBOX_LABEL, dockerConnection } from './sandbox/docker.js';
 import { createToolbox, mergeSettings, type ToolboxImpl } from './toolbox.js';
 import { executionKey, inputHash, canonicalJson } from './journal.js';
-import { defaultSettings, fakeConfig, makeToolDir } from './test-helpers.js';
+import { TEST_RUNNER, createTestSandboxRunner, defaultSettings, fakeConfig, makeToolDir, testProxyListen } from './test-helpers.js';
 
 const PYTHON = process.env.PYTHON_BIN ?? 'python3';
+const DOCKER = TEST_RUNNER === 'docker';
 const hasPython = (() => {
+  if (DOCKER) return true; // the Python sandbox image
   try {
     execFileSync(PYTHON, ['--version']);
     return true;
@@ -35,6 +39,23 @@ export async function handler(input: { n: number; mode?: string; url?: string },
     return { exit: 'done', output: { n: res.status } };
   }
   if (input.mode === 'settings') return { exit: 'done', output: { n: input.n, settings: ctx.ambient.settings } };
+  if (input.mode === 'raw') {
+    // Ignores the proxy variables and opens a TCP socket straight at the target.
+    const net = await import('node:net');
+    const u = new URL(input.url!);
+    const result = await new Promise<string>((resolve) => {
+      const sock = net.connect({ host: u.hostname, port: Number(u.port || 80), timeout: 3000 });
+      sock.on('connect', () => { sock.destroy(); resolve('connected'); });
+      sock.on('timeout', () => { sock.destroy(); resolve('timeout'); });
+      sock.on('error', (e: any) => resolve(e.code ?? 'error'));
+    });
+    return { exit: 'done', output: { n: 0, result } };
+  }
+  if (input.mode === 'oom') {
+    const hog: Buffer[] = [];
+    for (let i = 0; i < 64; i++) hog.push(Buffer.alloc(16 * 1024 * 1024, 1));
+    return { exit: 'done', output: { n: hog.length } };
+  }
   return { exit: 'done', output: { n: input.n * 2 } };
 }
 `;
@@ -62,6 +83,8 @@ let tsTool: Awaited<ReturnType<typeof makeToolDir>>;
 let pyTool: Awaited<ReturnType<typeof makeToolDir>>;
 let slowTool: Awaited<ReturnType<typeof makeToolDir>>;
 let costlyTool: Awaited<ReturnType<typeof makeToolDir>>;
+let oomTool: Awaited<ReturnType<typeof makeToolDir>>;
+let runner: SandboxRunner;
 
 function subagentPrincipal(tools: Record<string, Record<string, unknown>>, override: string[] | null = null): Principal {
   return {
@@ -126,15 +149,18 @@ beforeAll(async () => {
   await new Promise<void>((r) => target.listen(0, '127.0.0.1', r));
   targetPort = (target.address() as any).port;
 
-  proxy = new EgressProxy({ port: 0, bindHost: '127.0.0.1', db: f.db, log: f.log });
+  // Process runner: API host `localhost` bypasses the proxy (NO_PROXY). Docker runner: the API is reached through
+  // the proxy as an implicit destination. Either way the egress target is addressed as 127.0.0.1 and must go
+  // through the proxy.
+  const publicUrl = `http://localhost:${apiPort}`;
+  proxy = new EgressProxy({ ...testProxyListen(), db: f.db, log: f.log, implicitAllow: apiEgressRule(publicUrl) });
   await proxy.start();
 
-  // API host `localhost` bypasses the proxy (NO_PROXY); the egress target is addressed as 127.0.0.1 and must go through it.
-  const publicUrl = `http://localhost:${apiPort}`;
-  const inner = new ProcessSandboxRunner({ log: f.log, proxy, apiUrl: publicUrl, pythonBin: PYTHON, objects: f.objects, killGraceMs: 1000 });
+  const inner = createTestSandboxRunner({ log: f.log, proxy, apiUrl: publicUrl, pythonBin: PYTHON, objects: f.objects, images: defaultSettings().sandbox.images });
+  runner = inner;
   await inner.start();
   const counting: SandboxRunner = {
-    kind: 'process',
+    kind: inner.kind,
     start: () => inner.start(),
     stop: () => inner.stop(),
     health: () => inner.health(),
@@ -158,6 +184,7 @@ beforeAll(async () => {
   pyTool = await makeToolDir({ language: 'python', entrypoint: 'src/main.py', input: INPUT_SCHEMA }, { 'src/main.py': PY_HANDLER });
   slowTool = await makeToolDir({ language: 'typescript', entrypoint: 'src/index.ts', input: INPUT_SCHEMA, limits: { timeout_s: 1 } }, { 'src/index.ts': TS_HANDLER });
   costlyTool = await makeToolDir({ language: 'typescript', entrypoint: 'src/index.ts', input: INPUT_SCHEMA, limits: { max_cost_units: 60 } }, { 'src/index.ts': TS_HANDLER });
+  oomTool = await makeToolDir({ language: 'typescript', entrypoint: 'src/index.ts', input: INPUT_SCHEMA, limits: { memory_mb: 128, timeout_s: 30 } }, { 'src/index.ts': TS_HANDLER });
 
   const settings = defaultSettings((s) => {
     s.sandbox.nesting_depth_cap = 3;
@@ -169,7 +196,7 @@ beforeAll(async () => {
     },
   } as unknown as AuthService;
   toolbox = createToolbox({
-    config: fakeConfig({ tools: [tsTool, pyTool, slowTool, costlyTool], settings }),
+    config: fakeConfig({ tools: [tsTool, pyTool, slowTool, costlyTool, oomTool], settings }),
     sandbox: counting,
     proxy,
     auth,
@@ -184,6 +211,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await runner?.stop();
   await proxy?.stop();
   await new Promise((r) => api?.close(r));
   await new Promise((r) => target?.close(r));
@@ -199,7 +227,7 @@ describe('journal helpers', () => {
   });
 });
 
-describe('ToolboxImpl.invoke (process runner)', () => {
+describe(`ToolboxImpl.invoke (${TEST_RUNNER} runner)`, () => {
   it('runs a TypeScript tool, returns output + logs, and ctx primitives round-trip with the actor token', async () => {
     const before = runs;
     const r = await toolbox.invoke({ tool_uid: tsTool.uid, input: { n: 21, mode: 'artifact' }, principal: f.adminPrincipal, ambient: { invocation: 'tool-call' } });
@@ -329,6 +357,35 @@ describe('ToolboxImpl.invoke (process runner)', () => {
 
   it('lists externally exposed tools', async () => {
     expect(await toolbox.externalTools()).toEqual([]);
+  });
+});
+
+describe.runIf(DOCKER)('ToolboxImpl.invoke (docker isolation)', () => {
+  const docker = new Docker(dockerConnection(process.env.SANDBOX_DOCKER_SOCKET ?? '/var/run/docker.sock'));
+  const sandboxContainers = async () => docker.listContainers({ all: true, filters: { label: [`${SANDBOX_LABEL}=1`] } });
+
+  it('gives a tool that ignores the proxy no route anywhere (internal network)', async () => {
+    for (const url of [`http://host.docker.internal:${apiPort}`, 'http://1.1.1.1:80']) {
+      const r = await toolbox.invoke({ tool_uid: tsTool.uid, input: { n: 0, mode: 'raw', url }, principal: f.adminPrincipal, ambient: { invocation: 'tool-call' } });
+      expect((r.output as any).output.result, url).not.toBe('connected');
+    }
+  });
+
+  it('OOM-kills a tool that allocates beyond limits.memory_mb and journals it as failed', async () => {
+    const err = await expectError(toolbox.invoke({ tool_uid: oomTool.uid, input: { n: 0, mode: 'oom' }, principal: f.adminPrincipal, ambient: { invocation: 'tool-call' } }), 'internal', /exit 137|without a result/);
+    expect((await toolbox.journal.lookup((err.detail as any).execution_key))?.status).toBe('failed');
+  });
+
+  it('removes the container after one execution; only warm, unused containers remain', async () => {
+    const before = new Set((await sandboxContainers()).map((c) => c.Id));
+    await toolbox.invoke({ tool_uid: tsTool.uid, input: { n: 1 }, principal: f.adminPrincipal, ambient: { invocation: 'tool-call' } });
+    let after = await sandboxContainers();
+    for (let i = 0; i < 50 && [...before].every((id) => after.some((c) => c.Id === id)); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      after = await sandboxContainers();
+    }
+    expect([...before].some((id) => !after.some((c) => c.Id === id))).toBe(true);
+    for (const c of after) expect(c.Labels['breadboard.state']).toBe('warm');
   });
 });
 
