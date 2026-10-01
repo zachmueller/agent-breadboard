@@ -58,6 +58,10 @@ export function assertCanRead(node: KNode | null, by: Principal, opts: { knowled
   }
 }
 
+function isCompaction(a: Actor | null | undefined): boolean {
+  return a?.kind === 'service' && a.id === 'compaction';
+}
+
 function isAi(p: Principal): boolean {
   return p.actor.kind === 'subagent' || p.actor.kind === 'code-step';
 }
@@ -317,11 +321,13 @@ export class KnowledgeServiceImpl implements KnowledgeService {
       if (!pre) throw new BreadboardError('not-found', `revision ${input.pre_ai_edit_revision} not found`);
       if (!pre.labels.includes('pre-ai-edit')) throw validationFailed(`revision ${input.pre_ai_edit_revision} is not a pre-ai-edit revision`);
       const live = await this.liveDoc(uid);
-      // Three-way: diff the AI's result (the revision right after pre-ai-edit) back to the pre-edit text,
-      // so only the AI's blocks are reverted and later human edits survive.
-      const after = await this.deps.nodes.getRevision(uid, pre.revision_id + 1);
-      const aiAfter = after && after.ydoc_state_buf && (after.created_by?.kind === 'subagent' || after.created_by?.kind === 'code-step');
-      const baseDoc = aiAfter ? docFromRevisionState(after.ydoc_state_buf!) : cloneDoc(live);
+      // Three-way: diff the AI's result back to the pre-edit text, so only the AI's blocks are reverted and later
+      // human edits survive. proposeEdit cuts the result right after pre-ai-edit under the note lock, whoever edits
+      // (a subagent, a code step, or an external agent on a user or service token); only the sync server's
+      // compaction, which does not take the lock, can cut a revision in between.
+      let after = await this.deps.nodes.getRevision(uid, pre.revision_id + 1);
+      for (let id = pre.revision_id + 2; after && isCompaction(after.created_by) && id <= pre.revision_id + 4; id++) after = await this.deps.nodes.getRevision(uid, id);
+      const baseDoc = after?.ydoc_state_buf && !isCompaction(after.created_by) ? docFromRevisionState(after.ydoc_state_buf) : cloneDoc(live);
       const r = reconcile(baseDoc, pre.body_text ?? '', { actor: plainActor(by.actor) });
       if (changes(r) > 0) await this.deps.sync.transact(uid, plainActor(by.actor), (doc) => Y.applyUpdate(doc, r.update));
       const snap = await this.snapshot(uid, live, ['publish'], by.actor);

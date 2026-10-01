@@ -47,6 +47,17 @@ describe('KnowledgeService', () => {
     expect(await code(kit.knowledge.createNote({ title: 'x', markdown: 'y', domains: ['nope'], by: kit.f.memberPrincipal }))).toBe('validation-failed');
   });
 
+  it('reverting an edit made on a service token keeps later human edits too', async () => {
+    const node = await kit.knowledge.createNote({ title: 'Payments', markdown: NOTE, domains: ['ops'], by: kit.f.memberPrincipal });
+    const base = await kit.knowledge.readNote(node.uid, kit.f.servicePrincipal);
+    const res = await kit.knowledge.proposeEdit({ uid: node.uid, base_revision: base.base_revision, markdown: base.markdown.replace('exceeds a minute', 'exceeds thirty seconds'), by: kit.f.servicePrincipal });
+    await kit.sync.transact(node.uid, human(), (d) => humanEditBlock(d, 2, ' (later)'));
+    await kit.knowledge.revertAiEdit({ uid: node.uid, pre_ai_edit_revision: res.pre_ai_edit_revision, by: kit.f.memberPrincipal });
+    const after = await kit.knowledge.markdownOf(node.uid);
+    expect(after).toContain('exceeds a minute');
+    expect(after).toContain('spikes. (later)');
+  });
+
   it('merges a concurrent human edit with an AI revision, and revert restores only the AI change', async () => {
     const ai = aiPrincipal(kit.f, { read: ['ops'], write: ['ops'] });
     const node = await kit.knowledge.createNote({ title: 'Payments', markdown: NOTE, domains: ['ops'], by: kit.f.memberPrincipal });
