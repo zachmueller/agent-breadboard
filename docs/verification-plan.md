@@ -1,6 +1,6 @@
 # Verification plan for the unverified surfaces
 
-**Status:** working note, 2026-10-01.
+**Status:** working note, 2026-10-01; run completed the same day (results in the checklist).
 **Scope:** the parts of the implementation that could not be exercised during the build because this machine had no Docker, no Postgres server, no AWS session, and no browser run. Everything else is covered by the automated suites (`npx vitest run` at the root: 63 files, 488 tests; `npm test` in `deploy/aws` for the CDK template) and the end-to-end test (`packages/server/test/e2e.test.ts`).
 
 Run every command with Node 26 on the PATH:
@@ -49,28 +49,32 @@ docker network create --internal breadboard-sandbox
 
 Expected: both builds succeed; `docker run --rm breadboard-sandbox-ts:local node --version` prints Node 26; the Python image runs `python3 -c "import json"`.
 
-Also build a derived Python image with Strands so `spawn-harness` can be exercised later:
+Also build a derived Python image with Strands so `spawn-harness` can be exercised later. The base image has no pip, and the build context must be a dedicated directory (macOS `/tmp` holds files the builder cannot read):
 
 ```bash
-cat > /tmp/Dockerfile.strands <<'EOF'
+mkdir -p /tmp/bb-strands && cat > /tmp/bb-strands/Dockerfile <<'EOF'
 FROM breadboard-sandbox-py:local
 USER root
-RUN pip install --no-cache-dir strands-agents
-USER 10001
+RUN python3 -m ensurepip \
+ && python3 -m pip install --no-cache-dir strands-agents \
+ && python3 -m pip uninstall -y pip
+USER 10001:10001
 EOF
-docker build -f /tmp/Dockerfile.strands -t breadboard-sandbox-py-strands:local .
+docker build -t breadboard-sandbox-py-strands:local /tmp/bb-strands
 ```
 
 ### 1.2 Run the toolbox suite against Docker
 
-The toolbox tests default to the process runner. Run them once with the Docker runner selected through the environment and watch for the egress and timeout cases, which are the ones that differ between runners:
+The toolbox tests default to the process runner; `SANDBOX_RUNNER=docker` runs the same cases (plus Docker-only isolation cases) against real containers. With the server on a macOS host and Colima, the internal sandbox network cannot reach the host gateway, so start the relay from `deploy/sandbox/README.md` first (one relay per proxy port):
 
 ```bash
 cd packages/server
-SANDBOX_RUNNER=docker SANDBOX_DOCKER_SOCKET=/var/run/docker.sock npx vitest run src/toolbox/toolbox.test.ts
+SANDBOX_RUNNER=docker SANDBOX_DOCKER_SOCKET=$HOME/.colima/default/docker.sock \
+  SANDBOX_EGRESS_PROXY_HOST=bb-egress-relay SANDBOX_EGRESS_PROXY_PORT=4100 \
+  npx vitest run src/toolbox/toolbox.test.ts
 ```
 
-If the suite hard-codes the process runner in its harness, add a `SANDBOX_RUNNER` branch to `src/toolbox/test-helpers.ts` so the same cases run on both runners. Expected outcomes to check by hand if any assertion is runner-specific:
+Outcomes the Docker-only cases assert:
 
 - A tool that calls an off-allowlist host gets `403` from the proxy and a row in `egress_audit` with `allowed = false`.
 - A tool that ignores the proxy variables and opens a raw socket cannot reach anything (internal network).
@@ -83,7 +87,8 @@ If the suite hard-codes the process runner in its harness, add a `SANDBOX_RUNNER
 ```bash
 cd /path/to/agent-breadboard
 cp .env.example .env
-# edit .env: SANDBOX_RUNNER=docker, PUBLIC_URL=http://host.docker.internal:4000
+# edit .env: SANDBOX_RUNNER=docker, SANDBOX_DOCKER_SOCKET=$HOME/.colima/default/docker.sock (Colima),
+#            SANDBOX_EGRESS_PROXY_HOST=bb-egress-relay; keep PUBLIC_URL=http://localhost:4000 (the proxy runs on the host)
 npm run build && npm start
 ```
 
@@ -97,15 +102,15 @@ sleep 15
 curl -s -H "Authorization: Bearer dev-admin-token-change-me" http://localhost:4000/api/v1/sessions | jq '.items[] | {circuit_slug, state}'
 ```
 
-Expected: the lit-review session reaches `suspended-gate`. Open `/s/<lit-review session id>` in the UI and confirm the `quality-check` step shows a journaled execution with container logs. Then exercise a Python tool: the `search-scholarly` tool is reached by the `gather` step when the mock model calls it; confirm its execution row says `language: python`.
+Expected: the lit-review session reaches `suspended-gate`. Open `/s/<lit-review session id>` in the UI and confirm the `quality-check` step shows a journaled execution with container logs. The mock model never calls `search-scholarly`, so the Python sandbox is exercised by the §1.2 Python case and, at server level, by §3 (`gather` on Bedrock).
 
-### 1.4 Compose profile with the Docker socket
+### 1.4 Compose with the Docker sandbox override
 
 ```bash
-docker compose -f deploy/compose.yaml --profile local-postgres --profile sandbox-docker up --build
+docker compose -f deploy/compose.yaml -f deploy/compose.sandbox-docker.yaml --profile local-postgres up --build
 ```
 
-Expected: the `server-docker-sandbox` service becomes healthy, joins both the `breadboard` and `breadboard-sandbox` networks, and the same task smoke as §1.3 passes with `PUBLIC_URL` pointing at the service name. This also validates the open question in `deploy/sandbox/README.md` about whether the host gateway is reachable from an internal network on this platform.
+Expected: the `server` service becomes healthy, joins both the `breadboard` and `breadboard-sandbox` networks, and the same task smoke as §1.3 passes, with tool callbacks reaching the API at `SANDBOX_API_URL=http://server:4000` (an `egress_audit` row for host `server`).
 
 ---
 
@@ -124,14 +129,12 @@ If `vector` is missing: `brew install pgvector` (Homebrew's pgvector formula tar
 
 ### 2.2 Migrations and the full server suite
 
-Point the test harness at Postgres. Both `src/test/harness.ts` and `test/e2e.test.ts` hard-code `pglite://memory`; make them read `TEST_DATABASE_URL` first (one-line change each), then:
+`TEST_DATABASE_URL` points every suite at a Postgres server; the harness creates a fresh database per connection and drops it afterwards, so parallel test files never share state. The URL's role needs `CREATEDB` and the right to create the `vector` extension:
 
 ```bash
 cd packages/server
-TEST_DATABASE_URL=postgres://localhost:5432/breadboard_test npx vitest run
+TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run
 ```
-
-Because the suites assume a fresh database, drop and recreate between runs, or add a `TRUNCATE ... CASCADE` step to the harness when `TEST_DATABASE_URL` is set.
 
 Expected: all suites pass. Pay attention to:
 
@@ -176,6 +179,17 @@ Make sure the account has access to the model ids in `config-seed/presets/models
 npm start
 ```
 
+`search-scholarly` reaches Crossref and Semantic Scholar only through broker capabilities; register them (no credential needed) or `gather` degrades to `nothing-found`:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer dev-admin-token-change-me" -H "content-type: application/json" \
+  -d '{"name":"crossref-api","scope":{"hosts":["api.crossref.org"],"methods":["GET"],"scopes":["read"]}}' \
+  http://localhost:4000/api/v1/admin/broker/capabilities
+curl -s -X POST -H "Authorization: Bearer dev-admin-token-change-me" -H "content-type: application/json" \
+  -d '{"name":"semantic-scholar-api","scope":{"hosts":["api.semanticscholar.org"],"methods":["GET"],"scopes":["read"]}}' \
+  http://localhost:4000/api/v1/admin/broker/capabilities
+```
+
 Create a task as in §1.3 with a real research question. Expected:
 
 - The triage `classify` step records turns with a real Bedrock `model_id`, non-zero tokens, and a cost computed from `gateway/pricing.ts`.
@@ -200,7 +214,7 @@ Expected: the note ranks first with a Titan-embedding-derived score; `knowledge_
 
 ### 3.5 Evals on Bedrock
 
-From the lit-review circuit's Evals tab, run the smoke fixture. Expected: one `eval-run` session, judge dimensions scored through the pinned `judge.model_id`, an aggregate row, and a point on the trend chart. Then change the `medium` preset and run again to see the model-regression view populate.
+From the lit-review circuit's Evals tab, run the smoke fixture. Eval sessions gate like production: the run stays `running` until a `scientist` resolves the `quality-gate` request in the review queue (marked "eval run"). Expected: one `eval-run` session, judge dimensions scored through the pinned `judge.model_id` after the verdict, the verdict on the aggregate row, and a point on the trend chart. Then run again with `model_overrides: {"medium": "us.amazon.nova-pro-v1:0"}` to see the model-regression view populate.
 
 ---
 
@@ -243,7 +257,7 @@ Expected: the tool's request succeeds, `broker_audit` records the call with the 
 
 ## 6. `spawn-harness` with Strands
 
-Needs §1.1's Strands image and §3's Bedrock access. Set `sandbox.images.python` in `breadboard.yaml` to `breadboard-sandbox-py-strands:local`, create a task that triage routes to `code-task` (an engineering-flavoured title), and watch the `implement` step. Expected: the Strands event stream appears as the step's code log, declared outputs become artifacts, and the step exits `done`. Known gap to confirm: Strands calls Bedrock directly, so its spend does not appear in gateway cost tracking.
+Needs §1.1's Strands image and §3's Bedrock access. Set `sandbox.images.python` in `breadboard.yaml` to `breadboard-sandbox-py-strands:local`, create a task that triage routes to `code-task` (title starting "Engineering:", body asking for a code change), and watch the `implement` step. Expected: the Strands event stream appears as the step's code log, declared outputs become artifacts, the step exits `done`, and the harness's model turns appear on the session under `implement` (they go through the gateway via `ctx.converse`; no AWS credentials in the sandbox).
 
 ---
 
@@ -253,14 +267,19 @@ What is untested: the CDK app in `deploy/aws/` has only been synthesized against
 
 ### 7.1 Synth and diff against a real VPC
 
+Build and push the three images for `linux/amd64` first (the host is x86_64; see `deploy/aws/README.md`), into an ECR repository you create (`aws ecr create-repository --repository-name agent-breadboard`). In zsh, write `${R}:tag`, not `$R:tag` (the `:s` history modifier mangles it).
+
 ```bash
 cd deploy/aws
 npm ci
 npx cdk bootstrap                 # once per account and region
-CTX="-c name=verify -c vpcId=<vpc> -c dbSubnetIds=<a>,<b> -c serverSubnetId=<c> -c serverImage=<ecr image from the Dockerfile build>"
-npx cdk synth $CTX > /dev/null
+R=<account>.dkr.ecr.<region>.amazonaws.com/agent-breadboard
+CTX="-c name=verify -c vpcId=<vpc> -c dbSubnetIds=<a>,<b> -c serverSubnetId=<c> -c serverImage=${R}:server-<tag> -c sandboxImageTs=${R}:sandbox-ts-<tag> -c sandboxImagePy=${R}:sandbox-py-<tag> -c allowedCidrs=none"
+npx cdk synth $CTX > /dev/null    # zsh: ${=CTX}
 npx cdk diff $CTX
 ```
+
+`allowedCidrs=none` opens no port; reach the server with `aws ssm start-session --document-name AWS-StartPortForwardingSession --parameters portNumber=4000,localPortNumber=14000 --target <instance>` (needs the Session Manager plugin).
 
 Expected:
 - Synth resolves the VPC and AMI lookups into `cdk.context.json` and prints no template validation warnings.
@@ -273,10 +292,12 @@ Expected:
 npx cdk deploy $CTX
 ```
 
-From the `ServerUrl` output, repeat the §1.3 task smoke. The stack sets `MODEL_PROVIDER=bedrock`, and the instance role has Bedrock permissions. Then open a shell on the host (`aws ssm start-session --target <instance id>`) and confirm:
+Through the tunnel, repeat the §1.3 task smoke (register the §3.2 broker capabilities first). Production refuses the seed's `*-change-me` tokens: sign in with the `breadboard-verify/admin-token` secret. The stack sets `MODEL_PROVIDER=bedrock`, and the instance role has Bedrock permissions. Then open a shell on the host (`aws ssm start-session --target <instance id>`) and confirm:
 
 - `/etc/breadboard.env` has a `DATABASE_URL` built from the `breadboard-verify/db` secret and the RDS endpoint.
 - `docker logs breadboard` shows the DB connecting with `DATABASE_SSL=require`, and no `BROKER_MASTER_KEY is not exactly 32 bytes` warning.
+- `/etc/breadboard/deploy.env` holds the deployed images, `cfn-hup` is active, and the dev token gets 401 while the admin token gets 200.
+- Upgrade in place: deploy again with a new `serverImage` tag. Expected: no replacement and no reboot; within a minute or two cfn-hup recreates the `breadboard` container on the new image (`/var/log/cfn-hup.log`).
 - The server container reaches the instance role through IMDSv2 (hop limit 2): Bedrock turns record real model ids, and with `OBJECT_STORE=s3` a large artifact lands in the objects bucket.
 - A sandboxed tool cannot reach `http://169.254.169.254/` (the sandbox network is internal), so tools never see the instance role.
 - With `publicUrl` left empty, `PUBLIC_URL` resolved to the instance's public IP from IMDS.
@@ -294,7 +315,7 @@ npx cdk destroy $CTX
 ```
 
 Expected:
-- The stack deletes. A final DB snapshot, the three `breadboard-verify/*` secrets, and the objects bucket remain.
+- The stack deletes. A final DB snapshot, the four `breadboard-verify/*` secrets, and the objects bucket remain.
 - A fresh `cdk deploy` with the same `name` fails on those retained names until they are removed.
 - Remove them by hand: `aws secretsmanager delete-secret --force-delete-without-recovery` for each secret; empty all versions from the bucket, then delete it; delete the snapshot when no longer needed.
 
@@ -305,10 +326,10 @@ Expected:
 Spin up a local identity provider:
 
 ```bash
-docker run --rm -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:latest start-dev
+docker run --rm -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:latest start-dev
 ```
 
-Create a realm, a confidential client with redirect `http://localhost:4000/api/v1/auth/oidc/callback`, a `groups` mapper, and two groups. Commit `auth.mode: oidc` with the issuer, client id, `client_secret_env: OIDC_CLIENT_SECRET`, and `group_mappings` (one group → admin, one → the `scientist` role). Expected: **Sign in** redirects to Keycloak and back, the user row is created from `sub`, admin and role memberships follow the groups, and the dev-mode banner disappears.
+Create a realm, a confidential client with redirect `http://localhost:4000/api/v1/auth/oidc/callback`, a `groups` mapper (`oidc-group-membership-mapper`, claim `groups`, full path off), and two groups. Start the server with `OIDC_CLIENT_SECRET` and `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN` set: once `auth.mode` is `oidc`, the bootstrap token is the only token-based way back in. Commit `auth.mode: oidc` with the issuer, client id, `client_secret_env: OIDC_CLIENT_SECRET`, and `group_mappings` (one group → admin, one → the `scientist` role). Expected: **Sign in** redirects to Keycloak and back, the user row is created from `sub`, admin and role memberships follow the groups, and the dev-mode banner disappears.
 
 ---
 
@@ -322,33 +343,35 @@ git clone --mirror var/config-repo /tmp/config-mirror.git
 rsync -a var/objects/ /tmp/objects/
 ```
 
-Stop the server, drop and recreate the database, restore all three, start the server. Expected: sessions that were `running` at the snapshot are re-queued from their last checkpoint; everything else is intact; the config tree resolves at the same `main` commit.
+Use `pg_dump`/`pg_restore` of the server's major version: an 18 client dumping a 16 server emits `SET transaction_timeout`, which the 16 server rejects on restore (one ignorable error). `var/objects` exists only once a blob has spilled. Stop the server, drop and recreate the database, restore all three, start the server. Expected: sessions that were `running` at the snapshot are re-queued from their last checkpoint; everything else is intact; the config tree resolves at the same `main` commit.
 
 ---
 
 ## Checklist
 
+Run of 2026-10-01 (macOS, Colima, Postgres 16 + pgvector in Docker, Bedrock us-east-1, a dedicated test account). "Fixed" commits are on `cdk-aws-deploy`.
+
 | # | Area | Result | Notes |
 |---|---|---|---|
-| 1.1 | Sandbox images build | | |
-| 1.2 | Toolbox suite on Docker runner | | |
-| 1.3 | Server with Docker sandboxes (TS + Python tool) | | |
-| 1.4 | Compose `sandbox-docker` profile | | |
-| 2.2 | Full suite on Postgres | | |
-| 2.3 | Boot + e2e on Postgres, CRDT persistence | | |
-| 2.4 | TLS / IAM (optional) | | |
-| 3.2 | Seed flow on Bedrock | | |
-| 3.3 | Preset fallback | | |
-| 3.4 | Embeddings + semantic search | | |
-| 3.5 | Evals on Bedrock | | |
-| 4 | Browser walkthrough (10 items) | | |
-| 5 | Broker with a real capability | | |
-| 6 | spawn-harness with Strands | | |
-| 7.1 | CDK synth / diff against a real VPC | | |
-| 7.2 | CDK deploy + smoke (IMDS, secrets, sandbox isolation) | | |
-| 7.3 | RDS modification timing, no-op diff | | |
-| 7.4 | CDK destroy retains snapshot, secrets, bucket | | |
-| 8 | OIDC login | | |
-| 9 | Backup and restore | | |
+| 1.1 | Sandbox images build | Pass | Strands recipe needed `ensurepip` (base image has no pip); fixed above. |
+| 1.2 | Toolbox suite on Docker runner | Pass | 19/19 incl. raw-socket, OOM, removal, stale-image cases. Colima needs the egress relay (host gateway unreachable from `--internal`). Fixed: `.env` comment parsing (`SANDBOX_OCI_RUNTIME`), warm pool reusing a superseded image. |
+| 1.3 | Server with Docker sandboxes (TS + Python tool) | Pass | TS `check-citations` in a container; Python `search-scholarly` via §3 (the mock never calls it). |
+| 1.4 | Compose `sandbox-docker` profile | Pass after fixes | Profile started two servers on :4000 → override file. Fixed: image crashed (nested `ajv`), missing `.dockerignore`, healthcheck `localhost`→`::1`, `PUBLIC_URL` overwritten → `SANDBOX_API_URL`. |
+| 2.2 | Full suite on Postgres | Pass | 38 files / 298 tests. Fixed: pgvector never detected on Postgres; `real[]`→`vector` upgrade for existing installs. |
+| 2.3 | Boot + e2e on Postgres, CRDT persistence | Pass | Migrations idempotent; `yjs_updates` 0→268→493 rows during the two-tab edit (§4). |
+| 2.4 | TLS / IAM (optional) | Partial | `verify-full` with the RDS bundle: TLSv1.3, fails without the CA, no password in logs. IAM auth not run: granting `rds-db:connect` to a test user was not permitted in this session. |
+| 3.2 | Seed flow on Bedrock | Pass after fixes | Fixed: seed model ids did not exist (now `us.*` inference profiles). Needs the Crossref / Semantic Scholar capabilities. `summarize` on Opus 5 costs ~$1–1.5 per run. |
+| 3.3 | Preset fallback | Pass | Turn records `fallback_from`; dashboard lists the event. |
+| 3.4 | Embeddings + semantic search | Pass after fix | Fixed: notes created via REST/connectors were never embedded. Titan v2, 1024 dims, `vector` column. |
+| 3.5 | Evals on Bedrock | Pass after fixes | Fixed: eval sessions now wait for the human gate (decided 2026-10-01) and resume after restart; assertion tools got the wrong input shape; Nova failed all tool use (hyphenated tool names). |
+| 4 | Browser walkthrough (10 items) | Pass with fixes | Headless Playwright on an isolated instance. Fixed: designer could not read its circuit, Logs tab never populated, AI-edit revert lost human edits, Accept-into-queue unusable, parent stuck "awaiting review", 11 UI bugs. Open: step drawer merges visits as attempts; ActorLabel shows subagent UIDs; running steps show $0.00; YAML editor squeezed with two side panels; AI-block highlight only for subagent authors. |
+| 5 | Broker with a real capability | Pass | `github-api` via `gh auth token`: 10 audited calls; token absent from API responses, logs, DB dump, objects. |
+| 6 | spawn-harness with Strands | Pass after change | Harness had no AWS credentials; model turns now go through the gateway (`model_converse`, decided 2026-10-01) and land on the session. Fixed: root-level capture glob. |
+| 7.1 | CDK synth / diff against a real VPC | Pass | Clean synth after acknowledging the pinned-AMI lint; both bad-subnet cases fail with named errors; diff only new resources. |
+| 7.2 | CDK deploy + smoke (IMDS, secrets, sandbox isolation) | Pass after fixes | First deploys failed or served nothing. Fixed: DB secret rejected by Secrets Manager, retained secrets blocking retries, no ECR login/pull grant, no sandbox images on the host, server not on the sandbox network / non-root, malformed image accepted, well-known admin token live in production (bootstrap token now), no upgrade path (cfn-hup, verified in place). IMDS reachable from the server, not from tools; S3 spill works. |
+| 7.3 | RDS modification timing, no-op diff | Pass | Class change applied during the deploy (6.5 min, two short restarts). No-op diff empty. |
+| 7.4 | CDK destroy retains snapshot, secrets, bucket | Pass | Destroy kept the final snapshot, four secrets, and the bucket; a same-name redeploy failed at change-set validation (bucket exists) before creating anything. All removed by hand afterwards, plus the ECR repo. |
+| 8 | OIDC login | Pass | Keycloak: users from `sub`, admin and `scientist` from groups, no dev banner. |
+| 9 | Backup and restore | Pass | Interrupted `running` sessions re-run from their last checkpoint; `main` unchanged. 18-client/16-server `pg_restore` warning noted above. |
 
 Fixes found during this pass should go in as normal commits with a test where the suites can cover them (the `TEST_DATABASE_URL` switch from §2.2 is the first such change).
