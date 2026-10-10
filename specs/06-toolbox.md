@@ -78,7 +78,7 @@ export async function handler(input: Input, ctx: BreadboardContext): Promise<Out
 def handler(input: dict, ctx: BreadboardContext) -> dict
 ```
 
-`BreadboardContext` provides the **Breadboard primitives** (§7): content read/write, edge emission, circuit invocation, tool invocation, broker-mediated fetch, logging, and the ambient channel (Session ID, step ID, budget remaining). When invoked as a circuit **code step**, the handler returns `{ exit, output }` ([03](03-circuits.md) §3.2); when invoked as an LLM's tool call, it returns just the output payload.
+`BreadboardContext` provides the **Breadboard primitives** (§7): content read/write, edge emission, circuit invocation, tool invocation, broker-mediated fetch, model turns through the gateway, logging, and the ambient channel (Session ID, step ID, budget remaining). When invoked as a circuit **code step**, the handler returns `{ exit, output }` ([03](03-circuits.md) §3.2); when invoked as an LLM's tool call, it returns just the output payload.
 
 ### 2.2 Composability
 
@@ -89,7 +89,7 @@ Tools are highly composable: within their logic they may call **circuits** (`ctx
 Breadboard ships with built-in tool extensions (same manifest format, maintained in the Breadboard distribution and copied into new config repos where teams may fork them):
 
 - **`spawn-harness`** — the notable one: spawn a **sub-harness** to tackle coding-heavy tasks, with **Breadboard operating as the "user"** for the sub-harness. Runs the harness in a sandbox container against a workspace (e.g., a repo checkout), streams the harness transcript into the Session log as a code-step log, and captures declared outputs as Artifacts. This lets Breadboard leverage other harnesses' specialization while remaining the primary harness across circuits.
-  - **v1 adapter: [Strands Agents](https://strandsagents.com/)** (open-source AWS agent SDK). Being open source, the adapter can integrate at the SDK level rather than scraping a CLI: the sandbox runs a thin Strands driver script that constructs the agent, feeds it the step's task prompt as the user, forwards its event stream (turns, tool calls, results) into the Session log, and maps declared outputs to Artifacts. Bedrock is Strands' default model provider, so credentials flow through the same gateway/broker posture ([12](12-security-deployment.md) §7).
+  - **v1 adapter: [Strands Agents](https://strandsagents.com/)** (open-source AWS agent SDK). Being open source, the adapter can integrate at the SDK level rather than scraping a CLI: the sandbox runs a thin Strands driver script that constructs the agent, feeds it the step's task prompt as the user, forwards its event stream (turns, tool calls, results) into the Session log, and maps declared outputs to Artifacts. The driver gives Strands a model provider backed by `ctx.converse` (§7), so every model turn the harness makes goes through the Breadboard model gateway: it resolves the tool's `preset` setting (default `medium`) with fallback, counts against the Session's budget, and appears in the Session's cost like any LLM step. The sandbox holds no model-provider credentials, and the manifest's egress allowlist covers only the workspace clone. Verified live 2026-10-01: an implement step ran Strands in the sandbox with its turns recorded on the session.
   - Other harnesses (e.g., Claude Code) are future adapters behind the same `spawn-harness` manifest; the adapter is a per-harness `src/` implementation, not a new tool.
 - **Content primitives** — `create_artifact`, `update_artifact`, `add_comment`, `emit_edge`, `tag_need_input` (§7).
 - **Knowledge primitives** — `query_knowledge` (text + RAG), `read_note`, `propose_note_edit` (the reconcile path, [07](07-knowledge.md) §5).
@@ -116,6 +116,7 @@ Tools hold no credentials directly. All credentialed actions go through a **brok
 - A capability (`crossref-api` above) names a credential + allowed scope configured by an admin in the broker ([12](12-security-deployment.md) §5).
 - Inside the sandbox, `ctx.fetch(capability, request)` sends the request to the broker; the broker validates the tool's declared capability + scope, attaches the credential, executes, and returns the response. The credential never enters the container.
 - Broker calls are logged (tool, session, capability, target) for audit.
+- **One capability name is reserved: `model`.** It names no credential. A tool declaring it may call `ctx.converse` (§7); the model gateway grants it, not the broker, so admins never register it. It is the only sanctioned way for tool code to call a model: provider credentials and provider endpoints in `egress.allow` are both the wrong tool.
 
 ## 6. AI access to tool code
 
@@ -128,6 +129,7 @@ The closed set of built-in operations available to tool code via `ctx` (and mirr
 
 - `emit_edge({type, src, dst, dst_revision?})` — the Toolbox primitive by which Subagents explicitly emit `derived-from` / `attached-to` / `blocks` / `depends-on` / `references` edges ([01](01-data-model.md) §4.3). `produces`/`updates` are never emitted manually — the orchestrator owns those.
 - All primitives run under the **calling Subagent's grants** — a tool cannot read a Knowledge Domain its caller can't.
+- `model_converse({messages, system?, tools?, preset?, model_id?, max_tokens?, temperature?})` (`ctx.converse`) — one model turn through the model gateway ([12](12-security-deployment.md) §7), for tool code only: it is never offered to a model directly or over MCP, and the calling tool must declare the reserved `model` capability (§5). Messages, tool definitions, and the reply use Breadboard's chat format (text, `tool_use`, `tool_result` blocks), so the gateway's preset resolution, fallback walking, and the Session's `model_overrides` apply. The call needs a Session, is refused once the Session's cost or token budget is spent, and is recorded as a turn on the calling step (model, tokens, cost, fallback), so sandboxed model use is visible and accounted exactly like an LLM step's.
 
 ## 8. External exposure
 
@@ -157,3 +159,7 @@ Central onboarding simplifies configuration: each distinct MCP server is onboard
 1. **Warm-pool poisoning.** **Decided:** pools hold *pre-started but unused* containers only — a container is never returned to the pool after executing (§4).
 2. **`max_cost_units` calibration.** **Decided:** units stay abstract in v1 (1 unit ≈ 1 CPU-minute guidance); real metering is future work.
 3. **First `spawn-harness` adapter.** **Decided 2026-09-30:** Strands Agents (§3), replacing the earlier Claude Code choice — it is open source, so the adapter integrates at the SDK level (event stream, tool calls, outputs) instead of wrapping a closed CLI, and it defaults to Bedrock. Claude Code and others are future adapters.
+
+*(Decided 2026-10-01, during the first live run.)*
+
+4. **Model calls from tool code.** **Decided:** through the gateway, via `model_converse` / `ctx.converse` under the reserved `model` capability (§5, §7), never through provider credentials or a provider endpoint in the sandbox's egress allowlist. Before this, `spawn-harness` declared a Bedrock egress host and region settings, which would have needed AWS credentials inside the container, and the harness's spend never reached the Session.

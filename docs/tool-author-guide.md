@@ -27,6 +27,7 @@ Every method is an authenticated call back into the Breadboard API under the *ca
 | Sessions | `runCircuit` (child Session, needs an execute grant), `getSessionSummary` |
 | Composition | `runTool` (nested sandbox; depth-capped) |
 | Network | `fetch(capability, request)` — the only way out besides the egress allowlist; the broker attaches credentials |
+| Models | `converse(request)` — one model turn through the Breadboard model gateway; the manifest must declare the reserved `model` capability |
 | Evals | `recordScore`, `getRubric` |
 | Config | `readConfig` |
 | Logging | `ctx.log(level, message, data)` → the Session code log |
@@ -67,6 +68,8 @@ def handler(input, ctx):
 ## Egress and credentials
 
 Declare hosts in `egress.allow`; everything else is blocked by the proxy and logged. For authenticated APIs declare a `capability` and call `ctx.fetch('<capability>', { url, method, headers, body })`; an admin binds the capability to a credential and scope (hosts, methods, path prefixes) in the broker. The credential never enters the container.
+
+To call a model, do not add a provider endpoint to `egress.allow` or ship provider credentials: declare `capabilities: [{ name: model, scope: invoke }]` and call `ctx.converse({ messages, system?, tools?, preset?, model_id?, max_tokens?, temperature? })` (Python: `ctx.converse(messages, system=..., preset=...)`). Messages and the reply use the gateway's chat format (`text`, `tool_use`, `tool_result` blocks). The turn resolves the preset (default `medium`) with fallback, counts against the Session's budget, and shows up in the Session's cost; the seeded `spawn-harness` is the worked example.
 
 ## Idempotency
 
