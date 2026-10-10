@@ -72,7 +72,14 @@ The authoritative in/out lists live in each spec's cutline section; this is the 
 
 The first real deployment target is an **Amazon-internal team pilot**, stood up as soon as Phase 6's acceptance criteria pass (not waiting for Phase 7):
 
-- **Scope is minimal:** internal container hosting + RDS Postgres + internal Bedrock account. Auth remains local-dev static users (banner-marked, [12](12-security-deployment.md) §3) for the pilot; OIDC lands on the normal Phase 7 schedule. No internal knowledge connectors or broker capabilities are pulled forward.
+- **Scope is minimal:** the AWS reference deployment (`deploy/aws/`, [12](12-security-deployment.md) §1) in an internal AWS account: RDS Postgres, one server host running the server and tool sandboxes, and Bedrock through the host's instance role. This is the path verified end to end on 2026-10-01 (deploy, in-place image upgrade, destroy). Internal container hosting running the same image in the [12](12-security-deployment.md) §1 sandbox topology remains an option, but has not been verified. No internal knowledge connectors or broker capabilities are pulled forward.
+- **Stand-up, as verified:**
+  1. Push the server image and both sandbox images to a registry the host can pull from (ECR, x86_64).
+  2. Deploy the stack. Use `allowedCidrs=none` to open no inbound port; operators then reach the UI through SSM port forwarding.
+  3. Make sure the account can invoke every Bedrock model the presets name, including the embeddings model. The seed's chat presets use `us.*` cross-region inference-profile IDs, so a deployment outside US regions needs different preset IDs.
+  4. Sign in with the generated bootstrap admin token ([12](12-security-deployment.md) §3), then set up auth (next item) and deactivate `bootstrap-admin`.
+  5. To run the lit-review reference circuit, register its two keyless broker capabilities (`crossref-api`, `semantic-scholar-api`).
+- **Auth:** static users (banner-marked, [12](12-security-deployment.md) §3) with real, operator-set tokens: production refuses the seed's `*-change-me` tokens. OIDC is built and verified against a standard provider (Keycloak), so the pilot can switch to the internal IdP once that federation ([12](12-security-deployment.md) §8) is available; that binding has not been verified.
 - **Pilot workload is deliberately undecided:** the tracer bullet and phase work stay workload-neutral (the lit-review reference circuit from [03](03-circuits.md) §2 is the running example); the team picks the first dogfood workload when onboarding is imminent.
 - The Amazon adapter package proper ([12](12-security-deployment.md) §8) remains post-v1; the pilot uses only configuration, not internal-only code.
 
