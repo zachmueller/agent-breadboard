@@ -12,7 +12,7 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Phase | Built | Acceptance evidence | Not yet demonstrated |
 |---|---|---|---|
-| 0 Skeleton | Yes | CI workflow (typecheck, lint, test, build); compose against bundled Postgres; boot against an external `DATABASE_URL` and RDS | |
+| 0 Skeleton | Yes | CI workflow (typecheck, lint, test, build): its first GitHub Actions run (2026-10-10, the branch's first push) failed because nothing built the library packages before typecheck; the root scripts now do. Compose against bundled Postgres; boot against an external `DATABASE_URL` and RDS | |
 | 1 Data model & config plane | Yes | Unit suites; config propose/merge/revert driven from the UI | |
 | 2 Orchestrator & Sessions | Yes | e2e test; restart mid-run re-runs from the checkpoint (§9); gates, budgets, fallback on Bedrock | |
 | 3 Subagents & Toolbox | Yes | `gather` subagent calls the Python `search-scholarly` in Docker through broker capabilities; TS code step in Docker; egress 403 + raw-socket isolation tests | |
