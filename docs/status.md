@@ -1,12 +1,12 @@
 # Implementation status
 
-**As of:** 2026-10-01, end of the verification pass.
-**Branch:** `cdk-aws-deploy`, 43 commits ahead of `main`, **not pushed**. The last commits of the pass are listed in `git log c607045..HEAD`.
+**As of:** 2026-10-10.
+**Branch:** `cdk-aws-deploy`, pushed to `origin`, with a PR open against `main`. The verification pass and its follow-ups start at `467a8b1` (`git log 467a8b1..HEAD`).
 **Read first when resuming:** this file, then the checklist at the end of [verification-plan.md](verification-plan.md).
 
 ## Summary
 
-Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-10-01 the surfaces that had never run (Docker sandboxes, real Postgres, Bedrock, the browser UI, the broker, Strands, the AWS deployment, OIDC, backup/restore) were exercised for real, which found and fixed roughly 40 bugs. The Phase 6 acceptance path, which gates the internal pilot ([13](../specs/13-roadmap.md) §4), ran end to end on Bedrock. The remaining work is a small set of verification gaps, minor UI issues, spec updates for decisions made during the pass, and the Phase 7 acceptance items that were not exercised.
+Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-10-01 the surfaces that had never run (Docker sandboxes, real Postgres, Bedrock, the browser UI, the broker, Strands, the AWS deployment, OIDC, backup/restore) were exercised for real, which found and fixed roughly 40 bugs. The Phase 6 acceptance path, which gates the internal pilot ([13](../specs/13-roadmap.md) §4), ran end to end on Bedrock. On 2026-10-10 the branch was pushed, the specs were brought in line with the decisions made during the pass (04, 06, 12, 13), and production hardening landed: the server refuses to start without real secrets. The remaining work is a small set of verification gaps, minor UI issues, and the Phase 7 acceptance items that were not exercised.
 
 ## Roadmap phases
 
@@ -25,11 +25,11 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 68 files, 513 passed, 4 skipped (the skips are Docker-only) |
-| Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a3c1a89`) |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 68 files, 516 passed, 4 skipped (the skips are Docker-only); 2026-10-10 |
+| Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
 | CDK template | `cd deploy/aws && npm test` | 23 passed |
-| Typecheck / lint | `npm run typecheck`, `npm run lint` | clean; 4 pre-existing lint warnings |
+| Typecheck / lint | `npm run typecheck`, `npm run lint` | clean; 4 pre-existing lint warnings (2026-10-10) |
 
 The live results for every plan section, with notes, are in the [verification-plan.md](verification-plan.md) checklist.
 
@@ -50,29 +50,27 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
 
 ## Next steps (in priority order)
 
-1. **Review and push** `cdk-aws-deploy` (43 commits), then open a PR to `main`.
-2. **Update specs for the 2026-10-01 decisions.** Specs 04, 12 (§1, §3, §8, §10), and 13 §4 are done; 13 §4 now makes the verified `deploy/aws/` stack the pilot's host. Still to do:
-   - [06](../specs/06-toolbox.md): `model_converse` and the reserved `model` capability; spawn-harness through the gateway.
-3. **Close the verification gaps:**
+1. **Merge the PR into `main`.** The specs now record every 2026-10-01 decision (04 §4, 06 §3/§5/§7/§12, 12 §1/§3/§8/§10, 13 §4); 13 §4 makes the verified `deploy/aws/` stack the pilot's host.
+2. **Close the verification gaps:**
    - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).
    - The egress-relay question for Docker Desktop and for a Linux host running the server outside a container ([deploy/sandbox/README.md](../deploy/sandbox/README.md)).
-4. **Fix the remaining walkthrough issues:**
+3. **Fix the remaining walkthrough issues:**
    - The step drawer merges repeated visits and labels them attempts (`SessionExplorer.tsx`; the server also increments `attempt` across visits).
    - ActorLabel shows subagent UIDs instead of slugs.
    - Running LLM steps show $0.00 until they exit.
    - The YAML editor is ~200px wide when History and Designer are both open.
    - AI-edit highlighting covers only subagent/code-step authors.
-5. **Remaining Phase 7 acceptance work:**
+4. **Remaining Phase 7 acceptance work:**
    - a live git-repo connector sync;
    - orchestrator load/burn-in;
    - timing a fresh-machine self-host from the docs;
    - a webhook delivery check.
-6. **Doc and spec gaps:**
+5. **Doc and spec gaps:**
    - [self-hosting.md](self-hosting.md)'s backup runbook should say to use the server's major version of `pg_dump` (an 18 client against a 16 server emits `SET transaction_timeout`, which fails on restore).
    - Email intake is missing from the deferred register.
    - Spec 07 claims circuit- and step-level knowledge grants that the circuit schema in spec 03 does not have.
-7. **Cost tuning before the pilot.** lit-review's `summarize` on the `large` preset (Opus 5) costs about $1–1.5 per run. The eval model-regression and cheapest-model views can guide a preset change.
+6. **Cost tuning before the pilot.** lit-review's `summarize` on the `large` preset (Opus 5) costs about $1–1.5 per run. The eval model-regression and cheapest-model views can guide a preset change.
 
 ## Resuming locally
 
