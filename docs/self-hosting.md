@@ -21,10 +21,12 @@ On first boot the server runs migrations, creates the config repo at `CONFIG_REP
 ## 2. Docker Compose (bundled Postgres)
 
 ```bash
+export TOKEN_SIGNING_KEY=$(openssl rand -hex 32) BROKER_MASTER_KEY=$(openssl rand -base64 32)
+export BREADBOARD_BOOTSTRAP_ADMIN_TOKEN=$(openssl rand -hex 24)   # your first login: the seed's dev tokens are refused
 docker compose -f deploy/compose.yaml --profile local-postgres up --build
 ```
 
-Point `DATABASE_URL` at an external Postgres 16+ (RDS recommended) to drop the `local-postgres` profile. Add `-f deploy/compose.sandbox-docker.yaml` to run tool sandboxes as sibling containers via the Docker socket; build the sandbox images first (see `deploy/sandbox/README.md` for the egress posture and images).
+The image runs with `NODE_ENV=production`, which refuses to start unless `TOKEN_SIGNING_KEY` and `BROKER_MASTER_KEY` hold real values (see the table in §3). Point `DATABASE_URL` at an external Postgres 16+ (RDS recommended) to drop the `local-postgres` profile. Add `-f deploy/compose.sandbox-docker.yaml` to run tool sandboxes as sibling containers via the Docker socket; build the sandbox images first (see `deploy/sandbox/README.md` for the egress posture and images).
 
 ## 3. Production on AWS
 
@@ -36,8 +38,8 @@ Point `DATABASE_URL` at an external Postgres 16+ (RDS recommended) to drop the `
 | `DATABASE_IAM_AUTH=true` | RDS IAM tokens instead of a password |
 | `MODEL_PROVIDER=bedrock`, `AWS_REGION` | the reference model provider; credentials via the standard AWS chain |
 | `SANDBOX_RUNNER=docker` | isolated per-execution containers; `process` is an unisolated dev fallback |
-| `TOKEN_SIGNING_KEY` | HMAC key for user/actor tokens — long and random |
-| `BROKER_MASTER_KEY` | 32-byte base64 key encrypting broker credentials at rest |
+| `TOKEN_SIGNING_KEY` | HMAC key for user/actor tokens: at least 32 random characters (`openssl rand -hex 32`). Production refuses to start with the default `dev-only-change-me`, which anyone can read from this repo and use to forge admin sessions. |
+| `BROKER_MASTER_KEY` | 32-byte base64 key encrypting broker credentials at rest (`openssl rand -base64 32`). Production refuses to start without it; development falls back to a key derived from `TOKEN_SIGNING_KEY`. |
 | `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN` | break-glass admin sign-in (`bootstrap-admin`). Production (`NODE_ENV=production`, as in the image) refuses the seed's `*-change-me` tokens, so this is how you first sign in to configure OIDC. Deactivate `bootstrap-admin` in Admin to revoke it. |
 | `PUBLIC_URL` | the browser-facing base URL (OIDC redirect, links) |
 | `SANDBOX_EGRESS_PROXY_HOST`, `SANDBOX_API_URL` | how sandbox containers reach the egress proxy and the API; set both to the server's name on `breadboard-sandbox` when the server runs in a container (`SANDBOX_API_URL` defaults to `PUBLIC_URL`) |

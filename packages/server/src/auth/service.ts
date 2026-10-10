@@ -17,6 +17,7 @@ import * as oidc from 'openid-client';
 import { BreadboardError, type Actor, type BreadboardConfig } from '@breadboard/shared';
 import type { Db } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
+import { WELL_KNOWN_SECRET } from '../core/env.js';
 import type { AuthService, SessionStore } from '../core/services.js';
 import { userPrincipal, type Grants, type Principal } from '../core/principal.js';
 import { hashToken, type IdentityStore, type UserRecord } from '../identity/identity.js';
@@ -51,7 +52,6 @@ export interface AuthServiceDeps {
 }
 
 export const BOOTSTRAP_ADMIN_HANDLE = 'bootstrap-admin';
-const WELL_KNOWN_TOKEN = /-change-me$/;
 
 // ---------------------------------------------------------------------------
 // Grants (de)serialization — Maps/Sets ↔ arrays
@@ -315,7 +315,7 @@ export class AuthServiceImpl implements AuthService {
   async syncLocalUsers(): Promise<void> {
     const settings = await this.refresh();
     await this.syncLocal(settings);
-    const refused = settings.auth.mode === 'local' && this.deps.rejectWellKnownTokens ? settings.auth.local_users.filter((u) => WELL_KNOWN_TOKEN.test(u.token)) : [];
+    const refused = settings.auth.mode === 'local' && this.deps.rejectWellKnownTokens ? settings.auth.local_users.filter((u) => WELL_KNOWN_SECRET.test(u.token)) : [];
     if (refused.length) {
       this.deps.log.warn(
         { users: refused.map((u) => u.handle), bootstrap_admin: !!this.deps.bootstrapAdminToken },
@@ -353,7 +353,7 @@ export class AuthServiceImpl implements AuthService {
     for (const u of settings.auth.local_users) {
       const expected = createHash('sha256').update(u.token).digest();
       // constant-time over every candidate; no early exit
-      if (timingSafeEqual(given, expected) && !found && !(this.deps.rejectWellKnownTokens && WELL_KNOWN_TOKEN.test(u.token))) found = u;
+      if (timingSafeEqual(given, expected) && !found && !(this.deps.rejectWellKnownTokens && WELL_KNOWN_SECRET.test(u.token))) found = u;
     }
     return found;
   }

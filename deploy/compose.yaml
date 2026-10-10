@@ -29,11 +29,13 @@ services:
       SANDBOX_RUNNER: ${SANDBOX_RUNNER:-process}
       SANDBOX_DOCKER_SOCKET: /var/run/docker.sock
       SANDBOX_EGRESS_PROXY_HOST: server
-      TOKEN_SIGNING_KEY: ${TOKEN_SIGNING_KEY:-dev-only-change-me}
-      # The image runs with NODE_ENV=production, which refuses the seed's `*-change-me` tokens: sign in with this
+      # The image runs with NODE_ENV=production, which refuses to start without real secrets. Export them first:
+      #   TOKEN_SIGNING_KEY=$(openssl rand -hex 32)  BROKER_MASTER_KEY=$(openssl rand -base64 32)
+      # Production also refuses the seed's `*-change-me` user tokens: sign in with the bootstrap token
       # (e.g. `openssl rand -hex 24`), then configure OIDC or real local tokens.
-      BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: ${BREADBOARD_BOOTSTRAP_ADMIN_TOKEN:-}
+      TOKEN_SIGNING_KEY: ${TOKEN_SIGNING_KEY:-}
       BROKER_MASTER_KEY: ${BROKER_MASTER_KEY:-}
+      BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: ${BREADBOARD_BOOTSTRAP_ADMIN_TOKEN:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - breadboard-data:/var/breadboard

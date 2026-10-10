@@ -3,7 +3,7 @@
  * (orchestrator ↔ subagent runtime ↔ primitives ↔ evals) are broken with `lazy()` proxies.
  */
 import { resolve } from 'node:path';
-import type { Env } from './env.js';
+import { assertProductionSecrets, type Env } from './env.js';
 import type { Logger } from './logger.js';
 import type { Services, EventBus, Orchestrator, EvalService } from './services.js';
 import { lazy } from './lazy.js';
@@ -55,6 +55,7 @@ export interface BuiltServices extends Services {
 
 export async function buildServices(opts: BuildOptions): Promise<BuiltServices> {
   const { env, log } = opts;
+  assertProductionSecrets(env);
   const root = opts.root ?? process.cwd();
   const path = (p: string) => (p.startsWith('pglite://') || /^postgres/.test(p) ? p : resolve(root, p));
 

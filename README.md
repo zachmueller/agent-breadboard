@@ -14,7 +14,7 @@ cp .env.example .env     # embedded Postgres, mock model provider, local sandbox
 npm start                # http://localhost:4000 — log in with dev-admin-token-change-me
 ```
 
-Or `docker compose -f deploy/compose.yaml --profile local-postgres up --build`. See [docs/self-hosting.md](docs/self-hosting.md) for production (AWS RDS + Bedrock + Docker sandboxes).
+Or with Docker: the image runs as production and refuses to start without real secrets, so export `TOKEN_SIGNING_KEY=$(openssl rand -hex 32)`, `BROKER_MASTER_KEY=$(openssl rand -base64 32)` and `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN=$(openssl rand -hex 24)` (your first login), then `docker compose -f deploy/compose.yaml --profile local-postgres up --build`. See [docs/self-hosting.md](docs/self-hosting.md) for production (AWS RDS + Bedrock + Docker sandboxes).
 
 ## Layout
 

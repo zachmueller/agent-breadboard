@@ -142,6 +142,6 @@ Secrets are encrypted at rest with libsodium `secretbox`, using the key in `BROK
 
 - Set `SANDBOX_RUNNER=docker`, and set `SANDBOX_OCI_RUNTIME=runsc` (gVisor) when tools are not fully trusted.
 - Make sure `breadboard-sandbox` is `--internal`, and that nothing else is attached to it except the server or proxy.
-- Set `BROKER_MASTER_KEY`. Without it the broker falls back to a key derived from `TOKEN_SIGNING_KEY` and logs a loud warning.
+- Set `BROKER_MASTER_KEY`. Production (`NODE_ENV=production`) refuses to start without it; in development the broker falls back to a key derived from `TOKEN_SIGNING_KEY` and logs a loud warning.
 - Review `egress.allow` in tool PRs. Wildcard entries are flagged by tool CI.
 - Only the server process should have access to the Docker socket. Prefer a socket proxy that limits it to the container, exec, archive, and network endpoints the runner uses.

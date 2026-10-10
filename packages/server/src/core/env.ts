@@ -89,6 +89,34 @@ export function loadEnv(overrides: Partial<Record<keyof Env, string | boolean | 
   return zEnv.parse(merged);
 }
 
+/** Values shipped in the seed, `.env.example`, and env defaults (`dev-only-change-me`): public, so never secret. */
+export const WELL_KNOWN_SECRET = /-change-me$/;
+const MIN_SIGNING_KEY_LENGTH = 32;
+
+/**
+ * Secrets production (`NODE_ENV=production`, as in the shipped image) must not run without: a signing key anyone
+ * could read from this repo would let them forge admin sessions, and a missing broker key would encrypt credentials
+ * with a key derived from the signing key. Returns one message per problem; empty outside production.
+ */
+export function productionSecretProblems(env: Env): string[] {
+  if (env.NODE_ENV !== 'production') return [];
+  const problems: string[] = [];
+  const signing = env.TOKEN_SIGNING_KEY;
+  if (WELL_KNOWN_SECRET.test(signing)) problems.push('TOKEN_SIGNING_KEY is unset or a well-known *-change-me value; set a random key (openssl rand -hex 32)');
+  else if (signing.length < MIN_SIGNING_KEY_LENGTH) problems.push(`TOKEN_SIGNING_KEY must be at least ${MIN_SIGNING_KEY_LENGTH} characters (openssl rand -hex 32)`);
+  if (!env.BROKER_MASTER_KEY) problems.push('BROKER_MASTER_KEY is unset; set a 32-byte base64 key (openssl rand -base64 32)');
+  if (env.BREADBOARD_BOOTSTRAP_ADMIN_TOKEN && WELL_KNOWN_SECRET.test(env.BREADBOARD_BOOTSTRAP_ADMIN_TOKEN)) {
+    problems.push('BREADBOARD_BOOTSTRAP_ADMIN_TOKEN is a well-known *-change-me value; set a random token (openssl rand -hex 24)');
+  }
+  return problems;
+}
+
+/** Refuse to start in production with missing or well-known secrets (see `productionSecretProblems`). */
+export function assertProductionSecrets(env: Env): void {
+  const problems = productionSecretProblems(env);
+  if (problems.length) throw new Error(`refusing to start with NODE_ENV=production:\n  - ${problems.join('\n  - ')}`);
+}
+
 /** Resolve a path env var against a root directory (the repo root by default). */
 export function resolvePath(p: string, root = process.cwd()): string {
   return resolve(root, p);

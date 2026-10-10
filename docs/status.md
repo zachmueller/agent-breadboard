@@ -44,13 +44,15 @@ Each one is implemented and was verified live.
 
 Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to the AWS host (`allowedCidrs=none`); seed presets fixed to real `us.*` inference-profile ids; the UI walkthrough driven by headless Playwright.
 
+## Decisions made 2026-10-10
+
+1. **Production refuses to start without real secrets.** With `NODE_ENV=production`, `buildServices` exits before touching the database unless `TOKEN_SIGNING_KEY` (≥32 chars, not `*-change-me`) and `BROKER_MASTER_KEY` are set, and the bootstrap token is not a well-known value. The AWS stack already generated all three; compose now needs them exported. Recorded in spec [12](../specs/12-security-deployment.md) §3 and §10.
+
 ## Next steps (in priority order)
 
 1. **Review and push** `cdk-aws-deploy` (43 commits), then open a PR to `main`.
-2. **Update specs for the 2026-10-01 decisions.** Spec 04 is done. Still to do:
+2. **Update specs for the 2026-10-01 decisions.** Specs 04, 12 (§1, §3, §8, §10), and 13 §4 are done; 13 §4 now makes the verified `deploy/aws/` stack the pilot's host. Still to do:
    - [06](../specs/06-toolbox.md): `model_converse` and the reserved `model` capability; spawn-harness through the gateway.
-   - [12](../specs/12-security-deployment.md) §1/§3: the `SANDBOX_API_URL` / container-on-sandbox-network topology, the bootstrap admin token, production refusing well-known tokens, cfn-hup upgrades.
-   - [13](../specs/13-roadmap.md) §4: the pilot's "static-user auth" now needs real (non-`-change-me`) tokens or the bootstrap token.
 3. **Close the verification gaps:**
    - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).

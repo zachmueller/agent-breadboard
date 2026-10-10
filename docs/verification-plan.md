@@ -107,8 +107,11 @@ Expected: the lit-review session reaches `suspended-gate`. Open `/s/<lit-review 
 ### 1.4 Compose with the Docker sandbox override
 
 ```bash
+export TOKEN_SIGNING_KEY=$(openssl rand -hex 32) BROKER_MASTER_KEY=$(openssl rand -base64 32) BREADBOARD_BOOTSTRAP_ADMIN_TOKEN=$(openssl rand -hex 24)
 docker compose -f deploy/compose.yaml -f deploy/compose.sandbox-docker.yaml --profile local-postgres up --build
 ```
+
+The image runs as production, which refuses to start without those secrets and refuses the seed's dev tokens, so the smoke below signs in with the bootstrap token.
 
 Expected: the `server` service becomes healthy, joins both the `breadboard` and `breadboard-sandbox` networks, and the same task smoke as §1.3 passes, with tool callbacks reaching the API at `SANDBOX_API_URL=http://server:4000` (an `egress_audit` row for host `server`).
 
