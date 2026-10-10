@@ -6,7 +6,7 @@
 
 ## Summary
 
-Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-10-01 the surfaces that had never run (Docker sandboxes, real Postgres, Bedrock, the browser UI, the broker, Strands, the AWS deployment, OIDC, backup/restore) were exercised for real, which found and fixed roughly 40 bugs. The Phase 6 acceptance path, which gates the internal pilot ([13](../specs/13-roadmap.md) §4), ran end to end on Bedrock. On 2026-10-10 the branch was pushed, the specs were brought in line with the decisions made during the pass (04, 06, 12, 13), and production hardening landed: the server refuses to start without real secrets. The remaining work is a small set of verification gaps, minor UI issues, and the Phase 7 acceptance items that were not exercised.
+Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-10-01 the surfaces that had never run (Docker sandboxes, real Postgres, Bedrock, the browser UI, the broker, Strands, the AWS deployment, OIDC, backup/restore) were exercised for real, which found and fixed roughly 40 bugs. The Phase 6 acceptance path, which gates the internal pilot ([13](../specs/13-roadmap.md) §4), ran end to end on Bedrock. On 2026-10-10 the branch was merged into `main`, the specs were brought in line with the decisions made during the pass (04, 06, 12, 13), production hardening landed (the server refuses to start without real secrets), and the reference deployment was stood up for real as `Breadboard-pilot` (below). The remaining work is a small set of verification gaps, minor UI issues, and the Phase 7 acceptance items that were not exercised.
 
 ## Roadmap phases
 
@@ -50,30 +50,49 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
 
 ## Next steps (in priority order)
 
-1. **Close the verification gaps:**
+1. **Before inviting anyone to the pilot:** set real auth (OIDC, or local users with real tokens), set `publicUrl` to the address people will use, and deactivate `bootstrap-admin`.
+2. **Close the verification gaps:**
    - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).
    - The egress-relay question for Docker Desktop and for a Linux host running the server outside a container ([deploy/sandbox/README.md](../deploy/sandbox/README.md)).
-2. **Fix the remaining walkthrough issues:**
+3. **Fix the remaining walkthrough issues:**
    - The step drawer merges repeated visits and labels them attempts (`SessionExplorer.tsx`; the server also increments `attempt` across visits).
    - ActorLabel shows subagent UIDs instead of slugs.
    - Running LLM steps show $0.00 until they exit.
    - The YAML editor is ~200px wide when History and Designer are both open.
    - AI-edit highlighting covers only subagent/code-step authors.
-3. **Remaining Phase 7 acceptance work:**
+4. **Remaining Phase 7 acceptance work:**
    - a live git-repo connector sync;
    - orchestrator load/burn-in;
    - timing a fresh-machine self-host from the docs;
    - a webhook delivery check.
-4. **Doc and spec gaps:**
+5. **Doc and spec gaps:**
    - [self-hosting.md](self-hosting.md)'s backup runbook should say to use the server's major version of `pg_dump` (an 18 client against a 16 server emits `SET transaction_timeout`, which fails on restore).
    - Email intake is missing from the deferred register.
    - Spec 07 claims circuit- and step-level knowledge grants that the circuit schema in spec 03 does not have.
-5. **Cost tuning before the pilot.** lit-review's `summarize` on the `large` preset (Opus 5) costs about $1–1.5 per run. The eval model-regression and cheapest-model views can guide a preset change.
+6. **Cost tuning before the pilot.** lit-review's `summarize` on the `large` preset (Opus 5) costs about $1–1.5 per run. The eval model-regression and cheapest-model views can guide a preset change.
+
+## Pilot deployment (AWS)
+
+`Breadboard-pilot` has run in the team's AWS account (us-east-1) since 2026-10-10, deployed from `main` at `13de764` with `deploy/aws/`:
+
+- **Inputs:** `-c name=pilot -c allowedCidrs=none`, the account's default VPC (two public subnets for RDS, one for the host; the lookup is cached in the gitignored `deploy/aws/cdk.context.json`), and the three images in the `agent-breadboard` ECR repository tagged `server-13de764`, `sandbox-ts-13de764`, `sandbox-py-13de764`. Everything else is the stack default, including RDS deletion protection (on).
+- **Access:** no inbound port. Tunnel with SSM, then open `http://localhost:14000`:
+  ```bash
+  export AWS_PROFILE=<profile> AWS_REGION=us-east-1
+  ID=$(aws ec2 describe-instances --filters Name=tag:aws:cloudformation:stack-name,Values=Breadboard-pilot Name=instance-state-name,Values=running --query 'Reservations[].Instances[].InstanceId' --output text)
+  aws ssm start-session --target $ID --document-name AWS-StartPortForwardingSession --parameters portNumber=4000,localPortNumber=14000
+  ```
+  The Session Manager plugin must be on `PATH` (`~/.local/bin` on the dev machine).
+- **Sign-in:** `aws secretsmanager get-secret-value --secret-id breadboard-pilot/admin-token --query SecretString --output text` as `bootstrap-admin`, which holds the `scientist` review role so lit-review gates reach it. The seed dev tokens are refused (401), as designed.
+- **Smoke (2026-10-10):** host checks via SSM showed the server container on the internal `breadboard-sandbox` network with 2+2 warm sandboxes, `cfn-hup` active, migrations applied, and the config repo seeded. Through the tunnel: health ok (`pg`, `bedrock`, `docker`); the broker capabilities `crossref-api` and `semantic-scholar-api` were registered; a task dispatched through triage into lit-review, which ran `gather` on `us.anthropic.claude-sonnet-5` and `summarize` on `us.anthropic.claude-opus-5`, executed `search-scholarly` eight times in the Python sandbox and `check-citations` once in the TypeScript sandbox, logged nine broker calls, and reached `quality-gate` in about four minutes at **$0.89**.
+- **Known limitation:** `publicUrl` is the instance's public IP, which nothing can reach; the UI works through the tunnel because it uses relative paths, but OIDC redirects will need `-c publicUrl=<reachable base URL>` first.
+- **Upgrade:** build amd64 images (Colima's Rosetta emulation handles `--platform linux/amd64`), push with a new tag, redeploy with the same `-c` set; cfn-hup swaps the container in place ([deploy/aws/README.md](../deploy/aws/README.md)).
+- **Running cost:** roughly $110–120/month for the `t3.large` host and `db.t4g.medium` instance, plus Bedrock spend per run.
 
 ## Resuming locally
 
-Everything was stopped at the end of the session. To bring it back:
+To bring the local environment back:
 
 ```bash
 export PATH="$HOME/.local/share/mise/installs/node/26.10.0/bin:/opt/homebrew/opt/libpq/bin:$PATH"
@@ -99,4 +118,4 @@ AWS_PROFILE=<your-profile> npm start            # .env: Postgres breadboard_dev,
 - **Local files:** `var/` (config repo for `breadboard_dev`) and `/tmp/bb-ui/` (config repo for `breadboard_ui`).
 - **Local tools:** Colima, the Docker CLI, libpq, the Session Manager plugin in `~/.local/bin`, Playwright in `/tmp/bb-pw`.
 - **Docker containers (stopped):** `bb-pg`, `bb-egress-relay`, `bb-egress-relay-4110`.
-- **AWS (the test account, us-east-1):** the `Breadboard-verify` stack, its retained secrets, bucket, and snapshots, and the `agent-breadboard` ECR repository were all deleted. The CDK bootstrap stack predates this work and was left in place.
+- **AWS (us-east-1):** the 2026-10-01 `Breadboard-verify` stack and its leftovers were deleted. `Breadboard-pilot` and the `agent-breadboard` ECR repository are live (see Pilot deployment). The CDK bootstrap stack predates this work.
