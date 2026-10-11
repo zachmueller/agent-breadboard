@@ -30,7 +30,10 @@ export interface BreadboardStackProps extends StackProps {
   serverPort?: number;
   serverInstanceType?: string;
   serverRootVolumeGb?: number;
-  /** Externally reachable base URL (leave empty to use the instance IP). */
+  /**
+   * Externally reachable base URL, `scheme://host[:port]` (leave empty to use the instance IP). Lives in the deployment
+   * metadata, not the user data, so changing it recreates the container in place instead of replacing the host.
+   */
   publicUrl?: string;
   /** docker (recommended) or process. */
   sandboxRunner?: 'docker' | 'process';
@@ -91,6 +94,13 @@ WantedBy=multi-user.target
 /** A container image reference (`[registry[:port]/]path[:tag][@sha256:digest]`, lowercase path components). */
 const IMAGE_REF = /^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::\d+)?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[\w][\w.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$/;
 
+/** `scheme://host[:port]`, nothing else: the value is written into a file that the host's bash sources. */
+const PUBLIC_URL = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/;
+
+export function assertPublicUrl(url: string): void {
+  if (url && !PUBLIC_URL.test(url)) throw new Error(`publicUrl must be scheme://host[:port] with no path, got ${url}`);
+}
+
 /** Fail at synth on a malformed image: the host would otherwise boot, fail its one-time bootstrap, and serve nothing. */
 export function assertImageRef(key: string, image: string): void {
   if (!IMAGE_REF.test(image)) throw new Error(`${key} is not a valid image reference: ${image}`);
@@ -121,6 +131,7 @@ export class BreadboardStack extends Stack {
     assertImageRef('serverImage', p.serverImage);
     if (p.sandboxImageTs) assertImageRef('sandboxImageTs', p.sandboxImageTs);
     if (p.sandboxImagePy) assertImageRef('sandboxImagePy', p.sandboxImagePy);
+    assertPublicUrl(p.publicUrl);
 
     // --- Network --------------------------------------------------------------
     // Subnet IDs are resolved against the looked-up VPC so their AZ and public/private kind come from AWS.
@@ -242,9 +253,10 @@ export class BreadboardStack extends Stack {
         token_secret_arn: tokenKey.secretArn,
         broker_secret_arn: brokerKey.secretArn,
         admin_secret_arn: adminToken.secretArn,
-        // CloudFormation cannot reference the instance's own IP inside its user data either; the bootstrap
-        // script resolves this placeholder at runtime via IMDS when `publicUrl` is left empty.
-        public_url: p.publicUrl || `http://__IMDS__:${p.serverPort}`,
+        // Always the IMDS placeholder, resolved at boot to the instance's IP. A configured `publicUrl` is applied
+        // through the deployment metadata instead (deploy.env, below), so changing it never touches the user data:
+        // user data is immutable, and a change would replace the host and its config repo.
+        public_url: `http://__IMDS__:${p.serverPort}`,
         server_port: String(p.serverPort),
         object_store: bucket ? 's3' : 'fs',
         s3_bucket: bucket?.bucketName ?? '',
@@ -284,7 +296,8 @@ export class BreadboardStack extends Stack {
     // first boot, and cfn-hup re-applies them in place when a deploy changes the metadata. No fingerprint in the user
     // data, so an image change neither restarts nor replaces the host (the config repo lives on its root volume).
     const serverId = this.getLogicalId(server.instance);
-    const deployEnv = [`SERVER_IMAGE=${p.serverImage}`, `SANDBOX_IMAGE_TS=${p.sandboxImageTs}`, `SANDBOX_IMAGE_PY=${p.sandboxImagePy}`, `SERVER_PORT=${p.serverPort}`, ''].join('\n');
+    // PUBLIC_URL, when set, overrides the boot-time value in /etc/breadboard.env (breadboard-apply passes it with -e).
+    const deployEnv = [`SERVER_IMAGE=${p.serverImage}`, `SANDBOX_IMAGE_TS=${p.sandboxImageTs}`, `SANDBOX_IMAGE_PY=${p.sandboxImagePy}`, `SERVER_PORT=${p.serverPort}`, `PUBLIC_URL=${p.publicUrl}`, ''].join('\n');
     server.applyCloudFormationInit(
       ec2.CloudFormationInit.fromElements(
         ec2.InitFile.fromString('/etc/breadboard/deploy.env', deployEnv, { mode: '000644' }),
@@ -319,5 +332,13 @@ export class BreadboardStack extends Stack {
     new CfnOutput(this, 'BrokerMasterKeySecretArn', { value: brokerKey.secretArn });
     new CfnOutput(this, 'AdminTokenSecretArn', { description: 'BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: sign in as bootstrap-admin to configure OIDC.', value: adminToken.secretArn });
     if (bucket) new CfnOutput(this, 'ObjectsBucket', { value: bucket.bucketName });
+    // For add-ons that front the server (e.g. a CloudFront VPC origin to the instance). Plain outputs, not exports, so
+    // the base stack never becomes undeletable because something imports them.
+    new CfnOutput(this, 'ServerInstanceId', { value: server.instanceId });
+    new CfnOutput(this, 'ServerSecurityGroupId', { value: serverSg.securityGroupId });
+    new CfnOutput(this, 'ServerPrivateDnsName', { value: server.instancePrivateDnsName });
+    new CfnOutput(this, 'ServerPort', { value: String(p.serverPort) });
+    new CfnOutput(this, 'VpcId', { value: p.vpcId });
+    new CfnOutput(this, 'ServerSubnetId', { value: p.serverSubnetId });
   }
 }

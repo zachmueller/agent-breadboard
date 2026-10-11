@@ -6,6 +6,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, buildUrl, isApiError, onUnauthorized, post, setToken } from './api';
+import { EDGE_AUTH_CODE } from './edge-auth';
 import { setLiveEnabled } from './live';
 import { qk, useAuthMode, useMe } from './queries';
 import type { AuthMode, LoginResponse, MeDto } from './types';
@@ -54,6 +55,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (signedOut) return 'signed-out';
     if (meQ.data) return 'signed-in';
     if (meQ.isPending || modeQ.isPending) return 'loading';
+    // The proxy in front of the server expired: a reload is under way, or the user is asked to reload (Retry).
+    if (isApiError(meErr) && meErr.code === EDGE_AUTH_CODE) return (meErr.detail as { reloading?: boolean } | undefined)?.reloading ? 'loading' : 'unreachable';
     if (isApiError(meErr) && (meErr.isUnauthorized || meErr.isForbidden)) return 'signed-out';
     if (isApiError(meErr) && meErr.code === 'network') return 'unreachable';
     if (meErr) return 'signed-out';

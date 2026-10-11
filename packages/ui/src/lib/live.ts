@@ -5,6 +5,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { EventTopic, StreamEvent } from '@breadboard/shared';
 import { sse, type SseHandle } from './api';
+import { handleEdgeAuthLoss } from './edge-auth';
 
 type Listener = { topics: Set<string>; fn: (e: StreamEvent) => void };
 
@@ -47,7 +48,15 @@ function reconcile() {
         lastEventId = ev.id || lastEventId;
         for (const l of listeners) if (l.topics.has(ev.topic)) l.fn(ev);
       },
-      { lastEventId, onOpen: () => setConnected(true), onError: () => setConnected(false) },
+      {
+        lastEventId,
+        onOpen: () => setConnected(true),
+        onError: () => {
+          setConnected(false);
+          // EventSource exposes no status: if an authenticating proxy now refuses us, reload through its sign-in.
+          void handleEdgeAuthLoss();
+        },
+      },
     );
   }, 50);
 }

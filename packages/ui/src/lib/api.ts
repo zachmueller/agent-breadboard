@@ -4,6 +4,7 @@
  * `{error:{code,message,detail}}` responses become `ApiError`.
  */
 import type { Page, StreamEvent } from '@breadboard/shared';
+import { classifyEdgeForbidden, looksLikeEdgeAuthPage } from './edge-auth';
 
 export const API_BASE = '/api/v1';
 export const TOKEN_KEY = 'bb_token';
@@ -163,6 +164,12 @@ export async function request<T = unknown>(method: string, path: string, opts: R
     }
   }
   if (!res.ok) {
+    // An authenticating proxy answered instead of the API (edge-auth.ts): reload through its sign-in, or report a
+    // permission denial whose JSON body the proxy replaced.
+    if (looksLikeEdgeAuthPage(res.status, res.headers.get('content-type'), raw)) {
+      const edge = await classifyEdgeForbidden();
+      throw new ApiError(edge.code, edge.message, 403, { edgeAuth: true, reloading: edge.reloading });
+    }
     const err = toApiError(res.status, parsed, res.statusText);
     if (err.isUnauthorized) for (const fn of unauthorizedListeners) fn();
     throw err;

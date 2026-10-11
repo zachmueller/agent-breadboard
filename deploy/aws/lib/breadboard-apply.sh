@@ -32,8 +32,10 @@ fi
 docker rm -f breadboard 2>/dev/null || true
 # Root in the container: it holds the Docker socket (root-equivalent anyway) and writes the root-owned
 # /var/breadboard bind mount. Tool code runs in unprivileged sibling containers.
+# PUBLIC_URL from the deployment (when set) overrides the boot-time value in the env file: docker applies -e after
+# --env-file. Unquoted on purpose: empty means no flag at all, and the stack only allows scheme://host[:port].
 docker create --name breadboard --restart unless-stopped --user root --label "breadboard.deploy=$want" \
-  --env-file /etc/breadboard.env \
+  --env-file /etc/breadboard.env ${PUBLIC_URL:+-e PUBLIC_URL=$PUBLIC_URL} \
   -p "$SERVER_PORT:$SERVER_PORT" \
   -v /var/breadboard:/var/breadboard \
   -v /var/run/docker.sock:/var/run/docker.sock \

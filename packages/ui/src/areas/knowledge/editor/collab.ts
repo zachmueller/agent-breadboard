@@ -15,6 +15,7 @@
 import * as Y from 'yjs';
 import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/provider';
 import { API_BASE, getToken } from '../../../lib/api';
+import { handleEdgeAuthLoss } from '../../../lib/edge-auth';
 import type { AwarenessLike } from './extensions';
 
 export type ConnStatus = 'connecting' | 'connected' | 'disconnected';
@@ -82,6 +83,8 @@ export class CollabSession {
       onClose: ({ event }) => {
         // The stateless notice normally precedes the 4409 close; only act on the close if it was lost.
         if (event?.code === WIPEOUT_CLOSE_CODE && Date.now() - this.lastBlockAt > 3000) this.onWipeoutBlocked(this.snapshot.wipeout ?? { deleted: null, total: null });
+        // A refused upgrade (e.g. an authenticating proxy whose session expired) surfaces only as an abnormal close.
+        else if (event && event.code !== 1000 && event.code !== WIPEOUT_CLOSE_CODE && !this.destroyed) void handleEdgeAuthLoss();
       },
       onUnsyncedChanges: ({ number }) => this.set({ unsynced: number }),
     });

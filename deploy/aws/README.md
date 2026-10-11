@@ -45,7 +45,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `serverPort` | `4000` | |
 | `serverInstanceType` | `t3.large` | x86_64, matching the AMI. |
 | `serverRootVolumeGb` | `100` | |
-| `publicUrl` | instance IP | Externally reachable base URL. When empty, the bootstrap script resolves the instance IP from IMDS. |
+| `publicUrl` | instance IP | Externally reachable base URL, `scheme://host[:port]` (e.g. the HTTPS address of a proxy in front of the server). Used for OIDC redirects and `Secure` cookies. When empty, the bootstrap script resolves the instance IP from IMDS. It lives in the deployment metadata, so it can be changed later like an image (see Upgrading). |
 | `sandboxRunner` | `docker` | `docker` or `process`. |
 | `dbEngineVersion` | `16` | |
 | `dbInstanceClass` | `db.t4g.medium` | |
@@ -81,8 +81,18 @@ Deploy with a new image tag: `npx cdk deploy … -c serverImage=$R:server-v0.2` 
 live in the instance's CloudFormation::Init metadata, not in its user data, so the deploy neither restarts nor replaces
 the host. cfn-hup on the host notices the metadata change within a minute or two, pulls the images, and recreates the
 `breadboard` container (`/usr/local/bin/breadboard-apply`; log in `/var/log/cfn-hup.log`). The config repo on
-`/var/breadboard` is untouched. Preview an upgrade with `npx cdk diff … --method=template`: the default change-set diff
+`/var/breadboard` is untouched. `publicUrl` changes apply the same way. Preview an upgrade with `npx cdk diff … --method=template`: the default change-set diff
 does not show metadata-only changes and reports "no differences" (the deploy still applies them; verified 2026-10-01).
+
+## Outputs
+
+| Output | |
+|---|---|
+| `ServerUrl`, `ServerIp` | `publicUrl` when set, else the instance address. |
+| `RdsEndpoint` | |
+| `DbSecretArn`, `TokenSigningKeySecretArn`, `BrokerMasterKeySecretArn`, `AdminTokenSecretArn` | See Secrets. |
+| `ObjectsBucket` | When `enableS3Objects` is true. |
+| `ServerInstanceId`, `ServerSecurityGroupId`, `ServerPrivateDnsName`, `ServerPort`, `VpcId`, `ServerSubnetId` | For add-ons that front the server, such as a CloudFront distribution with a VPC origin to the instance. Plain outputs, not exports, so nothing can pin the stack. An add-on that adds an ingress rule to the server security group must be redeployed if this stack ever replaces the instance. |
 
 ## Behaviour to know about
 

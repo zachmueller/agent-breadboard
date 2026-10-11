@@ -308,7 +308,7 @@ describe('BreadboardStack', () => {
     expect(text).toContain('/opt/aws/bin/cfn-init');
     const apply = initFiles(t)['/usr/local/bin/breadboard-apply']!;
     for (const line of ['pull "$SERVER_IMAGE"', 'docker network connect breadboard-sandbox breadboard', '--user root', '--env-file /etc/breadboard.env']) expect(apply).toContain(line);
-    expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(`SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\n`);
+    expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(`SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\nPUBLIC_URL=\n`);
     const attachment = logicalId(t, 'AWS::SecretsManager::SecretTargetAttachment', {});
     const tokenKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/token-signing-key' });
     const brokerKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/broker-master-key' });
@@ -325,11 +325,23 @@ describe('BreadboardStack', () => {
     );
   });
 
-  it('uses publicUrl as given instead of the IMDS placeholder', () => {
+  it('applies publicUrl through the deployment metadata, leaving the user data (and so the host) alone', () => {
     const custom = synth({ publicUrl: 'https://breadboard.example.com' });
-    expect(userData(custom).text).toContain('PUBLIC_URL="https://breadboard.example.com"');
-    expect(userData(custom).text).not.toContain('PUBLIC_URL="http://__IMDS__');
+    // The boot-time value stays the IMDS placeholder; the container gets the configured URL with -e.
+    expect(userData(custom).text).toContain('PUBLIC_URL="http://__IMDS__:4000"');
+    expect(userData(custom).text).not.toContain('breadboard.example.com');
+    expect(initFiles(custom)['/etc/breadboard/deploy.env']).toContain('PUBLIC_URL=https://breadboard.example.com\n');
+    expect(initFiles(custom)['/usr/local/bin/breadboard-apply']).toContain('--env-file /etc/breadboard.env ${PUBLIC_URL:+-e PUBLIC_URL=$PUBLIC_URL}');
     custom.hasOutput('ServerUrl', { Value: 'https://breadboard.example.com' });
+    const ud = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
+    expect(ud(custom)).toBe(ud(t)); // no replacement when publicUrl is set or changed later
+  });
+
+  it('rejects a publicUrl that is not scheme://host[:port]', () => {
+    for (const bad of ['https://bb.example.com/app', 'bb.example.com', 'https://bb.example.com;rm -rf /', 'ftp://bb.example.com']) {
+      expect(() => synth({ publicUrl: bad })).toThrow(/publicUrl must be scheme:\/\/host\[:port\]/);
+    }
+    expect(() => synth({ publicUrl: 'http://10.0.0.5:4000' })).not.toThrow();
   });
 
   it('supports a private server without a public IP', () => {
@@ -357,8 +369,23 @@ describe('BreadboardStack', () => {
 
   it('emits the operator outputs', () => {
     expect(Object.keys(t.findOutputs('*')).sort()).toEqual(
-      ['AdminTokenSecretArn', 'BrokerMasterKeySecretArn', 'DbSecretArn', 'ObjectsBucket', 'RdsEndpoint', 'ServerIp', 'ServerUrl', 'TokenSigningKeySecretArn'].sort(),
+      [
+        'AdminTokenSecretArn', 'BrokerMasterKeySecretArn', 'DbSecretArn', 'ObjectsBucket', 'RdsEndpoint', 'ServerIp', 'ServerUrl', 'TokenSigningKeySecretArn',
+        'ServerInstanceId', 'ServerSecurityGroupId', 'ServerPrivateDnsName', 'ServerPort', 'VpcId', 'ServerSubnetId',
+      ].sort(),
     );
+  });
+
+  it('publishes the server instance, security group and network for add-ons, without exports', () => {
+    const instance = logicalId(t, 'AWS::EC2::Instance', {});
+    const sg = logicalId(t, 'AWS::EC2::SecurityGroup', { GroupDescription: 'Breadboard server host' });
+    t.hasOutput('ServerInstanceId', { Value: { Ref: instance } });
+    t.hasOutput('ServerSecurityGroupId', { Value: { 'Fn::GetAtt': [sg, 'GroupId'] } });
+    t.hasOutput('ServerPrivateDnsName', { Value: { 'Fn::GetAtt': [instance, 'PrivateDnsName'] } });
+    t.hasOutput('ServerPort', { Value: '4000' });
+    t.hasOutput('VpcId', { Value: VPC_ID });
+    t.hasOutput('ServerSubnetId', { Value: PUBLIC_A });
+    for (const output of Object.values(t.findOutputs('*'))) expect(output.Export).toBeUndefined();
   });
 
   it('fails synth on CloudFormation schema findings', () => {
