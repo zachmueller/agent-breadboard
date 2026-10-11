@@ -47,6 +47,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `serverRootVolumeGb` | `100` | |
 | `publicUrl` | instance IP | Externally reachable base URL, `scheme://host[:port]` (e.g. the HTTPS address of a proxy in front of the server). Used for OIDC redirects and `Secure` cookies. When empty, the bootstrap script resolves the instance IP from IMDS. It lives in the deployment metadata, so it can be changed later like an image (see Upgrading). |
 | `sandboxRunner` | `docker` | `docker` or `process`. |
+| `trustedProxyUser` | none | Trusted proxy (see below): the handle that every request through your authenticating proxy signs in as. Generates the shared secret; applied in place. |
 | `bootstrapAdmin` | `true` | Accept the generated bootstrap admin token. Set `false` once another admin can sign in (see First sign-in); applied in place, like `publicUrl`. |
 | `dbEngineVersion` | `16` | |
 | `dbInstanceClass` | `db.t4g.medium` | |
@@ -93,6 +94,23 @@ the host. cfn-hup on the host notices the metadata change within a minute or two
 `/var/breadboard` is untouched. `publicUrl` changes apply the same way. Preview an upgrade with `npx cdk diff … --method=template`: the default change-set diff
 does not show metadata-only changes and reports "no differences" (the deploy still applies them; verified 2026-10-01).
 
+## Behind an authenticating proxy
+
+`publicUrl` should be the proxy's HTTPS address. If the proxy authenticates people but cannot tell Breadboard who they
+are, and its audience is one person, `-c trustedProxyUser=<handle>` removes the second sign-in:
+
+- The stack generates a secret (output `TrustedProxySecretArn`). The proxy must send its value in the header named by
+  `TrustedProxyHeader` (`x-breadboard-proxy-auth`) on every request, including WebSocket upgrades.
+- `breadboard-apply` reads the secret with the instance role and writes it to `/etc/breadboard/overrides.env` (root
+  only). It never appears in the template or on a command line.
+- Requests that carry it sign in as `<handle>`, an admin created on first use. Requests that bypass the proxy (the SSM
+  tunnel, tool sandboxes) get no trust and still need a token. With an admin path in place, `bootstrapAdmin=false`
+  becomes safe; keep the tunnel's break-glass in mind (`bootstrapAdmin=true` again).
+- Never widen the proxy's audience while this is on: everyone it lets through becomes `<handle>`.
+
+To rotate the secret, redeploy with a different `trustedProxyUser`, or turn it off and on again (each creates a new
+secret), then redeploy the proxy.
+
 ## Outputs
 
 | Output | |
@@ -101,6 +119,7 @@ does not show metadata-only changes and reports "no differences" (the deploy sti
 | `RdsEndpoint` | |
 | `DbSecretArn`, `TokenSigningKeySecretArn`, `BrokerMasterKeySecretArn`, `AdminTokenSecretArn` | See Secrets. |
 | `ObjectsBucket` | When `enableS3Objects` is true. |
+| `TrustedProxySecretArn`, `TrustedProxyHeader`, `TrustedProxyUser` | With `trustedProxyUser`: what the proxy sends (see Behind an authenticating proxy). |
 | `ServerInstanceId`, `ServerSecurityGroupId`, `ServerPrivateDnsName`, `ServerPort`, `VpcId`, `ServerSubnetId` | For add-ons that front the server, such as a CloudFront distribution with a VPC origin to the instance. Plain outputs, not exports, so nothing can pin the stack. An add-on that adds an ingress rule to the server security group must be redeployed if this stack ever replaces the instance. |
 
 ## Behaviour to know about

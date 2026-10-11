@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { BreadboardError } from '@breadboard/shared';
-import type { Services } from '../core/services.js';
+import type { AuthService, Services } from '../core/services.js';
 import type { Principal } from '../core/principal.js';
 
 /** Repeated query params OR within a field ([11] §2): `?type=a&type=b` or `?type=a,b`. */
@@ -69,6 +69,24 @@ export async function withIdempotency<T>(req: FastifyRequest, reply: FastifyRepl
   const status = reply.statusCode || 200;
   await services.db.query(`INSERT INTO idempotency_keys (idem_key, actor_key, request_hash, status, response) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, [key, actorKey, reqHash, status, JSON.stringify(out ?? null)]);
   return out;
+}
+
+/**
+ * Resolve a request's Principal ([11] §2, [12] §3): an explicit credential (bearer, `?access_token`, session cookie)
+ * wins; with none, or one that no longer works (a stale cookie), a trusted-proxy request signs in as the proxy user.
+ */
+export async function authenticateRequest(auth: Pick<AuthService, 'authenticate' | 'proxyPrincipal'>, req: FastifyRequest): Promise<Principal> {
+  const token = bearer(req);
+  if (token) {
+    try {
+      return await auth.authenticate(token);
+    } catch (err) {
+      const proxied = await auth.proxyPrincipal?.(req.headers);
+      if (proxied) return proxied;
+      throw err;
+    }
+  }
+  return (await auth.proxyPrincipal?.(req.headers)) ?? auth.authenticate(null);
 }
 
 export function bearer(req: FastifyRequest): string | null {

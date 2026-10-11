@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { BreadboardError } from '@breadboard/shared';
 import type { Services } from './core/services.js';
-import { bearer } from './api/util.js';
+import { authenticateRequest } from './api/util.js';
 import { registerRoutes } from './api/index.js';
 
 export const API_PREFIX = '/api/v1';
@@ -34,8 +34,7 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
     if (!req.url.startsWith(API_PREFIX)) return;
     const path = req.url.split('?')[0]!;
     if (PUBLIC_PATHS.has(path)) return;
-    const token = bearer(req);
-    (req as any).principal = await services.auth.authenticate(token);
+    (req as any).principal = await authenticateRequest(services.auth, req);
   });
 
   app.setErrorHandler((err: any, req, reply) => {

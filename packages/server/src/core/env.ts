@@ -41,6 +41,14 @@ const zEnv = z.object({
   TOKEN_SIGNING_KEY: z.string().default('dev-only-change-me'),
   /** Break-glass admin sign-in for a fresh deployment (production refuses the seed's `*-change-me` tokens). */
   BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: z.string().optional(),
+  /**
+   * Trusted proxy ([12] §3): an authenticating proxy in front of the server that sends no identity (for example a
+   * CDN with a signed-cookie gate). Requests carrying BREADBOARD_TRUSTED_PROXY_HEADER with this secret sign in as
+   * BREADBOARD_TRUSTED_PROXY_USER. Set both or neither; only the proxy may know the secret.
+   */
+  BREADBOARD_TRUSTED_PROXY_SECRET: z.string().optional(),
+  BREADBOARD_TRUSTED_PROXY_USER: z.string().optional(),
+  BREADBOARD_TRUSTED_PROXY_HEADER: z.string().default('x-breadboard-proxy-auth'),
   UI_DIST_DIR: z.string().optional(),
   ORCHESTRATOR_ENABLED: bool.default(true),
   CONNECTORS_ENABLED: bool.default(true),
@@ -109,6 +117,42 @@ export function productionSecretProblems(env: Env): string[] {
     problems.push('BREADBOARD_BOOTSTRAP_ADMIN_TOKEN is a well-known *-change-me value; set a random token (openssl rand -hex 24)');
   }
   return problems;
+}
+
+export const MIN_PROXY_SECRET_LENGTH = 32;
+const HEADER_NAME = /^[a-z0-9][a-z0-9-]*$/;
+/** Headers a client or an ordinary proxy sets for other reasons: trusting a secret in one of them would be confusing. */
+const RESERVED_HEADERS = new Set(['authorization', 'cookie', 'host', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-real-ip', 'forwarded']);
+
+export interface TrustedProxyConfig {
+  /** Lower-case header name. */
+  header: string;
+  secret: string;
+  /** Handle of the user every proxied request signs in as. */
+  user: string;
+}
+
+/** Trusted-proxy misconfigurations, refused in every environment: half-configured or weak trust is worse than none. */
+export function trustedProxyProblems(env: Env): string[] {
+  const secret = env.BREADBOARD_TRUSTED_PROXY_SECRET || undefined;
+  const user = env.BREADBOARD_TRUSTED_PROXY_USER?.trim() || undefined;
+  if (!secret && !user) return [];
+  const problems: string[] = [];
+  if (!secret) problems.push('BREADBOARD_TRUSTED_PROXY_USER is set without BREADBOARD_TRUSTED_PROXY_SECRET');
+  if (!user) problems.push('BREADBOARD_TRUSTED_PROXY_SECRET is set without BREADBOARD_TRUSTED_PROXY_USER');
+  if (secret && (WELL_KNOWN_SECRET.test(secret) || secret.length < MIN_PROXY_SECRET_LENGTH)) {
+    problems.push(`BREADBOARD_TRUSTED_PROXY_SECRET must be at least ${MIN_PROXY_SECRET_LENGTH} random characters (openssl rand -hex 32)`);
+  }
+  const header = env.BREADBOARD_TRUSTED_PROXY_HEADER.trim().toLowerCase();
+  if (!HEADER_NAME.test(header) || RESERVED_HEADERS.has(header)) problems.push(`BREADBOARD_TRUSTED_PROXY_HEADER must be a dedicated header name, got ${env.BREADBOARD_TRUSTED_PROXY_HEADER}`);
+  return problems;
+}
+
+export function trustedProxyConfig(env: Env): TrustedProxyConfig | null {
+  const problems = trustedProxyProblems(env);
+  if (problems.length) throw new Error(`invalid trusted-proxy configuration:\n  - ${problems.join('\n  - ')}`);
+  if (!env.BREADBOARD_TRUSTED_PROXY_SECRET) return null;
+  return { header: env.BREADBOARD_TRUSTED_PROXY_HEADER.trim().toLowerCase(), secret: env.BREADBOARD_TRUSTED_PROXY_SECRET, user: env.BREADBOARD_TRUSTED_PROXY_USER!.trim() };
 }
 
 /** Refuse to start in production with missing or well-known secrets (see `productionSecretProblems`). */

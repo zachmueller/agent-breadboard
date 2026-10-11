@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { App } from 'aws-cdk-lib';
@@ -308,7 +308,7 @@ describe('BreadboardStack', () => {
     expect(text).toContain('/opt/aws/bin/cfn-init');
     const apply = initFiles(t)['/usr/local/bin/breadboard-apply']!;
     for (const line of ['pull "$SERVER_IMAGE"', 'docker network connect breadboard-sandbox breadboard', '--user root', '--env-file /etc/breadboard.env']) expect(apply).toContain(line);
-    expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(`SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\nPUBLIC_URL=\nBOOTSTRAP_ADMIN=true\n`);
+    expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(`SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\nPUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\n`);
     const attachment = logicalId(t, 'AWS::SecretsManager::SecretTargetAttachment', {});
     const tokenKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/token-signing-key' });
     const brokerKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/broker-master-key' });
@@ -331,7 +331,7 @@ describe('BreadboardStack', () => {
     expect(userData(custom).text).toContain('PUBLIC_URL="http://__IMDS__:4000"');
     expect(userData(custom).text).not.toContain('breadboard.example.com');
     expect(initFiles(custom)['/etc/breadboard/deploy.env']).toContain('PUBLIC_URL=https://breadboard.example.com\n');
-    expect(initFiles(custom)['/usr/local/bin/breadboard-apply']).toContain('overrides+=(-e "PUBLIC_URL=$PUBLIC_URL")');
+    expect(initFiles(custom)['/usr/local/bin/breadboard-apply']).toContain('echo "PUBLIC_URL=$PUBLIC_URL"');
     custom.hasOutput('ServerUrl', { Value: 'https://breadboard.example.com' });
     const ud = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
     expect(ud(custom)).toBe(ud(t)); // no replacement when publicUrl is set or changed later
@@ -340,11 +340,31 @@ describe('BreadboardStack', () => {
   it('turns the bootstrap admin off in place: the container gets an empty token, the host and the secret stay', () => {
     const off = synth({ bootstrapAdmin: false });
     expect(initFiles(off)['/etc/breadboard/deploy.env']).toContain('BOOTSTRAP_ADMIN=false\n');
-    expect(initFiles(off)['/usr/local/bin/breadboard-apply']).toContain('overrides+=(-e "BREADBOARD_BOOTSTRAP_ADMIN_TOKEN=")');
+    expect(initFiles(off)['/usr/local/bin/breadboard-apply']).toContain('echo "BREADBOARD_BOOTSTRAP_ADMIN_TOKEN="');
     const ud = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
     expect(ud(off)).toBe(ud(t)); // no replacement; the boot-time env file still holds the token, overridden at run time
     off.hasResourceProperties('AWS::SecretsManager::Secret', { Name: 'breadboard-test/admin-token' });
     expect(Object.keys(off.findOutputs('*'))).toContain('AdminTokenSecretArn');
+  });
+
+  it('generates the trusted-proxy secret, lets the host read it, and applies it in place', () => {
+    const proxied = synth({ trustedProxyUser: 'zach' });
+    const secrets = Object.entries(proxied.findResources('AWS::SecretsManager::Secret')).filter(([, r]) => !r.Properties.Name);
+    expect(secrets).toHaveLength(1); // unnamed: no name stays reserved if the proxy is turned off and on again
+    const [secretId, secret] = secrets[0];
+    expect(secret.DeletionPolicy).toBe('Delete');
+    expect(secret.Properties.GenerateSecretString).toMatchObject({ PasswordLength: 48, ExcludePunctuation: true });
+    const reads = statements(proxied).filter((st) => [st.Action].flat().includes('secretsmanager:GetSecretValue'));
+    expect(reads.some((st) => JSON.stringify(st.Resource) === JSON.stringify({ Ref: secretId }))).toBe(true);
+    const env = Object.values(proxied.findResources('AWS::EC2::Instance'))[0].Metadata['AWS::CloudFormation::Init'].config.files['/etc/breadboard/deploy.env'].content;
+    expect(JSON.stringify(env)).toContain('TRUSTED_PROXY_USER=zach\\nTRUSTED_PROXY_SECRET_ARN=');
+    expect(JSON.stringify(env)).toContain(JSON.stringify({ Ref: secretId }));
+    proxied.hasOutput('TrustedProxySecretArn', { Value: { Ref: secretId } });
+    proxied.hasOutput('TrustedProxyHeader', { Value: 'x-breadboard-proxy-auth' });
+    proxied.hasOutput('TrustedProxyUser', { Value: 'zach' });
+    const ud = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
+    expect(ud(proxied)).toBe(ud(t));
+    expect(() => synth({ trustedProxyUser: 'zach; rm -rf /' })).toThrow(/trustedProxyUser must be a user handle/);
   });
 
   it('rejects a publicUrl that is not scheme://host[:port]', () => {
@@ -409,29 +429,42 @@ describe('BreadboardStack', () => {
 });
 
 describe('breadboard-apply.sh', () => {
-  // Run the real script against a stub docker to see the container it would create.
-  function apply(deployEnv: string): string {
+  // Run the real script against stub docker and aws commands to see the container it would create.
+  function apply(deployEnv: string): { create: string; overrides: string; mode: number; awsCalls: string } {
     const dir = mkdtempSync(join(tmpdir(), 'bb-apply-'));
     writeFileSync(join(dir, 'deploy.env'), deployEnv);
     writeFileSync(join(dir, 'docker'), '#!/bin/sh\necho "$*" >> "$DOCKER_LOG"\n[ "$1" = inspect ] && exit 1\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(dir, 'aws'), '#!/bin/sh\necho "$*" >> "$AWS_LOG"\necho proxy-secret-value-0123456789abcdef0123456789\n', { mode: 0o755 });
+    const overridesFile = join(dir, 'overrides.env');
     execFileSync('bash', [join(import.meta.dirname, '..', 'lib', 'breadboard-apply.sh')], {
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, BREADBOARD_DEPLOY_ENV: join(dir, 'deploy.env'), DOCKER_LOG: join(dir, 'docker.log') },
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, BREADBOARD_DEPLOY_ENV: join(dir, 'deploy.env'), BREADBOARD_OVERRIDES_ENV: overridesFile, DOCKER_LOG: join(dir, 'docker.log'), AWS_LOG: join(dir, 'aws.log') },
       stdio: 'pipe',
     });
-    return readFileSync(join(dir, 'docker.log'), 'utf8').split('\n').find((l) => l.startsWith('create '))!;
+    const create = readFileSync(join(dir, 'docker.log'), 'utf8').split('\n').find((l) => l.startsWith('create '))!;
+    const awsCalls = (() => { try { return readFileSync(join(dir, 'aws.log'), 'utf8'); } catch { return ''; } })();
+    return { create: create.replace(overridesFile, '<overrides>'), overrides: readFileSync(overridesFile, 'utf8'), mode: statSync(overridesFile).mode & 0o777, awsCalls };
   }
   const base = 'SERVER_IMAGE=registry.example.com/bb:v1\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\n';
 
-  it('adds no overrides by default', () => {
-    const create = apply(`${base}PUBLIC_URL=\nBOOTSTRAP_ADMIN=true\n`);
-    expect(create).toContain('--env-file /etc/breadboard.env -p 4000:4000');
-    expect(create).not.toContain(' -e ');
-    expect(apply(base)).not.toContain(' -e '); // a deploy.env from before these settings existed
+  it('passes an empty overrides file by default', () => {
+    for (const env of [`${base}PUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\n`, base /* a deploy.env from before these settings */]) {
+      const r = apply(env);
+      expect(r.create).toContain('--env-file /etc/breadboard.env --env-file <overrides> -p 4000:4000');
+      expect(r.overrides).toBe('');
+    }
   });
 
-  it('overrides PUBLIC_URL and empties the bootstrap token when configured', () => {
-    const create = apply(`${base}PUBLIC_URL=https://bb.example.com\nBOOTSTRAP_ADMIN=false\n`);
-    expect(create).toContain('--env-file /etc/breadboard.env -e PUBLIC_URL=https://bb.example.com -e BREADBOARD_BOOTSTRAP_ADMIN_TOKEN= -p 4000:4000');
+  it('writes PUBLIC_URL, the disabled bootstrap token and the trusted proxy to a root-only overrides file', () => {
+    const arn = 'arn:aws:secretsmanager:eu-west-1:123456789012:secret:TrustedProxySecret-AbCdEf';
+    const r = apply(`${base}PUBLIC_URL=https://bb.example.com\nBOOTSTRAP_ADMIN=false\nTRUSTED_PROXY_USER=zach\nTRUSTED_PROXY_SECRET_ARN=${arn}\n`);
+    expect(r.overrides).toBe(
+      'PUBLIC_URL=https://bb.example.com\nBREADBOARD_BOOTSTRAP_ADMIN_TOKEN=\nBREADBOARD_TRUSTED_PROXY_USER=zach\nBREADBOARD_TRUSTED_PROXY_SECRET=proxy-secret-value-0123456789abcdef0123456789\n',
+    );
+    expect(r.mode).toBe(0o600);
+    expect(r.awsCalls).toContain(`secretsmanager get-secret-value --region eu-west-1 --secret-id ${arn}`); // region from the ARN
+    // The secret value is in the file only, never on a command line.
+    expect(r.create).not.toContain('proxy-secret-value');
+    expect(r.create).toContain('--env-file /etc/breadboard.env --env-file <overrides>');
   });
 });
 
@@ -462,6 +495,7 @@ describe('bin/breadboard.ts', () => {
     expect(template).toContain('PORT=8443');
     expect(template).toContain('BOOTSTRAP_ADMIN=true');
     expect(run({ ...required, bootstrapAdmin: 'false' }).template).toContain('BOOTSTRAP_ADMIN=false');
+    expect(run({ ...required, trustedProxyUser: 'zach' }).template).toContain('TRUSTED_PROXY_USER=zach');
     const role = Object.values<{ Type: string; Properties: { Tags?: unknown[] } }>(JSON.parse(template).Resources).find((r) => r.Type === 'AWS::IAM::Role');
     expect(role?.Properties.Tags).toEqual(
       expect.arrayContaining([{ Key: 'Team', Value: 'research' }, { Key: 'Project', Value: 'agent-breadboard' }, { Key: 'Breadboard', Value: 'smoke' }]),

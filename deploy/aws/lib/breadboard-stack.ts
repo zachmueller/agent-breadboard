@@ -43,6 +43,13 @@ export interface BreadboardStackProps extends StackProps {
    * secret is kept either way, so turning it back on is one deploy. Applied in place, like `publicUrl`.
    */
   bootstrapAdmin?: boolean;
+  /**
+   * Trusted proxy ([12] §3): the handle that every request arriving through an authenticating proxy signs in as (created
+   * as an admin on first use). Generates the shared secret the proxy must send in `TRUSTED_PROXY_HEADER` (outputs
+   * `TrustedProxySecretArn`, `TrustedProxyHeader`). Only for a proxy whose audience is that one person: the server
+   * cannot tell the proxy's users apart. Applied in place, like `publicUrl`.
+   */
+  trustedProxyUser?: string;
   dbEngineVersion?: string;
   dbInstanceClass?: string;
   dbAllocatedStorageGb?: number;
@@ -63,6 +70,7 @@ export const DEFAULTS = {
   publicUrl: '',
   sandboxRunner: 'docker',
   bootstrapAdmin: true,
+  trustedProxyUser: '',
   sandboxImageTs: '',
   sandboxImagePy: '',
   dbEngineVersion: '16',
@@ -108,6 +116,14 @@ export function assertPublicUrl(url: string): void {
   if (url && !PUBLIC_URL.test(url)) throw new Error(`publicUrl must be scheme://host[:port] with no path, got ${url}`);
 }
 
+/** The server's default trusted-proxy header (packages/server/src/core/env.ts, BREADBOARD_TRUSTED_PROXY_HEADER). */
+export const TRUSTED_PROXY_HEADER = 'x-breadboard-proxy-auth';
+const HANDLE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export function assertTrustedProxyUser(handle: string): void {
+  if (handle && !HANDLE.test(handle)) throw new Error(`trustedProxyUser must be a user handle (letters, digits, . _ -), got ${handle}`);
+}
+
 /** Fail at synth on a malformed image: the host would otherwise boot, fail its one-time bootstrap, and serve nothing. */
 export function assertImageRef(key: string, image: string): void {
   if (!IMAGE_REF.test(image)) throw new Error(`${key} is not a valid image reference: ${image}`);
@@ -139,6 +155,7 @@ export class BreadboardStack extends Stack {
     if (p.sandboxImageTs) assertImageRef('sandboxImageTs', p.sandboxImageTs);
     if (p.sandboxImagePy) assertImageRef('sandboxImagePy', p.sandboxImagePy);
     assertPublicUrl(p.publicUrl);
+    assertTrustedProxyUser(p.trustedProxyUser);
 
     // --- Network --------------------------------------------------------------
     // Subnet IDs are resolved against the looked-up VPC so their AZ and public/private kind come from AWS.
@@ -215,6 +232,15 @@ export class BreadboardStack extends Stack {
     // Production refuses the seed's well-known local tokens; this is how the operator signs in to configure OIDC.
     const adminToken = generated('BootstrapAdminToken', 'admin-token', 'BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: break-glass admin sign-in', 48);
     const dbSecret = db.secret!;
+    // The trusted proxy's shared secret. No fixed name and not retained: it holds no state, and a fixed name would stay
+    // reserved for the deletion window if the proxy were turned off and on again. The proxy reads it by ARN.
+    const proxySecret = p.trustedProxyUser
+      ? new secretsmanager.Secret(this, 'TrustedProxySecret', {
+          description: `Shared secret an authenticating proxy sends in ${TRUSTED_PROXY_HEADER}; requests carrying it sign in as ${p.trustedProxyUser}`,
+          generateSecretString: { passwordLength: 48, excludePunctuation: true, includeSpace: false },
+          removalPolicy: RemovalPolicy.DESTROY,
+        })
+      : undefined;
 
     // --- Object storage (optional S3-compatible) --------------------------------
     const bucket = p.enableS3Objects
@@ -238,6 +264,7 @@ export class BreadboardStack extends Stack {
     );
     role.addToPolicy(new iam.PolicyStatement({ actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'], resources: ['*'] }));
     for (const secret of [dbSecret, tokenKey, brokerKey, adminToken]) secret.grantRead(role);
+    proxySecret?.grantRead(role); // read by breadboard-apply, not the one-time user data
     // Pull access to the ECR repositories the images live in (the bootstrap logs in to their registries).
     const repos = [...new Set([p.serverImage, p.sandboxImageTs, p.sandboxImagePy].map(ecrRepositoryArn).filter((a): a is string => a !== null))];
     if (repos.length) {
@@ -303,8 +330,9 @@ export class BreadboardStack extends Stack {
     // first boot, and cfn-hup re-applies them in place when a deploy changes the metadata. No fingerprint in the user
     // data, so an image change neither restarts nor replaces the host (the config repo lives on its root volume).
     const serverId = this.getLogicalId(server.instance);
-    // PUBLIC_URL (when set) and BOOTSTRAP_ADMIN=false override the boot-time /etc/breadboard.env: breadboard-apply
-    // passes them to the container with -e, so they change in place like the images.
+    // PUBLIC_URL (when set), BOOTSTRAP_ADMIN=false and the trusted proxy override the boot-time /etc/breadboard.env:
+    // breadboard-apply writes them to a root-only overrides env file (fetching the proxy secret by ARN), so they
+    // change in place like the images and no secret value enters the template.
     const deployEnv = [
       `SERVER_IMAGE=${p.serverImage}`,
       `SANDBOX_IMAGE_TS=${p.sandboxImageTs}`,
@@ -312,6 +340,8 @@ export class BreadboardStack extends Stack {
       `SERVER_PORT=${p.serverPort}`,
       `PUBLIC_URL=${p.publicUrl}`,
       `BOOTSTRAP_ADMIN=${p.bootstrapAdmin}`,
+      `TRUSTED_PROXY_USER=${p.trustedProxyUser}`,
+      `TRUSTED_PROXY_SECRET_ARN=${proxySecret?.secretArn ?? ''}`,
       '',
     ].join('\n');
     server.applyCloudFormationInit(
@@ -356,5 +386,10 @@ export class BreadboardStack extends Stack {
     new CfnOutput(this, 'ServerPort', { value: String(p.serverPort) });
     new CfnOutput(this, 'VpcId', { value: p.vpcId });
     new CfnOutput(this, 'ServerSubnetId', { value: p.serverSubnetId });
+    if (proxySecret) {
+      new CfnOutput(this, 'TrustedProxySecretArn', { value: proxySecret.secretArn, description: `The proxy sends this secret's value in ${TRUSTED_PROXY_HEADER}` });
+      new CfnOutput(this, 'TrustedProxyHeader', { value: TRUSTED_PROXY_HEADER });
+      new CfnOutput(this, 'TrustedProxyUser', { value: p.trustedProxyUser });
+    }
   }
 }

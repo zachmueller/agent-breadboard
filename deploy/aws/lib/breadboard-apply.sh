@@ -3,7 +3,8 @@
 # runs it again whenever a deploy changes /etc/breadboard/deploy.env (the instance's CloudFormation::Init metadata),
 # so `cdk deploy -c serverImage=<new tag>` upgrades the host in place. The config repo on /var/breadboard stays put.
 set -euo pipefail
-DEPLOY_ENV="${BREADBOARD_DEPLOY_ENV:-/etc/breadboard/deploy.env}" # overridable for the stack's tests only
+DEPLOY_ENV="${BREADBOARD_DEPLOY_ENV:-/etc/breadboard/deploy.env}" # both overridable for the stack's tests only
+OVERRIDES="${BREADBOARD_OVERRIDES_ENV:-/etc/breadboard/overrides.env}"
 source "$DEPLOY_ENV"
 
 # Private ECR registries need a login (the instance role grants pull on the image repositories).
@@ -22,9 +23,25 @@ pull "$SERVER_IMAGE"
 if [[ -n "$SANDBOX_IMAGE_TS" ]]; then pull "$SANDBOX_IMAGE_TS" && docker tag "$SANDBOX_IMAGE_TS" breadboard-sandbox-ts:local; fi
 if [[ -n "$SANDBOX_IMAGE_PY" ]]; then pull "$SANDBOX_IMAGE_PY" && docker tag "$SANDBOX_IMAGE_PY" breadboard-sandbox-py:local; fi
 
-# Recreate the container only when the deployment changed. The restart also drops warm sandbox containers started
-# from a previous sandbox image (the server removes leftover sandbox containers on start).
-want=$(sha256sum "$DEPLOY_ENV" | cut -c1-16)
+# Deployment settings that override the boot-time env file, in a root-only env file passed after it (docker applies the
+# later file's values): PUBLIC_URL when set; an empty BREADBOARD_BOOTSTRAP_ADMIN_TOKEN (the server's "disabled") when
+# the bootstrap admin is off; and the trusted proxy, whose secret is fetched here so its value never enters a command
+# line or the CloudFormation template.
+umask 077
+{
+  if [[ -n "${PUBLIC_URL:-}" ]]; then echo "PUBLIC_URL=$PUBLIC_URL"; fi
+  if [[ "${BOOTSTRAP_ADMIN:-true}" == "false" ]]; then echo "BREADBOARD_BOOTSTRAP_ADMIN_TOKEN="; fi
+  if [[ -n "${TRUSTED_PROXY_SECRET_ARN:-}" ]]; then
+    proxy_secret=$(aws secretsmanager get-secret-value --region "$(echo "$TRUSTED_PROXY_SECRET_ARN" | cut -d: -f4)" --secret-id "$TRUSTED_PROXY_SECRET_ARN" --query SecretString --output text)
+    echo "BREADBOARD_TRUSTED_PROXY_USER=$TRUSTED_PROXY_USER"
+    echo "BREADBOARD_TRUSTED_PROXY_SECRET=$proxy_secret"
+  fi
+} > "$OVERRIDES.tmp"
+mv "$OVERRIDES.tmp" "$OVERRIDES"
+
+# Recreate the container only when the deployment changed (including a rotated proxy secret). The restart also drops
+# warm sandbox containers started from a previous sandbox image (the server removes leftover sandbox containers on start).
+want=$(cat "$DEPLOY_ENV" "$OVERRIDES" | sha256sum | cut -c1-16)
 have=$(docker inspect -f '{{ index .Config.Labels "breadboard.deploy" }}' breadboard 2>/dev/null || true)
 if [[ "$want" == "$have" ]]; then
   echo "breadboard already runs deployment $want"
@@ -33,13 +50,8 @@ fi
 docker rm -f breadboard 2>/dev/null || true
 # Root in the container: it holds the Docker socket (root-equivalent anyway) and writes the root-owned
 # /var/breadboard bind mount. Tool code runs in unprivileged sibling containers.
-# Deployment settings that override the boot-time env file (docker applies -e after --env-file): PUBLIC_URL when set,
-# and an empty BREADBOARD_BOOTSTRAP_ADMIN_TOKEN (the server's "disabled") when the bootstrap admin is turned off.
-overrides=()
-if [[ -n "${PUBLIC_URL:-}" ]]; then overrides+=(-e "PUBLIC_URL=$PUBLIC_URL"); fi
-if [[ "${BOOTSTRAP_ADMIN:-true}" == "false" ]]; then overrides+=(-e "BREADBOARD_BOOTSTRAP_ADMIN_TOKEN="); fi
 docker create --name breadboard --restart unless-stopped --user root --label "breadboard.deploy=$want" \
-  --env-file /etc/breadboard.env ${overrides[@]+"${overrides[@]}"} \
+  --env-file /etc/breadboard.env --env-file "$OVERRIDES" \
   -p "$SERVER_PORT:$SERVER_PORT" \
   -v /var/breadboard:/var/breadboard \
   -v /var/run/docker.sock:/var/run/docker.sock \

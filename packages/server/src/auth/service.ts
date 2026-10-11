@@ -16,6 +16,7 @@ import { SignJWT, EncryptJWT, jwtVerify, jwtDecrypt, type JWTPayload } from 'jos
 import * as oidc from 'openid-client';
 import { BreadboardError, type Actor, type BreadboardConfig } from '@breadboard/shared';
 import type { Db } from '../db/index.js';
+import type { TrustedProxyConfig } from '../core/env.js';
 import type { Logger } from '../core/logger.js';
 import { WELL_KNOWN_SECRET } from '../core/env.js';
 import type { AuthService, SessionStore } from '../core/services.js';
@@ -50,6 +51,8 @@ export interface AuthServiceDeps {
    * disables it, and then the `bootstrap-admin` sessions it started stop working too.
    */
   bootstrapAdminToken?: string | null;
+  /** Trusted proxy ([12] §3): requests carrying `header: secret` sign in as `user` (created as an admin on first use). */
+  trustedProxy?: TrustedProxyConfig | null;
 }
 
 export const BOOTSTRAP_ADMIN_HANDLE = 'bootstrap-admin';
@@ -336,7 +339,7 @@ export class AuthServiceImpl implements AuthService {
           'Recover by setting BREADBOARD_BOOTSTRAP_ADMIN_TOKEN again (deploy/aws: cdk deploy -c bootstrapAdmin=true).',
       );
     } else {
-      this.deps.log.info({ bootstrap_admin: !!this.deps.bootstrapAdminToken, admin_sign_in: paths }, 'admin sign-in paths');
+      this.deps.log.info({ bootstrap_admin: !!this.deps.bootstrapAdminToken, trusted_proxy_user: this.deps.trustedProxy?.user ?? null, admin_sign_in: paths }, 'admin sign-in paths');
     }
   }
 
@@ -360,11 +363,36 @@ export class AuthServiceImpl implements AuthService {
         if (!row?.deactivated_at) paths.push(`local user ${u.handle}`);
       }
     }
+    const proxy = this.deps.trustedProxy;
+    if (proxy) {
+      // Created as an admin on first use, so it counts until someone deactivates or demotes it.
+      const row = await identity.getUserByHandle(team_id, proxy.user);
+      if (!row || (row.is_admin && !row.deactivated_at)) paths.push(`trusted proxy user ${proxy.user}`);
+    }
     if (this.oidcEnabled(settings)) {
       if (settings.auth.oidc!.group_mappings.admin.length) paths.push('OIDC admin group');
       for (const u of await identity.listUsers(team_id)) if (u.is_admin && u.oidc_subject && !u.deactivated_at) paths.push(`OIDC user ${u.handle}`);
     }
     return paths;
+  }
+
+  async proxyPrincipal(headers: Readonly<Record<string, string | string[] | undefined>>): Promise<Principal | null> {
+    const proxy = this.deps.trustedProxy;
+    if (!proxy) return null;
+    const given = headers[proxy.header];
+    // A repeated header arrives as an array (or comma-joined): never a match.
+    if (typeof given !== 'string' || !given) return null;
+    if (!timingSafeEqual(createHash('sha256').update(given).digest(), createHash('sha256').update(proxy.secret).digest())) return null;
+    const key = `proxy:${proxy.user}`;
+    const now = Date.now();
+    const hit = this.cache.get(key);
+    if (hit && hit.until > now) return hit.principal;
+    const { identity, team_id } = this.deps;
+    const user = (await identity.getUserByHandle(team_id, proxy.user)) ?? (await identity.upsertUser({ team_id, handle: proxy.user, display_name: proxy.user, is_admin: true }));
+    if (user.deactivated_at) throw new BreadboardError('unauthorized', 'the trusted-proxy user is deactivated');
+    const principal: Principal = { ...(await this.principalForUser(user)), token_kind: 'proxy' };
+    this.remember(key, principal, now + CACHE_TTL_MS);
+    return principal;
   }
 
   /** The break-glass admin for `bootstrapAdminToken`; created once, never re-enabled once an admin deactivates it. */

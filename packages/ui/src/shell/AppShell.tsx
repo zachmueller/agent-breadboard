@@ -145,7 +145,9 @@ export function AppShell({ children }: { children: ReactNode }) {
                 items={[
                   { key: 'who', label: <span className="text-fg-subtle">Signed in as @{user?.handle}</span>, disabled: true },
                   { key: 'keys', label: 'Keyboard shortcuts', icon: <Keyboard size={14} />, hint: '?', onSelect: () => setHelpOpen(true), separator: true },
-                  { key: 'logout', label: 'Sign out', icon: <LogOut size={14} />, onSelect: () => void logout(), separator: true },
+                  user?.via_proxy
+                    ? { key: 'proxy', label: <span className="text-fg-subtle">Signed in by this site’s proxy</span>, disabled: true, separator: true }
+                    : { key: 'logout', label: 'Sign out', icon: <LogOut size={14} />, onSelect: () => void logout(), separator: true },
                 ]}
                 trigger={(p) => (
                   <button

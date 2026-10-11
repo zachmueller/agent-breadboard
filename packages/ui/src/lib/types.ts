@@ -27,6 +27,8 @@ export interface MeDto {
   is_admin: boolean;
   roles: string[];
   team_name?: string | null;
+  /** Signed in by a trusted proxy in front of the server: there is no Breadboard session to sign out of. */
+  via_proxy?: boolean;
 }
 
 export interface LoginResponse {

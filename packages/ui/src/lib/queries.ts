@@ -99,7 +99,7 @@ export function useMe(enabled = true) {
       const wrapped = r as { user?: MeDto; roles?: unknown[]; is_admin?: boolean };
       const u: MeDto = wrapped.user ? { ...wrapped.user, is_admin: wrapped.is_admin ?? wrapped.user.is_admin, roles: (wrapped.roles as string[] | undefined) ?? wrapped.user.roles ?? [] } : (r as MeDto);
       const roles = (u.roles ?? []).map((x: unknown) => (typeof x === 'string' ? x : String((x as { slug?: string; role_id?: string })?.slug ?? (x as { role_id?: string })?.role_id ?? '')));
-      return { ...u, roles, is_admin: !!u.is_admin } as MeDto;
+      return { ...u, roles, is_admin: !!u.is_admin, via_proxy: (r as { token_kind?: string }).token_kind === 'proxy' } as MeDto;
     },
     staleTime: 5 * 60_000,
     retry: false,

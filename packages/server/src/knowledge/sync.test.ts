@@ -6,6 +6,7 @@ import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/pro
 import { aiPrincipal, createKnowledgeKit, type KnowledgeKit } from './testkit.js';
 import { SYNC_PATH } from './sync.js';
 import { blocksOf, docToMarkdown } from './ydoc.js';
+import { WebSocket as WsWebSocket } from 'ws';
 
 async function until(pred: () => boolean | Promise<boolean>, ms = 5000, what = 'condition'): Promise<void> {
   const start = Date.now();
@@ -43,10 +44,19 @@ describe('HocuspocusSyncServer over WebSocket', () => {
     await kit.close();
   });
 
-  function connect(name: string, token: string, opts: { query?: string } = {}) {
+  function connect(name: string, token: string, opts: { query?: string; headers?: Record<string, string> } = {}) {
     const document = new Y.Doc({ gc: false });
     const state = { synced: false, authFailed: null as string | null, stateless: [] as string[] };
-    const websocketProvider = new HocuspocusProviderWebsocket({ url: url + (opts.query ?? ''), WebSocketPolyfill: globalThis.WebSocket as any });
+    // The global WebSocket cannot set headers; `ws` can (a proxy adds its header to the upgrade request).
+    const extra = opts.headers;
+    const Polyfill = extra
+      ? class extends (WsWebSocket as any) {
+          constructor(address: string, protocols?: string | string[]) {
+            super(address, protocols, { headers: extra });
+          }
+        }
+      : globalThis.WebSocket;
+    const websocketProvider = new HocuspocusProviderWebsocket({ url: url + (opts.query ?? ''), WebSocketPolyfill: Polyfill as any });
     const provider = new HocuspocusProvider({
       websocketProvider,
       name,
@@ -69,6 +79,19 @@ describe('HocuspocusSyncServer over WebSocket', () => {
     });
     return { document, provider, state };
   }
+
+  it('authenticates a socket that came through the trusted proxy, and only that one', async () => {
+    const note = await kit.knowledge.createNote({ title: 'Proxied', markdown: 'hello', domains: ['ops'], by: kit.f.memberPrincipal });
+    kit.proxy.principal = { ...kit.f.memberPrincipal, token_kind: 'proxy' };
+    const proxied = connect(note.uid, '', { headers: { 'x-test-proxy': kit.proxy.secret } });
+    await until(() => proxied.state.synced, 5000, 'proxied client synced');
+    expect(docToMarkdown(proxied.document)).toBe('hello');
+
+    const wrong = connect(note.uid, '', { headers: { 'x-test-proxy': 'not-the-secret' } });
+    const none = connect(note.uid, '');
+    await until(() => !!wrong.state.authFailed && !!none.state.authFailed, 5000, 'unproxied clients refused');
+    expect(wrong.state.synced || none.state.synced).toBe(false);
+  });
 
   it('syncs edits between two clients and persists them to yjs_updates', async () => {
     const note = await kit.knowledge.createNote({ title: 'Shared', markdown: 'first block\n\nsecond block', domains: ['ops'], by: kit.f.memberPrincipal });

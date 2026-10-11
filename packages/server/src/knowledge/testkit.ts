@@ -91,6 +91,7 @@ export interface KnowledgeKit {
   events: ReturnType<typeof fakeEvents>;
   gateway: ReturnType<typeof fakeGateway>;
   tokens: Map<string, Principal>;
+  proxy: { secret: string; principal: Principal | null };
   settings: BreadboardConfig;
   close(): Promise<void>;
 }
@@ -101,11 +102,16 @@ export async function createKnowledgeKit(opts: { settings?: BreadboardConfig; ga
   const events = fakeEvents();
   const gateway = fakeGateway({ fail: opts.gatewayFail });
   const tokens = new Map<string, Principal>();
+  /** Trusted proxy for tests: requests with `x-test-proxy: <secret>` resolve to `principal`. */
+  const proxy: { secret: string; principal: Principal | null } = { secret: 'test-proxy-secret', principal: null };
   const auth = {
     async authenticate(token: string | null | undefined) {
       const p = token ? tokens.get(token) : undefined;
       if (!p) throw new BreadboardError('unauthorized', 'bad token');
       return p;
+    },
+    async proxyPrincipal(headers: Readonly<Record<string, string | string[] | undefined>>) {
+      return headers['x-test-proxy'] === proxy.secret ? proxy.principal : null;
     },
   };
   const sync = createSyncServer({
@@ -129,6 +135,7 @@ export async function createKnowledgeKit(opts: { settings?: BreadboardConfig; ga
     events,
     gateway,
     tokens,
+    proxy,
     settings,
     async close() {
       knowledge.close();

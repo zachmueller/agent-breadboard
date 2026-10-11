@@ -55,7 +55,7 @@ export interface SyncServerDeps {
   team_id: string;
   nodes: NodeStore;
   linkIndexer: LinkIndexer;
-  auth: Pick<AuthService, 'authenticate'>;
+  auth: Pick<AuthService, 'authenticate' | 'proxyPrincipal'>;
   events: Pick<EventBus, 'publish'>;
   settings: SettingsSource;
   log: Logger;
@@ -72,6 +72,8 @@ export interface SyncServerDeps {
 interface SyncContext {
   principal?: Principal | null;
   fallbackToken?: string | null;
+  /** The trusted-proxy principal for the upgrade request's headers, if it came through the proxy ([12] §3). */
+  proxied?: () => Promise<Principal | null>;
   confirmWipeout?: boolean;
   wipeoutAllowUntil?: number;
 }
@@ -197,7 +199,8 @@ export class HocuspocusSyncServer implements SyncServer {
     }
     const request = new Request(url.toString(), { headers });
     const fallbackToken = bearerFrom(req);
-    const cc = this.hocuspocus.handleConnection(socket, request, { principal: ((req as any).principal as Principal | null) ?? null, fallbackToken });
+    const proxied = () => this.deps.auth.proxyPrincipal?.(req.headers) ?? Promise.resolve(null);
+    const cc = this.hocuspocus.handleConnection(socket, request, { principal: ((req as any).principal as Principal | null) ?? null, fallbackToken, proxied });
     socket.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
       const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
       cc.handleMessage(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
@@ -220,6 +223,13 @@ export class HocuspocusSyncServer implements SyncServer {
       }
     }
     principal ??= context.principal ?? null;
+    if (!principal && context.proxied) {
+      try {
+        principal = await context.proxied();
+      } catch {
+        principal = null; // the proxy user is deactivated
+      }
+    }
     if (!principal) throw denied('unauthorized');
     try {
       requireScope(principal, 'knowledge:read');

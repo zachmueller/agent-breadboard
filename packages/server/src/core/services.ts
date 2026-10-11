@@ -659,6 +659,11 @@ export interface AuthService {
   };
   /** Ensure static local users exist as `users` rows ([12] §3). */
   syncLocalUsers(): Promise<void>;
+  /**
+   * The trusted-proxy user's principal when the request headers carry the proxy secret ([12] §3), else null.
+   * Throws `unauthorized` only when the secret matches but that user is deactivated.
+   */
+  proxyPrincipal?(headers: Readonly<Record<string, string | string[] | undefined>>): Promise<Principal | null>;
   principalForUser(user: UserRecord): Promise<Principal>;
 }
 

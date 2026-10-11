@@ -35,7 +35,8 @@ export interface Principal {
   config_commit: string | null;
   /** Tool execution key when the caller is sandboxed tool code. */
   execution_key: string | null;
-  token_kind: 'user' | 'service' | 'actor' | 'internal';
+  /** `proxy`: signed in by a trusted proxy (no token; [12] §3). */
+  token_kind: 'user' | 'service' | 'actor' | 'internal' | 'proxy';
 }
 
 export function requireUser(p: Principal): UserRecord {

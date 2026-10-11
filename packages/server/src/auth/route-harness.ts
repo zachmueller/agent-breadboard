@@ -7,8 +7,8 @@ import cookie from '@fastify/cookie';
 import { BreadboardError, zBreadboardConfig, type BreadboardConfig } from '@breadboard/shared';
 import type { Foundation } from '../test/harness.js';
 import type { CredentialBroker, Services } from '../core/services.js';
-import { bearer } from '../api/util.js';
-import { createAuthService, type AuthServiceImpl } from './service.js';
+import { authenticateRequest } from '../api/util.js';
+import { createAuthService, type AuthServiceDeps, type AuthServiceImpl } from './service.js';
 import { createEventBus, type EventBusImpl } from '../events/bus.js';
 
 export const TEST_SIGNING_KEY = 'route-test-signing-key-0123456789';
@@ -31,10 +31,10 @@ export function testSettings(extra: Record<string, unknown> = {}): BreadboardCon
   });
 }
 
-export async function buildRouteHarness(f: Foundation, modules: Array<'auth' | 'admin' | 'events'>): Promise<RouteHarness> {
+export async function buildRouteHarness(f: Foundation, modules: Array<'auth' | 'admin' | 'events'>, authOverrides: Partial<AuthServiceDeps> = {}): Promise<RouteHarness> {
   let settings = testSettings();
   const settingsFn = async () => settings;
-  const auth = createAuthService({ db: f.db, identity: f.identity, team_id: f.team_id, settings: settingsFn, signingKey: TEST_SIGNING_KEY, publicUrl: 'http://localhost:4000', log: f.log, sessions: () => null });
+  const auth = createAuthService({ db: f.db, identity: f.identity, team_id: f.team_id, settings: settingsFn, signingKey: TEST_SIGNING_KEY, publicUrl: 'http://localhost:4000', log: f.log, sessions: () => null, ...authOverrides });
   const events = createEventBus({ db: f.db, log: f.log, settings: settingsFn });
   const brokerCalls: Array<[string, unknown]> = [];
   const broker: Partial<CredentialBroker> = {
@@ -69,7 +69,7 @@ export async function buildRouteHarness(f: Foundation, modules: Array<'auth' | '
   app.addHook('preHandler', async (req) => {
     if (!req.url.startsWith('/api/v1')) return;
     if (PUBLIC.has(req.url.split('?')[0]!)) return;
-    (req as any).principal = await auth.authenticate(bearer(req));
+    (req as any).principal = await authenticateRequest(auth, req); // the same function app.ts uses
   });
   app.setErrorHandler((err: any, _req, reply) => {
     if (err instanceof BreadboardError) return reply.status(err.status).send(err.toJSON());

@@ -3,7 +3,7 @@
  * (orchestrator ↔ subagent runtime ↔ primitives ↔ evals) are broken with `lazy()` proxies.
  */
 import { resolve } from 'node:path';
-import { assertProductionSecrets, type Env } from './env.js';
+import { assertProductionSecrets, trustedProxyConfig, type Env } from './env.js';
 import type { Logger } from './logger.js';
 import type { Services, EventBus, Orchestrator, EvalService } from './services.js';
 import { lazy } from './lazy.js';
@@ -56,6 +56,7 @@ export interface BuiltServices extends Services {
 export async function buildServices(opts: BuildOptions): Promise<BuiltServices> {
   const { env, log } = opts;
   assertProductionSecrets(env);
+  const trustedProxy = trustedProxyConfig(env); // throws on a half-configured or weak trust
   const root = opts.root ?? process.cwd();
   const path = (p: string) => (p.startsWith('pglite://') || /^postgres/.test(p) ? p : resolve(root, p));
 
@@ -111,6 +112,7 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
     rejectWellKnownTokens: env.NODE_ENV === 'production',
     // Unset or empty: disabled (deploy/aws's bootstrapAdmin=false passes an empty value).
     bootstrapAdminToken: env.BREADBOARD_BOOTSTRAP_ADMIN_TOKEN || null,
+    trustedProxy,
   });
 
   // --- knowledge -----------------------------------------------------------------------------------
