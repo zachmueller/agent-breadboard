@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { EncryptJWT, SignJWT } from 'jose';
 import { BreadboardError, zBreadboardConfig, type BreadboardConfig } from '@breadboard/shared';
@@ -276,5 +276,69 @@ describe('AuthService', () => {
     await auth.syncLocalUsers(); // refreshes the settings snapshot
     expect(auth.oidc.enabled()).toBe(true);
     await expect(auth.oidc.callback({ state: 'x', code: 'c' }, { state: 'y', nonce: 'n' })).rejects.toThrow(/state mismatch/);
+  });
+});
+
+describe('AuthService: disabling the bootstrap admin', () => {
+  let f: Foundation;
+  let settings: BreadboardConfig;
+  const BOOT = 'boot-secret-0123456789';
+
+  beforeAll(async () => {
+    f = await createFoundation();
+  });
+  afterAll(async () => {
+    await f.close();
+  });
+
+  /** A production auth service with a spy logger, as build.ts creates it. */
+  function service(bootstrapAdminToken: string | null) {
+    const log = Object.assign(Object.create(f.log), { info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+    const auth = createAuthService({ db: f.db, identity: f.identity, team_id: f.team_id, settings: async () => settings, signingKey: KEY, publicUrl: 'http://x', log, sessions: () => null, rejectWellKnownTokens: true, bootstrapAdminToken });
+    return { auth, log };
+  }
+
+  it('refuses the token, and the sessions it started, once disabled; accepts both again when re-enabled', async () => {
+    settings = cfg({ mode: 'local', local_users: [] });
+    const session = (await service(BOOT).auth.loginLocal(BOOT))!.session_token;
+    expect((await service(BOOT).auth.authenticate(session)).actor).toMatchObject({ handle: 'bootstrap-admin' });
+
+    for (const off of [null, '']) {
+      const { auth } = service(off);
+      await expectUnauthorized(auth.authenticate(BOOT));
+      expect(await auth.loginLocal(BOOT)).toBeNull();
+      await expect(auth.authenticate(session)).rejects.toThrow(/bootstrap admin is disabled/);
+    }
+    // Disabling is a switch, not a deactivation: turning it back on restores access (the break-glass path).
+    expect((await service(BOOT).auth.authenticate(session)).actor).toMatchObject({ handle: 'bootstrap-admin' });
+  });
+
+  it('lists the ways an admin can still sign in', async () => {
+    settings = cfg({
+      mode: 'local',
+      local_users: [
+        { handle: 'zach', token: 'a-real-operator-token-0123', admin: true },
+        { handle: 'seed', token: 'dev-admin-token-change-me', admin: true },
+        { handle: 'robin', token: 'robin-real-token-0123456' },
+      ],
+    });
+    expect(await service(BOOT).auth.adminSignInPaths()).toEqual(['bootstrap admin token', 'local user zach']);
+    expect(await service(null).auth.adminSignInPaths()).toEqual(['local user zach']); // the seed token is refused in production
+
+    settings = cfg({ mode: 'oidc', oidc: { issuer: 'https://idp.example.com/', client_id: 'bb', client_secret_env: 'X', group_mappings: { admin: ['bb-admins'], roles: {} } } } as any);
+    expect(await service(null).auth.adminSignInPaths()).toEqual(['OIDC admin group']);
+  });
+
+  it('logs an error at startup when disabling the token would leave no admin able to sign in', async () => {
+    settings = cfg({ mode: 'local', local_users: [{ handle: 'seed2', token: 'dev-admin-token-change-me', admin: true }] });
+    const off = service(null);
+    await off.auth.syncLocalUsers();
+    expect(off.log.error).toHaveBeenCalledWith(expect.objectContaining({ bootstrap_admin: false }), expect.stringMatching(/no admin can sign in.*bootstrapAdmin=true/));
+    expect(off.log.warn).toHaveBeenCalledWith(expect.anything(), expect.stringMatching(/set real tokens or configure OIDC/));
+
+    const on = service(BOOT);
+    await on.auth.syncLocalUsers();
+    expect(on.log.error).not.toHaveBeenCalled();
+    expect(on.log.info).toHaveBeenCalledWith(expect.objectContaining({ admin_sign_in: ['bootstrap admin token'] }), 'admin sign-in paths');
   });
 });

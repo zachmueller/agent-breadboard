@@ -46,7 +46,8 @@ export interface AuthServiceDeps {
   rejectWellKnownTokens?: boolean;
   /**
    * `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN`: authenticates as the `bootstrap-admin` user in any auth mode, so an operator
-   * can sign in to a fresh production deployment (whose seed tokens are refused) and configure OIDC.
+   * can sign in to a fresh production deployment (whose seed tokens are refused) and configure OIDC. Null or empty
+   * disables it, and then the `bootstrap-admin` sessions it started stop working too.
    */
   bootstrapAdminToken?: string | null;
 }
@@ -195,6 +196,8 @@ export class AuthServiceImpl implements AuthService {
     }
     if (payload.kind !== 'user' || typeof payload.sub !== 'string') throw new BreadboardError('unauthorized', 'invalid token');
     const user = await this.activeUser(payload.sub);
+    // Disabling the bootstrap token also ends the sessions it started (they would otherwise last up to the TTL).
+    if (user.handle === BOOTSTRAP_ADMIN_HANDLE && !this.deps.bootstrapAdminToken) throw new BreadboardError('unauthorized', 'the bootstrap admin is disabled');
     return { principal: await this.principalForUser(user), expiresAtMs: payload.exp ? payload.exp * 1000 : null };
   }
 
@@ -319,9 +322,49 @@ export class AuthServiceImpl implements AuthService {
     if (refused.length) {
       this.deps.log.warn(
         { users: refused.map((u) => u.handle), bootstrap_admin: !!this.deps.bootstrapAdminToken },
-        'production: local users with well-known *-change-me tokens are refused; sign in with BREADBOARD_BOOTSTRAP_ADMIN_TOKEN and configure OIDC or real tokens',
+        this.deps.bootstrapAdminToken
+          ? 'production: local users with well-known *-change-me tokens are refused; sign in with BREADBOARD_BOOTSTRAP_ADMIN_TOKEN and configure OIDC or real tokens'
+          : 'production: local users with well-known *-change-me tokens are refused; set real tokens or configure OIDC',
       );
     }
+    // Disabling the bootstrap token is only safe once another admin can sign in: say so loudly if none can.
+    const paths = await this.adminSignInPaths();
+    if (paths.length === 0) {
+      this.deps.log.error(
+        { bootstrap_admin: !!this.deps.bootstrapAdminToken, auth_mode: settings.auth.mode },
+        'no admin can sign in: the bootstrap admin token is disabled (or bootstrap-admin is deactivated) and no admin local user or OIDC admin is configured. ' +
+          'Recover by setting BREADBOARD_BOOTSTRAP_ADMIN_TOKEN again (deploy/aws: cdk deploy -c bootstrapAdmin=true).',
+      );
+    } else {
+      this.deps.log.info({ bootstrap_admin: !!this.deps.bootstrapAdminToken, admin_sign_in: paths }, 'admin sign-in paths');
+    }
+  }
+
+  /**
+   * How an admin can sign in right now: the bootstrap token (unless its user was deactivated), admin local users whose
+   * tokens are accepted (local mode), and OIDC admins (an admin group mapping, or active admins who signed in through
+   * OIDC before). Startup reports an empty list as an error.
+   */
+  async adminSignInPaths(): Promise<string[]> {
+    const settings = await this.refresh();
+    const { identity, team_id } = this.deps;
+    const paths: string[] = [];
+    if (this.deps.bootstrapAdminToken) {
+      const boot = await identity.getUserByHandle(team_id, BOOTSTRAP_ADMIN_HANDLE);
+      if (!boot?.deactivated_at) paths.push('bootstrap admin token');
+    }
+    if (settings.auth.mode === 'local') {
+      for (const u of settings.auth.local_users) {
+        if (!u.admin || (this.deps.rejectWellKnownTokens && WELL_KNOWN_SECRET.test(u.token))) continue;
+        const row = await identity.getUserByHandle(team_id, u.handle);
+        if (!row?.deactivated_at) paths.push(`local user ${u.handle}`);
+      }
+    }
+    if (this.oidcEnabled(settings)) {
+      if (settings.auth.oidc!.group_mappings.admin.length) paths.push('OIDC admin group');
+      for (const u of await identity.listUsers(team_id)) if (u.is_admin && u.oidc_subject && !u.deactivated_at) paths.push(`OIDC user ${u.handle}`);
+    }
+    return paths;
   }
 
   /** The break-glass admin for `bootstrapAdminToken`; created once, never re-enabled once an admin deactivates it. */

@@ -37,6 +37,12 @@ export interface BreadboardStackProps extends StackProps {
   publicUrl?: string;
   /** docker (recommended) or process. */
   sandboxRunner?: 'docker' | 'process';
+  /**
+   * Accept the generated break-glass token (`breadboard-<name>/admin-token`) as the `bootstrap-admin` sign-in. Set false
+   * once another admin can sign in (real local tokens or OIDC); the server logs an error at startup if none can. The
+   * secret is kept either way, so turning it back on is one deploy. Applied in place, like `publicUrl`.
+   */
+  bootstrapAdmin?: boolean;
   dbEngineVersion?: string;
   dbInstanceClass?: string;
   dbAllocatedStorageGb?: number;
@@ -56,6 +62,7 @@ export const DEFAULTS = {
   serverRootVolumeGb: 100,
   publicUrl: '',
   sandboxRunner: 'docker',
+  bootstrapAdmin: true,
   sandboxImageTs: '',
   sandboxImagePy: '',
   dbEngineVersion: '16',
@@ -296,8 +303,17 @@ export class BreadboardStack extends Stack {
     // first boot, and cfn-hup re-applies them in place when a deploy changes the metadata. No fingerprint in the user
     // data, so an image change neither restarts nor replaces the host (the config repo lives on its root volume).
     const serverId = this.getLogicalId(server.instance);
-    // PUBLIC_URL, when set, overrides the boot-time value in /etc/breadboard.env (breadboard-apply passes it with -e).
-    const deployEnv = [`SERVER_IMAGE=${p.serverImage}`, `SANDBOX_IMAGE_TS=${p.sandboxImageTs}`, `SANDBOX_IMAGE_PY=${p.sandboxImagePy}`, `SERVER_PORT=${p.serverPort}`, `PUBLIC_URL=${p.publicUrl}`, ''].join('\n');
+    // PUBLIC_URL (when set) and BOOTSTRAP_ADMIN=false override the boot-time /etc/breadboard.env: breadboard-apply
+    // passes them to the container with -e, so they change in place like the images.
+    const deployEnv = [
+      `SERVER_IMAGE=${p.serverImage}`,
+      `SANDBOX_IMAGE_TS=${p.sandboxImageTs}`,
+      `SANDBOX_IMAGE_PY=${p.sandboxImagePy}`,
+      `SERVER_PORT=${p.serverPort}`,
+      `PUBLIC_URL=${p.publicUrl}`,
+      `BOOTSTRAP_ADMIN=${p.bootstrapAdmin}`,
+      '',
+    ].join('\n');
     server.applyCloudFormationInit(
       ec2.CloudFormationInit.fromElements(
         ec2.InitFile.fromString('/etc/breadboard/deploy.env', deployEnv, { mode: '000644' }),

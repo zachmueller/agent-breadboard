@@ -109,7 +109,8 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
     log,
     sessions: () => sessions,
     rejectWellKnownTokens: env.NODE_ENV === 'production',
-    bootstrapAdminToken: env.BREADBOARD_BOOTSTRAP_ADMIN_TOKEN ?? null,
+    // Unset or empty: disabled (deploy/aws's bootstrapAdmin=false passes an empty value).
+    bootstrapAdminToken: env.BREADBOARD_BOOTSTRAP_ADMIN_TOKEN || null,
   });
 
   // --- knowledge -----------------------------------------------------------------------------------

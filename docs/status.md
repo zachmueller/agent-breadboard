@@ -25,10 +25,10 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 69 files, 524 passed, 4 skipped (the skips are Docker-only); 2026-10-10 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 69 files, 527 passed, 4 skipped (the skips are Docker-only); 2026-10-11 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
-| CDK template | `cd deploy/aws && npm test` | 25 passed |
+| CDK template | `cd deploy/aws && npm test` | 28 passed |
 | Typecheck / lint | `npm run typecheck`, `npm run lint` | clean; 4 pre-existing lint warnings (2026-10-10) |
 
 The live results for every plan section, with notes, are in the [verification-plan.md](verification-plan.md) checklist.
@@ -40,7 +40,7 @@ Each one is implemented and was verified live.
 1. **Eval runs wait for the human reviewer at hard gates.** Eval sessions gate like production. The verdict is recorded on the fixture's aggregate row. Runs still `running` resume after a restart. Recorded in spec [04](../specs/04-evals.md) §4.
 2. **Sandboxed harness model calls go through the model gateway.** Tool code uses `model_converse` / `ctx.converse`, which requires the reserved `model` capability. Spawn-harness's Strands adapter uses it, so its spend lands on the Session and the sandbox holds no AWS credentials.
 3. **Image upgrades on the AWS reference host happen in place via cfn-hup.** Images live in CloudFormation::Init metadata; user data is one-time host setup.
-4. **Production refuses the seed's `*-change-me` tokens.** `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN` (generated as `breadboard-<name>/admin-token` by the stack) signs in as `bootstrap-admin` in any auth mode.
+4. **Production refuses the seed's `*-change-me` tokens.** `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN` (generated as `breadboard-<name>/admin-token` by the stack) signs in as `bootstrap-admin` in any auth mode. Since 2026-10-11 it can be turned off in place (decision 1 of 2026-10-11).
 
 Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to the AWS host (`allowedCidrs=none`); seed presets fixed to real `us.*` inference-profile ids; the UI walkthrough driven by headless Playwright.
 
@@ -50,9 +50,13 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
 2. **The pilot is reached through an authenticating HTTPS proxy, deployed from a separate private repo.** An Amazon-internal add-on puts CloudFront in front of the host (a VPC origin to the instance, so the host still has no inbound rule) with an internal identity gate at the edge and an internal hostname. It is deploy configuration only, per spec [12](../specs/12-security-deployment.md) §8, and stays out of this repo. This repo supports it in two ways: the reference stack publishes its server instance, security group and network as outputs, and the UI recovers when the proxy's short-lived session expires (`packages/ui/src/lib/edge-auth.ts`: an HTML 403 is checked against the public `/api/v1/health`, then the page reloads once through the proxy's sign-in, at most every 30 s).
 3. **`publicUrl` is applied in place.** It moved from the host's one-time user data into the CloudFormation::Init deployment metadata, so `cdk deploy -c publicUrl=…` recreates the container instead of replacing the host. Stacks deployed with an empty `publicUrl` keep byte-identical user data.
 
+## Decisions made 2026-10-11
+
+1. **The bootstrap admin can be turned off once another admin can sign in.** Leaving `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN` unset or empty disables it and ends its sessions. The reference stack does this in place with `-c bootstrapAdmin=false`, keeping the secret so that `-c bootstrapAdmin=true` is the break-glass path. At startup the server logs an error when no admin could sign in. An authenticating proxy in front of the server (such as the pilot's edge) does not count: it gates who reaches Breadboard but sends no identity, so the pilot needs real local tokens or OIDC first. Recorded in spec [12](../specs/12-security-deployment.md) §3.
+
 ## Next steps (in priority order)
 
-1. **Before inviting anyone to the pilot:** set real auth (OIDC, or local users with real tokens) and deactivate `bootstrap-admin`. `publicUrl` now points at the edge hostname. The edge's last steps are manual and outside this repo: its access group, onboarding with the internal identity gate, and the grant. After them comes a real-browser pass through the edge: the session-expiry reload, WebSocket editing, and the SSE Live indicator.
+1. **Before inviting anyone to the pilot:** set real auth (OIDC, or local users with real tokens), then turn the bootstrap admin off (`-c bootstrapAdmin=false`). The pilot still uses it today: it is the only admin sign-in. `publicUrl` now points at the edge hostname. The edge's last steps are manual and outside this repo: its access group, onboarding with the internal identity gate, and the grant. After them comes a real-browser pass through the edge: the session-expiry reload, WebSocket editing, and the SSE Live indicator.
 2. **Close the verification gaps:**
    - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).

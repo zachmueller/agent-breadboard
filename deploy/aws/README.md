@@ -47,6 +47,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `serverRootVolumeGb` | `100` | |
 | `publicUrl` | instance IP | Externally reachable base URL, `scheme://host[:port]` (e.g. the HTTPS address of a proxy in front of the server). Used for OIDC redirects and `Secure` cookies. When empty, the bootstrap script resolves the instance IP from IMDS. It lives in the deployment metadata, so it can be changed later like an image (see Upgrading). |
 | `sandboxRunner` | `docker` | `docker` or `process`. |
+| `bootstrapAdmin` | `true` | Accept the generated bootstrap admin token. Set `false` once another admin can sign in (see First sign-in); applied in place, like `publicUrl`. |
 | `dbEngineVersion` | `16` | |
 | `dbInstanceClass` | `db.t4g.medium` | |
 | `dbAllocatedStorageGb` / `dbMaxAllocatedStorageGb` | `50` / `500` | |
@@ -63,7 +64,7 @@ Secrets Manager generates all four secrets, so their values never appear in the 
 - `breadboard-<name>/db`: RDS credentials (`username`, `password`). The bootstrap script builds `DATABASE_URL` from these plus the RDS endpoint.
 - `breadboard-<name>/token-signing-key`: `TOKEN_SIGNING_KEY`.
 - `breadboard-<name>/broker-master-key`: `BROKER_MASTER_KEY`. 43 alphanumeric characters, which decode as base64 to exactly 32 bytes.
-- `breadboard-<name>/admin-token`: `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN`, the break-glass sign-in for `bootstrap-admin` (see First sign-in).
+- `breadboard-<name>/admin-token`: `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN`, the break-glass sign-in for `bootstrap-admin` (see First sign-in). Kept when `bootstrapAdmin=false`.
 
 ## First sign-in
 
@@ -74,6 +75,14 @@ generated bootstrap admin token, then switch `auth.mode` to OIDC (or set real lo
 ```bash
 aws secretsmanager get-secret-value --secret-id breadboard-<name>/admin-token --query SecretString --output text
 ```
+
+**Turning the bootstrap admin off.** Once another admin can sign in, deploy with `-c bootstrapAdmin=false` (plus the
+usual `-c` set). The container is recreated with an empty token, which the server treats as disabled; `bootstrap-admin`
+sessions stop working too. The host is not touched and the secret stays. If you are ever locked out, deploy with
+`-c bootstrapAdmin=true` and sign in with the same token. At startup the server logs `no admin can sign in` (an error
+in `docker logs breadboard`) if disabling left no admin path. An authenticating proxy in front of the server is not
+such a path, because it does not tell Breadboard who you are. Deactivating `bootstrap-admin` in Admin is the permanent
+alternative; it needs a second admin, since you cannot deactivate yourself.
 
 ## Upgrading the server
 
