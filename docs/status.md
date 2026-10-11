@@ -25,10 +25,10 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 69 files, 527 passed, 4 skipped (the skips are Docker-only); 2026-10-11 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 70 files, 535 passed, 4 skipped (the skips are Docker-only); 2026-10-11 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
-| CDK template | `cd deploy/aws && npm test` | 28 passed |
+| CDK template | `cd deploy/aws && npm test` | 29 passed |
 | Typecheck / lint | `npm run typecheck`, `npm run lint` | clean; 4 pre-existing lint warnings (2026-10-10) |
 
 The live results for every plan section, with notes, are in the [verification-plan.md](verification-plan.md) checklist.
@@ -53,10 +53,11 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
 ## Decisions made 2026-10-11
 
 1. **The bootstrap admin can be turned off once another admin can sign in.** Leaving `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN` unset or empty disables it and ends its sessions. The reference stack does this in place with `-c bootstrapAdmin=false`, keeping the secret so that `-c bootstrapAdmin=true` is the break-glass path. At startup the server logs an error when no admin could sign in. An authenticating proxy in front of the server (such as the pilot's edge) does not count: it gates who reaches Breadboard but sends no identity, so the pilot needs real local tokens or OIDC first. Recorded in spec [12](../specs/12-security-deployment.md) §3.
+2. **Trusted proxy: one sign-in behind an authenticating proxy that sends no identity.** A request carrying `BREADBOARD_TRUSTED_PROXY_SECRET` in `x-breadboard-proxy-auth` signs in as `BREADBOARD_TRUSTED_PROXY_USER`, an admin created on first use. It is for single-person audiences only, because the server cannot tell the proxy's users apart. Explicit credentials still win. Requests that bypass the proxy get no trust; this covers the SSM tunnel and tool sandboxes, which never hold the secret. The reference stack generates the secret with `trustedProxyUser` and applies it in place. All deployment overrides now go through a root-only `/etc/breadboard/overrides.env`, so no secret value reaches a command line or the template. Recorded in spec [12](../specs/12-security-deployment.md) §3.
 
 ## Next steps (in priority order)
 
-1. **Before inviting anyone to the pilot:** set real auth (OIDC, or local users with real tokens), then turn the bootstrap admin off (`-c bootstrapAdmin=false`). The pilot still uses it today: it is the only admin sign-in. `publicUrl` now points at the edge hostname. The edge's last steps are manual and outside this repo: its access group, onboarding with the internal identity gate, and the grant. After them comes a real-browser pass through the edge: the session-expiry reload, WebSocket editing, and the SSE Live indicator.
+1. **Before inviting anyone to the pilot:** set up OIDC. The pilot's trusted proxy signs every edge user in as one admin, so it must stay single-person; widening the edge's access group first would give everyone that identity. Once the browser pass through the edge is confirmed, the bootstrap admin can go (`-c bootstrapAdmin=false`), at the cost of the SSM tunnel's token sign-in; `bootstrapAdmin=true` is the way back. `publicUrl` now points at the edge hostname. The edge's last steps are manual and outside this repo: its access group, onboarding with the internal identity gate, and the grant. After them comes a real-browser pass through the edge: the session-expiry reload, WebSocket editing, and the SSE Live indicator.
 2. **Close the verification gaps:**
    - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).
@@ -82,7 +83,7 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
 
 `Breadboard-pilot` has run in the team's AWS account (us-east-1) since 2026-10-10, deployed from `main` at `13de764` with `deploy/aws/`:
 
-- **Inputs:** `-c name=pilot -c allowedCidrs=none -c publicUrl=https://<edge hostname>`, the account's default VPC (two public subnets for RDS, one for the host; the lookup is cached in the gitignored `deploy/aws/cdk.context.json`, and `vpcId`, `dbSubnetIds`, `serverSubnetId` must still be passed), and the three images in the `agent-breadboard` ECR repository: `server-bc0825f` (since 2026-10-10, upgraded in place from `server-13de764`), `sandbox-ts-13de764`, `sandbox-py-13de764`. Everything else is the stack default, including RDS deletion protection (on).
+- **Inputs:** `-c name=pilot -c allowedCidrs=none -c publicUrl=https://<edge hostname>`, the account's default VPC (two public subnets for RDS, one for the host; the lookup is cached in the gitignored `deploy/aws/cdk.context.json`, and `vpcId`, `dbSubnetIds`, `serverSubnetId` must still be passed), `-c trustedProxyUser=<handle>` (since 2026-10-11), and the three images in the `agent-breadboard` ECR repository: `server-ea0fa33` (since 2026-10-11, upgraded in place from `server-bc0825f`, itself from `server-13de764`), `sandbox-ts-13de764`, `sandbox-py-13de764`. Everything else is the stack default, including RDS deletion protection (on).
 - **Edge (since 2026-10-10):** CloudFront from the private add-on repo (decision 2 above) serves the UI at the internal edge hostname. It reaches the server through a VPC origin, and the stack's only change to the base is one ingress rule on the server security group from CloudFront's VPC-origins security group. The add-on resolves the instance from this stack's outputs at every synth, so **redeploy the add-on after anything that replaces the host**.
 - **Access:** no inbound port. Tunnel with SSM, then open `http://localhost:14000`:
   ```bash
@@ -91,7 +92,8 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
   aws ssm start-session --target $ID --document-name AWS-StartPortForwardingSession --parameters portNumber=4000,localPortNumber=14000
   ```
   The Session Manager plugin must be on `PATH` (`~/.local/bin` on the dev machine).
-- **Sign-in:** `aws secretsmanager get-secret-value --secret-id breadboard-pilot/admin-token --query SecretString --output text` as `bootstrap-admin`, which holds the `scientist` review role so lit-review gates reach it. The seed dev tokens are refused (401), as designed.
+- **Sign-in through the edge:** none beyond the edge's own. The edge sends the trusted-proxy secret, and requests sign in as the configured handle, an admin. A browser that still holds a `bootstrap-admin` session keeps it until Sign out.
+- **Sign-in through the tunnel:** `aws secretsmanager get-secret-value --secret-id breadboard-pilot/admin-token --query SecretString --output text` as `bootstrap-admin`, which holds the `scientist` review role so lit-review gates reach it. The seed dev tokens are refused (401), as designed.
 - **Smoke (2026-10-10):** host checks via SSM showed the server container on the internal `breadboard-sandbox` network with 2+2 warm sandboxes, `cfn-hup` active, migrations applied, and the config repo seeded. Through the tunnel: health ok (`pg`, `bedrock`, `docker`); the broker capabilities `crossref-api` and `semantic-scholar-api` were registered; a task dispatched through triage into lit-review, which ran `gather` on `us.anthropic.claude-sonnet-5` and `summarize` on `us.anthropic.claude-opus-5`, executed `search-scholarly` eight times in the Python sandbox and `check-citations` once in the TypeScript sandbox, logged nine broker calls, and reached `quality-gate` in about four minutes at **$0.89**.
 - **`publicUrl`** is the edge's HTTPS address, so the session cookie is `Secure` and OIDC redirects target the edge. The tunnel still works because the UI uses relative paths and browsers treat `http://localhost` as a secure context (Chrome and Firefox; Safari users of the tunnel should sign in with a bearer token).
 - **Upgrade:** build amd64 images (Colima's Rosetta emulation handles `--platform linux/amd64`), push with a new tag, redeploy with the same `-c` set; cfn-hup swaps the container in place ([deploy/aws/README.md](../deploy/aws/README.md)). Before deploying, check that `cdk diff --method=template` changes only the instance's `Metadata` and outputs. Any `UserData` change would replace the host, and the config repo lives on its root volume. This check passed for the 2026-10-10 upgrade.
