@@ -25,10 +25,10 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 68 files, 516 passed, 4 skipped (the skips are Docker-only); 2026-10-10 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 69 files, 524 passed, 4 skipped (the skips are Docker-only); 2026-10-10 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
-| CDK template | `cd deploy/aws && npm test` | 23 passed |
+| CDK template | `cd deploy/aws && npm test` | 25 passed |
 | Typecheck / lint | `npm run typecheck`, `npm run lint` | clean; 4 pre-existing lint warnings (2026-10-10) |
 
 The live results for every plan section, with notes, are in the [verification-plan.md](verification-plan.md) checklist.
@@ -47,10 +47,12 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
 ## Decisions made 2026-10-10
 
 1. **Production refuses to start without real secrets.** With `NODE_ENV=production`, `buildServices` exits before touching the database unless `TOKEN_SIGNING_KEY` (≥32 chars, not `*-change-me`) and `BROKER_MASTER_KEY` are set, and the bootstrap token is not a well-known value. The AWS stack already generated all three; compose now needs them exported. Recorded in spec [12](../specs/12-security-deployment.md) §3 and §10.
+2. **The pilot is reached through an authenticating HTTPS proxy, deployed from a separate private repo.** An Amazon-internal add-on puts CloudFront in front of the host (a VPC origin to the instance, so the host still has no inbound rule) with an internal identity gate at the edge and an internal hostname. It is deploy configuration only, per spec [12](../specs/12-security-deployment.md) §8, and stays out of this repo. This repo supports it in two ways: the reference stack publishes its server instance, security group and network as outputs, and the UI recovers when the proxy's short-lived session expires (`packages/ui/src/lib/edge-auth.ts`: an HTML 403 is checked against the public `/api/v1/health`, then the page reloads once through the proxy's sign-in, at most every 30 s).
+3. **`publicUrl` is applied in place.** It moved from the host's one-time user data into the CloudFormation::Init deployment metadata, so `cdk deploy -c publicUrl=…` recreates the container instead of replacing the host. Stacks deployed with an empty `publicUrl` keep byte-identical user data.
 
 ## Next steps (in priority order)
 
-1. **Before inviting anyone to the pilot:** set real auth (OIDC, or local users with real tokens), set `publicUrl` to the address people will use, and deactivate `bootstrap-admin`.
+1. **Before inviting anyone to the pilot:** set real auth (OIDC, or local users with real tokens) and deactivate `bootstrap-admin`. `publicUrl` now points at the edge hostname. The edge's last steps are manual and outside this repo: its access group, onboarding with the internal identity gate, and the grant. After them comes a real-browser pass through the edge: the session-expiry reload, WebSocket editing, and the SSE Live indicator.
 2. **Close the verification gaps:**
    - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).
@@ -76,7 +78,8 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
 
 `Breadboard-pilot` has run in the team's AWS account (us-east-1) since 2026-10-10, deployed from `main` at `13de764` with `deploy/aws/`:
 
-- **Inputs:** `-c name=pilot -c allowedCidrs=none`, the account's default VPC (two public subnets for RDS, one for the host; the lookup is cached in the gitignored `deploy/aws/cdk.context.json`), and the three images in the `agent-breadboard` ECR repository tagged `server-13de764`, `sandbox-ts-13de764`, `sandbox-py-13de764`. Everything else is the stack default, including RDS deletion protection (on).
+- **Inputs:** `-c name=pilot -c allowedCidrs=none -c publicUrl=https://<edge hostname>`, the account's default VPC (two public subnets for RDS, one for the host; the lookup is cached in the gitignored `deploy/aws/cdk.context.json`, and `vpcId`, `dbSubnetIds`, `serverSubnetId` must still be passed), and the three images in the `agent-breadboard` ECR repository: `server-bc0825f` (since 2026-10-10, upgraded in place from `server-13de764`), `sandbox-ts-13de764`, `sandbox-py-13de764`. Everything else is the stack default, including RDS deletion protection (on).
+- **Edge (since 2026-10-10):** CloudFront from the private add-on repo (decision 2 above) serves the UI at the internal edge hostname. It reaches the server through a VPC origin, and the stack's only change to the base is one ingress rule on the server security group from CloudFront's VPC-origins security group. The add-on resolves the instance from this stack's outputs at every synth, so **redeploy the add-on after anything that replaces the host**.
 - **Access:** no inbound port. Tunnel with SSM, then open `http://localhost:14000`:
   ```bash
   export AWS_PROFILE=<profile> AWS_REGION=us-east-1
@@ -86,8 +89,8 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
   The Session Manager plugin must be on `PATH` (`~/.local/bin` on the dev machine).
 - **Sign-in:** `aws secretsmanager get-secret-value --secret-id breadboard-pilot/admin-token --query SecretString --output text` as `bootstrap-admin`, which holds the `scientist` review role so lit-review gates reach it. The seed dev tokens are refused (401), as designed.
 - **Smoke (2026-10-10):** host checks via SSM showed the server container on the internal `breadboard-sandbox` network with 2+2 warm sandboxes, `cfn-hup` active, migrations applied, and the config repo seeded. Through the tunnel: health ok (`pg`, `bedrock`, `docker`); the broker capabilities `crossref-api` and `semantic-scholar-api` were registered; a task dispatched through triage into lit-review, which ran `gather` on `us.anthropic.claude-sonnet-5` and `summarize` on `us.anthropic.claude-opus-5`, executed `search-scholarly` eight times in the Python sandbox and `check-citations` once in the TypeScript sandbox, logged nine broker calls, and reached `quality-gate` in about four minutes at **$0.89**.
-- **Known limitation:** `publicUrl` is the instance's public IP, which nothing can reach; the UI works through the tunnel because it uses relative paths, but OIDC redirects will need `-c publicUrl=<reachable base URL>` first.
-- **Upgrade:** build amd64 images (Colima's Rosetta emulation handles `--platform linux/amd64`), push with a new tag, redeploy with the same `-c` set; cfn-hup swaps the container in place ([deploy/aws/README.md](../deploy/aws/README.md)).
+- **`publicUrl`** is the edge's HTTPS address, so the session cookie is `Secure` and OIDC redirects target the edge. The tunnel still works because the UI uses relative paths and browsers treat `http://localhost` as a secure context (Chrome and Firefox; Safari users of the tunnel should sign in with a bearer token).
+- **Upgrade:** build amd64 images (Colima's Rosetta emulation handles `--platform linux/amd64`), push with a new tag, redeploy with the same `-c` set; cfn-hup swaps the container in place ([deploy/aws/README.md](../deploy/aws/README.md)). Before deploying, check that `cdk diff --method=template` changes only the instance's `Metadata` and outputs. Any `UserData` change would replace the host, and the config repo lives on its root volume. This check passed for the 2026-10-10 upgrade.
 - **Running cost:** roughly $110–120/month for the `t3.large` host and `db.t4g.medium` instance, plus Bedrock spend per run.
 
 ## Resuming locally

@@ -81,7 +81,7 @@ The first real deployment target is an **Amazon-internal team pilot**, stood up 
   5. To run the lit-review reference circuit, register its two keyless broker capabilities (`crossref-api`, `semantic-scholar-api`).
 - **Auth:** static users (banner-marked, [12](12-security-deployment.md) §3) with real, operator-set tokens: production refuses the seed's `*-change-me` tokens. OIDC is built and verified against a standard provider (Keycloak), so the pilot can switch to the internal IdP once that federation ([12](12-security-deployment.md) §8) is available; that binding has not been verified.
 - **Pilot workload is deliberately undecided:** the tracer bullet and phase work stay workload-neutral (the lit-review reference circuit from [03](03-circuits.md) §2 is the running example); the team picks the first dogfood workload when onboarding is imminent.
-- The Amazon adapter package proper ([12](12-security-deployment.md) §8) remains post-v1; the pilot uses only configuration, not internal-only code.
+- The Amazon adapter package proper ([12](12-security-deployment.md) §8) remains post-v1; the pilot uses only configuration, not internal-only code. The one internal piece so far is deploy-only: a separate private add-on that fronts the reference host with CloudFront and an internal identity gate, using the stack's server outputs.
 
 ## 5. Post-v1 themes (direction, not commitment)
 
