@@ -25,7 +25,7 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 70 files, 535 passed, 4 skipped (the skips are Docker-only); 2026-10-11 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 72 files, 545 passed, 4 skipped (the skips are Docker-only); 2026-10-12 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
 | CDK template | `cd deploy/aws && npm test` | 29 passed |
@@ -54,6 +54,14 @@ Earlier choices for this pass: Colima as the Docker runtime; SSM-only access to 
 
 1. **The bootstrap admin can be turned off once another admin can sign in.** Leaving `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN` unset or empty disables it and ends its sessions. The reference stack does this in place with `-c bootstrapAdmin=false`, keeping the secret so that `-c bootstrapAdmin=true` is the break-glass path. At startup the server logs an error when no admin could sign in. An authenticating proxy in front of the server (such as the pilot's edge) does not count: it gates who reaches Breadboard but sends no identity, so the pilot needs real local tokens or OIDC first. Recorded in spec [12](../specs/12-security-deployment.md) §3.
 2. **Trusted proxy: one sign-in behind an authenticating proxy that sends no identity.** A request carrying `BREADBOARD_TRUSTED_PROXY_SECRET` in `x-breadboard-proxy-auth` signs in as `BREADBOARD_TRUSTED_PROXY_USER`, an admin created on first use. It is for single-person audiences only, because the server cannot tell the proxy's users apart. Explicit credentials still win. Requests that bypass the proxy get no trust; this covers the SSM tunnel and tool sandboxes, which never hold the secret. The reference stack generates the secret with `trustedProxyUser` and applies it in place. All deployment overrides now go through a root-only `/etc/breadboard/overrides.env`, so no secret value reaches a command line or the template. Recorded in spec [12](../specs/12-security-deployment.md) §3.
+
+## Decisions made 2026-10-12
+
+Prompted by a first tool-designer session behind an authenticating edge. The reply ran about 9 minutes and opened a proposal, but the browser saw only errors.
+
+1. **Chat replies run in the background.** `POST /conversations/:id/messages` with `Prefer: respond-async` returns `202` at once and runs the reply on the server. The edge's 60 s origin timeout had cut off the old blocking request. `GET /conversations/:id` now reports `busy`, `last_error` and the session's `proposals`. Conversation sessions now publish `session.event` (before, only circuit runs did). The designer panel and the Intake chat follow a reply through those events and a slow fallback poll, and also after a reload. If a send fails, they check the server before showing an error, and they send an idempotency key. Without the header, the endpoint still replies inline for API and MCP callers.
+2. **A tool call cut off at `max_tokens` never runs.** The agent loop answers it with an `output-truncated` error result, so the model re-issues it with smaller arguments. Before, the half-written call ran with empty arguments. For Claude models with a 128K output cap, the Bedrock default output ceiling rose from 16K to 32K.
+3. **`read_config` accepts a definition's directory** (`tools/<UID>`, `subagents/<UID>`), as agents tend to write it.
 
 ## Next steps (in priority order)
 

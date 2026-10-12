@@ -634,6 +634,12 @@ export interface ConversationService {
   start(input: { kind: 'intake' | 'conversation'; subagent_uid?: string | null; context?: Record<string, unknown>; by: Principal; title?: string }): Promise<SessionRecord>;
   /** Post a user message and run the subagent to its reply. Returns the assistant turn(s). */
   post(input: { session_id: string; text: string; by: Principal; context?: Record<string, unknown> }): Promise<{ turns: Turn[]; draft_task?: Record<string, unknown> | null; proposals?: string[] }>;
+  /** Accept a user message and run the reply in the background (validation errors still throw). */
+  submit(input: { session_id: string; text: string; by: Principal; context?: Record<string, unknown> }): Promise<{ accepted: true; session_id: string }>;
+  /** True while a posted message is queued or its reply is running (this server process). */
+  busy(sessionId: string): boolean;
+  /** Config proposals opened in the session, oldest first. */
+  proposals(sessionId: string): Promise<string[]>;
   turns(sessionId: string, by: Principal): Promise<Turn[]>;
   list(input: { kind?: 'intake' | 'conversation'; by: Principal; limit?: number }): Promise<SessionRecord[]>;
   /** Draft task panel state for an intake conversation ([08] §7.1). */

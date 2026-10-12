@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BreadboardError, mintId, mintUid, notFound, type BreadboardConfig } from '@breadboard/shared';
 import { createFoundation, type Foundation } from '../test/harness.js';
 import type { ConfigService, ContentService, RunConversationInput, TaskService } from '../core/services.js';
@@ -181,6 +181,49 @@ describe('ConversationService', () => {
     expect(after.state_detail.reason).toBe('budget-exceeded');
     expect((await store.events(s.session_id)).map((e) => e.event_type)).toContain('budget-exceeded');
     await expect(svc.post({ session_id: s.session_id, text: 'again', by: f.memberPrincipal })).rejects.toMatchObject({ code: 'invalid-state' });
+  });
+
+  it('submit replies in the background: busy until done, live session.events, proposals and failures on the session', async () => {
+    const s = await svc.start({ kind: 'conversation', subagent_uid: DESIGNER, context: { definition_uid: CIRC }, by: f.adminPrincipal });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const proposalId = mintId('prp');
+    let runs = 0;
+    script = async (input) => {
+      await gate;
+      if (runs++ === 0)
+        await f.db.query(
+          `INSERT INTO config_proposals (proposal_id, team_id, branch, base_commit, head_commit, message, created_by, session_id) VALUES ($1,$2,$3,$4,$4,'x',$5,$6)`,
+          [proposalId, f.team_id, `proposals/${proposalId}`, MAIN, JSON.stringify({ kind: 'subagent', id: DESIGNER }), input.session_id],
+        );
+      return { tool_calls: [{ name: 'breadboard_validate_config', input: {}, output: { ok: true } }], text: 'Proposed.' };
+    };
+    expect(await svc.submit({ session_id: s.session_id, text: 'Build it', by: f.adminPrincipal })).toEqual({ accepted: true, session_id: s.session_id });
+    expect(svc.busy(s.session_id)).toBe(true);
+    // A second message queues behind the first rather than interleaving.
+    await svc.submit({ session_id: s.session_id, text: 'And then this', by: f.adminPrincipal });
+    release();
+    await vi.waitFor(() => expect(svc.busy(s.session_id)).toBe(false));
+    expect((await svc.turns(s.session_id, f.adminPrincipal)).map((t) => t.role)).toEqual(['user', 'assistant', 'tool', 'assistant', 'user', 'assistant', 'tool', 'assistant']);
+    expect(await svc.proposals(s.session_id)).toEqual([proposalId]);
+    expect((await store.get(s.session_id))!.state_detail.last_error).toBeNull();
+    // Every turn and tool event reached live clients.
+    const live = events.published.filter((e) => e.topic === 'session.event' && e.payload.session_id === s.session_id).map((e) => e.payload.event_type);
+    expect(live.filter((t) => t === 'turn').length).toBeGreaterThanOrEqual(8);
+    expect(live).toEqual(expect.arrayContaining(['tool-call', 'tool-result']));
+
+    // A failed background reply leaves its error on the session instead of vanishing.
+    script = () => {
+      throw new Error('bedrock throttled');
+    };
+    await svc.submit({ session_id: s.session_id, text: 'Again', by: f.adminPrincipal });
+    await vi.waitFor(() => expect(svc.busy(s.session_id)).toBe(false));
+    expect((await store.get(s.session_id))!.state_detail.last_error).toBe('bedrock throttled');
+    expect(events.published.at(-1)).toMatchObject({ topic: 'session.event', payload: { session_id: s.session_id, event_type: 'conversation-error' } });
+
+    // Up-front validation still throws to the caller.
+    await expect(svc.submit({ session_id: s.session_id, text: ' ', by: f.adminPrincipal })).rejects.toMatchObject({ code: 'validation-failed' });
+    await expect(svc.submit({ session_id: mintId('ses'), text: 'hi', by: f.adminPrincipal })).rejects.toMatchObject({ code: 'not-found' });
   });
 
   it('lists conversations with the caller’s own first', async () => {

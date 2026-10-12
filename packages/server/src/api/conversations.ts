@@ -59,8 +59,9 @@ export async function register(app: FastifyInstance, services: Services): Promis
     requireScope(by, 'sessions:read');
     const { id } = req.params as { id: string };
     const turns = await services.conversations.turns(id, by); // access check + kind check
-    const [session, draft_task] = await Promise.all([services.sessions.mustGet(id), services.conversations.draftTask(id)]);
-    return { session, turns, draft_task };
+    const [session, draft_task, proposals] = await Promise.all([services.sessions.mustGet(id), services.conversations.draftTask(id), services.conversations.proposals(id)]);
+    const last_error = ((session.state_detail ?? {}) as { last_error?: string | null }).last_error ?? null;
+    return { session, turns, draft_task, proposals, busy: services.conversations.busy(id), last_error };
   });
 
   app.post(`${P}/:id/messages`, async (req, reply) => {
@@ -70,8 +71,18 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const text = requireField<string>(body, 'text');
     if (typeof text !== 'string' || !text.trim()) throw validationFailed("field 'text' must be a non-empty string");
     const { id } = req.params as { id: string };
+    const context = objectOrUndefined(body.context, 'context');
+    // `Prefer: respond-async` (RFC 7240): accept now and reply in the background. A designer reply can run for
+    // minutes, longer than a proxy in front of the server keeps a request open; the UI follows `GET` + live events.
+    if (/\brespond-async\b/i.test(String(req.headers.prefer ?? ''))) {
+      return withIdempotency(req, reply, services, async () => {
+        const out = await services.conversations.submit({ session_id: id, text, context, by });
+        reply.status(202).header('preference-applied', 'respond-async');
+        return out;
+      });
+    }
     return withIdempotency(req, reply, services, async () => {
-      const out = await services.conversations.post({ session_id: id, text, context: objectOrUndefined(body.context, 'context'), by });
+      const out = await services.conversations.post({ session_id: id, text, context, by });
       return { turns: out.turns, draft_task: out.draft_task ?? null, proposals: out.proposals ?? [] };
     });
   });

@@ -240,6 +240,23 @@ describe('SubagentRuntime.runConversation', () => {
     expect(res.final_text).toBe('I think we are done.');
   });
 
+  it('never runs a tool call cut off at max_tokens; the model gets an error and re-issues it', async () => {
+    const h = harness(subagentDef({ system_prompt: 'plain' }));
+    const r = await h.runtime.resolve(SA, COMMIT);
+    const principal = h.runtime.principalFor(r, 'S1', 's', []);
+    h.mock.enqueue(
+      // A complete call, then one whose arguments the token limit cut off; a truncated finish must not end the step.
+      { tool_calls: [{ name: 'read_node', input: { uid: 'X' } }, { name: 'breadboard_finish', input: {} }], stop_reason: 'max_tokens' },
+      { tool_calls: [{ name: 'breadboard_finish', input: { exit: 'done' } }] },
+    );
+    const res = await h.runtime.runConversation({ subagent: r, principal, messages: [user('go')], extra_tools: [finishTool], terminal_tools: ['breadboard_finish'], session_id: 'S1', step_id: 's', attempt: 1, hooks: h.hooks });
+    expect(res.terminal_call).toEqual({ name: 'breadboard_finish', input: { exit: 'done' }, id: 'toolu_mock_1_0' });
+    expect(h.primitiveCalls.map((c) => c.name)).toEqual(['read_node']);
+    expect(h.log).toEqual(['injectionsFor:eng', 'budget', 'turn:assistant', 'call:read_node', 'result:read_node', 'call:breadboard_finish', 'result:breadboard_finish:error', 'turn:tool', 'budget', 'turn:assistant']);
+    const results = h.mock.calls[1]!.messages.at(-1)!.content;
+    expect(results[1]).toMatchObject({ type: 'tool_result', tool_use_id: 'toolu_mock_0_1', is_error: true, content: expect.stringContaining('Error (output-truncated)') });
+  });
+
   it('gives up after one nudge, and returns final_text when no terminal tool is expected', async () => {
     const h = harness(subagentDef({ system_prompt: 'plain' }));
     const r = await h.runtime.resolve(SA, COMMIT);

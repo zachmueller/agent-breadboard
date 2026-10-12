@@ -103,14 +103,72 @@ export class ConversationServiceImpl implements ConversationService {
   }
 
   async post(input: Parameters<ConversationService['post']>[0]): Promise<{ turns: Turn[]; draft_task?: Record<string, unknown> | null; proposals?: string[] }> {
-    const prev = this.locks.get(input.session_id) ?? Promise.resolve();
-    const run = prev.catch(() => undefined).then(() => this.postLocked(input));
-    this.locks.set(input.session_id, run);
+    return this.serialized(input.session_id, () => this.postLocked(input));
+  }
+
+  /**
+   * Accept a message and run the reply in the background. A designer reply can take minutes, longer than an
+   * HTTP proxy keeps a request open; callers follow progress through `session.event`s and `busy`.
+   */
+  async submit(input: Parameters<ConversationService['submit']>[0]): Promise<{ accepted: true; session_id: string }> {
+    const { session_id, by } = input;
+    requireUser(by);
+    if (typeof input.text !== 'string' || !input.text.trim()) throw validationFailed('message text is required');
+    const session = await this.mustAccess(session_id, by);
+    if (session.state !== 'running') throw invalidState(`conversation is ${session.state}`);
+    void this.serialized(session_id, () => this.postLocked(input).catch((e) => this.recordFailure(session_id, e))).catch(() => undefined);
+    return { accepted: true, session_id };
+  }
+
+  /** True while a posted message is queued or its reply is running. */
+  busy(sessionId: string): boolean {
+    return this.locks.has(sessionId);
+  }
+
+  async proposals(sessionId: string): Promise<string[]> {
+    return this.proposalIds(sessionId);
+  }
+
+  /** Run `fn` after every earlier post on the session has settled, so turns never interleave. */
+  private async serialized<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(sessionId) ?? Promise.resolve();
+    const run = prev.catch(() => undefined).then(fn);
+    this.locks.set(sessionId, run);
     try {
       return await run;
     } finally {
-      if (this.locks.get(input.session_id) === run) this.locks.delete(input.session_id);
+      if (this.locks.get(sessionId) === run) this.locks.delete(sessionId);
     }
+  }
+
+  /** A background reply failed: keep the error on the session where the panel reads it, and tell live clients. */
+  private async recordFailure(sessionId: string, e: unknown): Promise<void> {
+    this.d.log.warn({ session_id: sessionId, err: errMsg(e) }, 'conversation reply failed');
+    try {
+      const s = await this.d.sessions.get(sessionId);
+      if (s) await this.d.sessions.update(sessionId, { state_detail: { ...(s.state_detail ?? {}), last_error: errMsg(e) } });
+    } catch (err) {
+      this.d.log.warn({ session_id: sessionId, err: errMsg(err) }, 'could not record the conversation error');
+    }
+    await this.publishEvent(sessionId, 'conversation-error');
+  }
+
+  /** Append to the event log and publish `session.event`, so open chat views refresh as the reply progresses. */
+  private async event(sessionId: string, type: SessionEvent['event_type'], payload: Record<string, unknown>, stepId: string | null = null): Promise<void> {
+    const e = await this.d.sessions.appendEvent(sessionId, type, payload, stepId);
+    await this.publishEvent(sessionId, type, e.seq);
+  }
+
+  private async recordTurn(input: Parameters<SessionStore['recordTurn']>[0]): Promise<Turn> {
+    const t = await this.d.sessions.recordTurn(input);
+    await this.publishEvent(input.session_id, 'turn');
+    return t;
+  }
+
+  private async publishEvent(sessionId: string, type: string, seq?: number): Promise<void> {
+    await this.d.events
+      .publish('session.event', { session_id: sessionId, event_type: type, step_id: CONVERSATION_STEP_ID, ...(seq != null ? { seq } : {}) }, { scope: 'session', session_id: sessionId })
+      .catch(() => undefined);
   }
 
   private async postLocked(input: Parameters<ConversationService['post']>[0]): Promise<{ turns: Turn[]; draft_task?: Record<string, unknown> | null; proposals?: string[] }> {
@@ -131,7 +189,7 @@ export class ConversationServiceImpl implements ConversationService {
     const prior = await this.d.sessions.turns(session_id, CONVERSATION_STEP_ID);
     const turnIndex = prior.filter((t) => t.role === 'user').length + 1;
     const userContent: ChatContent[] = [{ type: 'text', text }];
-    const userTurn = await this.d.sessions.recordTurn({
+    const userTurn = await this.recordTurn({
       session_id,
       step_id: CONVERSATION_STEP_ID,
       attempt: turnIndex,
@@ -149,7 +207,7 @@ export class ConversationServiceImpl implements ConversationService {
     const commit = await this.d.config.mainCommit();
     const resolved = await this.d.subagents.resolve(detail.subagent_uid, commit, { session_id });
     if (commit !== (detail.resolved_commit ?? session.config_commit)) {
-      await this.d.sessions.appendEvent(session_id, 'config-resolved', configResolvedPayload(commit, resolved), CONVERSATION_STEP_ID);
+      await this.event(session_id, 'config-resolved', configResolvedPayload(commit, resolved), CONVERSATION_STEP_ID);
     }
     detail.resolved_commit = commit;
 
@@ -159,7 +217,7 @@ export class ConversationServiceImpl implements ConversationService {
       const first = messages.find((m) => m.role === 'user');
       if (first) first.content = [{ type: 'text', text: preamble }, ...first.content];
       else messages.unshift({ role: 'user', content: [{ type: 'text', text: preamble }] });
-      await this.d.sessions.appendEvent(session_id, 'turn', { kind: 'context-preamble', attempt: turnIndex, text: cap(preamble, PREAMBLE_CAP) }, CONVERSATION_STEP_ID);
+      await this.event(session_id, 'turn', { kind: 'context-preamble', attempt: turnIndex, text: cap(preamble, PREAMBLE_CAP) }, CONVERSATION_STEP_ID);
     }
     const inputSigs = new Set(messages.map((m) => JSON.stringify(m.content)));
 
@@ -189,7 +247,7 @@ export class ConversationServiceImpl implements ConversationService {
             spentTokens += tokens;
             if (role === 'assistant') recordedAssistant++;
             newTurns.push(
-              await this.d.sessions.recordTurn({
+              await this.recordTurn({
                 session_id,
                 step_id: CONVERSATION_STEP_ID,
                 attempt: turnIndex,
@@ -206,10 +264,10 @@ export class ConversationServiceImpl implements ConversationService {
             );
           },
           onToolCall: async (call) => {
-            await this.d.sessions.appendEvent(session_id, 'tool-call', { id: call.id, name: call.name, input: call.input, attempt: turnIndex }, CONVERSATION_STEP_ID);
+            await this.event(session_id, 'tool-call', { id: call.id, name: call.name, input: call.input, attempt: turnIndex }, CONVERSATION_STEP_ID);
           },
           onToolResult: async (r) => {
-            await this.d.sessions.appendEvent(session_id, 'tool-result', { id: r.id, name: r.name, output: capValue(r.output), is_error: r.is_error, attempt: turnIndex }, CONVERSATION_STEP_ID);
+            await this.event(session_id, 'tool-result', { id: r.id, name: r.name, output: capValue(r.output), is_error: r.is_error, attempt: turnIndex }, CONVERSATION_STEP_ID);
           },
           checkBudget: async () => {
             if (spentUsd >= budget.max_cost_usd || spentTokens >= budget.max_tokens) throw new BreadboardError('budget-exceeded', 'conversation budget exhausted');
@@ -240,7 +298,7 @@ export class ConversationServiceImpl implements ConversationService {
     if (finalText && !alreadyRecorded) {
       const unreported = recordedAssistant === 0;
       newTurns.push(
-        await this.d.sessions.recordTurn({
+        await this.recordTurn({
           session_id,
           step_id: CONVERSATION_STEP_ID,
           attempt: turnIndex,
@@ -333,8 +391,8 @@ export class ConversationServiceImpl implements ConversationService {
   private async suspendForBudget(session: SessionRecord, detail: Record<string, any>, budget: SessionRecord['budget']): Promise<void> {
     const sid = session.session_id;
     await this.d.sessions.update(sid, { state: 'suspended-error', budget, state_detail: { ...detail, reason: 'budget-exceeded' } });
-    await this.d.sessions.appendEvent(sid, 'budget-exceeded', { spent_usd: budget.spent_usd, spent_tokens: budget.spent_tokens, max_cost_usd: budget.max_cost_usd, max_tokens: budget.max_tokens }, CONVERSATION_STEP_ID);
-    await this.d.sessions.appendEvent(sid, 'session-suspended', { reason: 'budget-exceeded' }, CONVERSATION_STEP_ID);
+    await this.event(sid, 'budget-exceeded', { spent_usd: budget.spent_usd, spent_tokens: budget.spent_tokens, max_cost_usd: budget.max_cost_usd, max_tokens: budget.max_tokens }, CONVERSATION_STEP_ID);
+    await this.event(sid, 'session-suspended', { reason: 'budget-exceeded' }, CONVERSATION_STEP_ID);
     await this.d.events.publish('session.state', { session_id: sid, kind: session.kind, state: 'suspended-error', reason: 'budget-exceeded' }).catch(() => undefined);
   }
 

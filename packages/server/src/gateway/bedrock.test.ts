@@ -4,6 +4,7 @@ import {
   BedrockProvider,
   bedrockCapabilities,
   classifyBedrockError,
+  defaultMaxTokens,
   fromConverseResponse,
   mapStopReason,
   modelFamily,
@@ -39,7 +40,13 @@ describe('toConverseRequest', () => {
     ]);
     expect(input.toolConfig?.tools?.[0]).toEqual({ toolSpec: { name: 'breadboard_finish', description: 'finish', inputSchema: { json: finish.input_schema } } });
     expect(input.toolConfig?.toolChoice).toEqual({ tool: { name: 'breadboard_finish' } });
-    expect(input.inferenceConfig?.maxTokens).toBe(16000);
+    expect(input.inferenceConfig?.maxTokens).toBe(32000);
+  });
+
+  it('defaults the output ceiling by model generation', () => {
+    for (const id of [OPUS5, OPUS55, 'us.anthropic.claude-sonnet-5-5', 'anthropic.claude-haiku-5-5', 'anthropic.claude-fable-5-1', 'anthropic.claude-opus-4-6-v1', 'anthropic.claude-sonnet-4-6']) expect(defaultMaxTokens(id), id).toBe(32000);
+    for (const id of ['anthropic.claude-sonnet-4-5-20250929-v1:0', 'anthropic.claude-haiku-4-5-20251001-v1:0', 'anthropic.claude-opus-4-1-20250805-v1:0']) expect(defaultMaxTokens(id), id).toBe(16000);
+    expect(defaultMaxTokens('anthropic.claude-3-5-sonnet-20241022-v2:0')).toBe(4096);
   });
 
   it('downgrades forcing to an instruction for models that reject forced tool_choice', () => {

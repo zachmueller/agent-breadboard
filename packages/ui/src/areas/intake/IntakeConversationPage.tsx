@@ -42,7 +42,13 @@ interface ConversationDto {
   session: SessionRecord;
   turns: Turn[];
   draft_task: unknown;
+  /** The server is running the assistant's reply. */
+  busy?: boolean;
+  /** Why the last reply failed, if it did. */
+  last_error?: string | null;
 }
+
+const userTurns = (turns: Turn[]) => turns.filter((t) => t.role === 'user').length;
 
 /** Under the session's `turns` prefix so live `session.event` invalidation (useSession) refreshes it. */
 const convKey = (id: string) => ['session', id, 'turns', 'conversation'] as const;
@@ -51,6 +57,8 @@ function useConversation(id: string) {
   return useQuery({
     queryKey: convKey(id),
     queryFn: ({ signal }) => get<ConversationDto>(`/conversations/${id}`, undefined, { signal }),
+    // Live `session.event`s refresh it while a reply runs; poll slowly as well in case the stream is down.
+    refetchInterval: (q) => (q.state.data?.busy ? 5_000 : false),
   });
 }
 
@@ -98,7 +106,16 @@ export function IntakeConversationPage({ id }: { id: string }) {
         </Link>
       </header>
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <ChatPane id={id} turns={conv.data.turns} childSessions={summary.data?.children ?? []} ended={ended} onSent={refresh} />
+        <ChatPane
+          id={id}
+          turns={conv.data.turns}
+          busy={conv.data.busy === true}
+          lastError={conv.data.last_error ?? null}
+          fetchedAt={conv.dataUpdatedAt}
+          childSessions={summary.data?.children ?? []}
+          ended={ended}
+          onSent={refresh}
+        />
         <aside className="flex min-h-0 shrink-0 flex-col border-t border-line bg-surface lg:w-[26rem] lg:border-t-0 lg:border-l" aria-label="Draft task">
           <DraftTaskPanel draft={draft} onChanged={refresh} />
         </aside>
@@ -109,40 +126,78 @@ export function IntakeConversationPage({ id }: { id: string }) {
 
 // ------------------------------------------------------------------- chat ---
 
-function ChatPane({ id, turns, childSessions, ended, onSent }: { id: string; turns: Turn[]; childSessions: SessionSummaryDto['children']; ended: boolean; onSent: () => void }) {
+function ChatPane({
+  id,
+  turns,
+  busy,
+  lastError,
+  fetchedAt,
+  childSessions,
+  ended,
+  onSent,
+}: {
+  id: string;
+  turns: Turn[];
+  busy: boolean;
+  lastError: string | null;
+  fetchedAt: number;
+  childSessions: SessionSummaryDto['children'];
+  ended: boolean;
+  onSent: () => void;
+}) {
   const me = useCurrentUser();
   const [text, setText] = useState('');
-  const [pendingText, setPendingText] = useState<string | null>(null);
+  /** The message just sent, shown until the server records it (`base`: user turns when it was sent). */
+  const [pending, setPending] = useState<{ text: string; base: number; acceptedAt: number | null } | null>(null);
+  const pendingText = pending?.text ?? null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const items = useMemo(() => chatItems(turns), [turns]);
 
+  // The server accepts the message at once and replies in the background (`Prefer: respond-async`): a reply that
+  // uses tools can outlast a proxy's request timeout. The transcript follows through live events and `busy`.
   const send = useMutation({
-    mutationFn: (message: string) => post<{ turns: Turn[]; draft_task: unknown }>(`/conversations/${id}/messages`, { text: message }, { idempotencyKey: true }),
+    mutationFn: async (message: string) => {
+      try {
+        await post(`/conversations/${id}/messages`, { text: message }, { idempotencyKey: true, headers: { Prefer: 'respond-async' } });
+      } catch (e) {
+        // The message may have arrived even though the answer did not: if so, follow the reply instead of failing.
+        const now = await get<ConversationDto>(`/conversations/${id}`).catch(() => null);
+        if (!now || !(now.busy || userTurns(now.turns) > userTurns(turns))) throw e;
+      }
+    },
     onMutate: (message) => {
-      setPendingText(message);
+      setPending({ text: message, base: userTurns(turns), acceptedAt: null });
       setText('');
     },
+    onSuccess: () => setPending((p) => p && { ...p, acceptedAt: Date.now() }),
     onError: (e, message) => {
+      setPending(null);
       setText((cur) => cur || message);
       toast.error('Message not sent', e);
     },
     onSettled: () => {
-      setPendingText(null);
       onSent();
       requestAnimationFrame(() => inputRef.current?.focus());
     },
   });
 
+  // Drop the optimistic bubble once the server has the message, or has gone idle without it (the reply failed).
+  useEffect(() => {
+    if (!pending) return;
+    if (userTurns(turns) > pending.base || (pending.acceptedAt !== null && !busy && fetchedAt > pending.acceptedAt)) setPending(null);
+  }, [pending, turns, busy, fetchedAt]);
+  const thinking = pendingText !== null || busy;
+
   // Keep the newest message in view.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [items.length, pendingText, childSessions.length]);
+  }, [items.length, pendingText, thinking, childSessions.length]);
 
   const submit = () => {
     const m = text.trim();
-    if (!m || send.isPending || ended) return;
+    if (!m || thinking || ended) return;
     send.mutate(m);
   };
 
@@ -162,17 +217,22 @@ function ChatPane({ id, turns, childSessions, ended, onSent }: { id: string; tur
             <ChatBubble key={it.id} item={it} me={me.handle} />
           ))}
           {pendingText && (
-            <>
-              <ChatBubble item={{ id: 'pending', kind: 'user', username: me.handle, text: pendingText, extras: [], created_at: new Date().toISOString(), model_id: null }} me={me.handle} pending />
-              <div className="flex items-center gap-2 pl-9 text-[13px] text-fg-muted" role="status">
-                <span className="flex gap-1" aria-hidden>
-                  <span className="size-1.5 animate-pulse rounded-full bg-fg-subtle" />
-                  <span className="size-1.5 animate-pulse rounded-full bg-fg-subtle [animation-delay:150ms]" />
-                  <span className="size-1.5 animate-pulse rounded-full bg-fg-subtle [animation-delay:300ms]" />
-                </span>
-                Assistant is thinking…
-              </div>
-            </>
+            <ChatBubble item={{ id: 'pending', kind: 'user', username: me.handle, text: pendingText, extras: [], created_at: new Date().toISOString(), model_id: null }} me={me.handle} pending />
+          )}
+          {thinking && (
+            <div className="flex items-center gap-2 pl-9 text-[13px] text-fg-muted" role="status">
+              <span className="flex gap-1" aria-hidden>
+                <span className="size-1.5 animate-pulse rounded-full bg-fg-subtle" />
+                <span className="size-1.5 animate-pulse rounded-full bg-fg-subtle [animation-delay:150ms]" />
+                <span className="size-1.5 animate-pulse rounded-full bg-fg-subtle [animation-delay:300ms]" />
+              </span>
+              Assistant is thinking…
+            </div>
+          )}
+          {!thinking && lastError && (
+            <Callout tone="danger" title="The assistant’s last reply failed">
+              {lastError}
+            </Callout>
           )}
           {childSessions.length > 0 && (
             <div className="mt-2 flex flex-col gap-2">
@@ -204,7 +264,7 @@ function ChatPane({ id, turns, childSessions, ended, onSent }: { id: string; tur
                 autoFocus
                 value={text}
                 placeholder="Message the intake assistant…"
-                disabled={send.isPending}
+                disabled={thinking}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => {
                   if (shouldSend({ key: e.key, shiftKey: e.shiftKey, altKey: e.altKey, isComposing: e.nativeEvent.isComposing })) {
@@ -214,7 +274,7 @@ function ChatPane({ id, turns, childSessions, ended, onSent }: { id: string; tur
                 }}
                 className="max-h-48 min-h-[2.75rem] resize-y"
               />
-              <Button type="submit" icon={<SendHorizontal size={14} />} loading={send.isPending} disabled={!text.trim()}>
+              <Button type="submit" icon={<SendHorizontal size={14} />} loading={thinking} disabled={!text.trim()}>
                 Send
               </Button>
             </form>

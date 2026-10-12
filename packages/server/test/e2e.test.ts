@@ -208,4 +208,28 @@ describe('end-to-end against the shipped seed', () => {
     const history = await api('GET', `/config/history?path=${encodeURIComponent(def.json.path)}`);
     expect((history.json.items ?? history.json).length).toBeGreaterThanOrEqual(2);
   }, 60_000);
+
+  it('designer chat: an async message is accepted at once and the reply lands on the session', async () => {
+    const settings = await api('GET', '/config/definitions/breadboard');
+    const designer: string = settings.json.definition.designers.tool;
+    const conv = await api('POST', '/conversations', ADMIN, { kind: 'conversation', subagent_uid: designer, context: { definition_uid: '01J8T0REP0SEARCH0000' }, title: 'Designer: repo-search' });
+    expect(conv.status, JSON.stringify(conv.json)).toBe(201);
+    const sid: string = conv.json.session_id;
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${sid}/messages`,
+      headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json', prefer: 'respond-async', 'idempotency-key': 'e2e-designer-1' },
+      payload: JSON.stringify({ text: 'Tighten the description', context: { definition_uid: '01J8T0REP0SEARCH0000' } }),
+    });
+    expect(res.statusCode, res.body).toBe(202);
+    expect(res.json()).toEqual({ accepted: true, session_id: sid });
+    let snap: any = null;
+    await waitUntil(async () => {
+      snap = (await api('GET', `/conversations/${sid}`)).json;
+      return snap.busy === false && snap.turns.some((t: any) => t.role === 'assistant');
+    });
+    expect(snap.last_error).toBeNull();
+    expect(snap.turns[0]).toMatchObject({ role: 'user', username: 'admin' });
+    expect(Array.isArray(snap.proposals)).toBe(true);
+  }, 60_000);
 });

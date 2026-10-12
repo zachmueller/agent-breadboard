@@ -840,6 +840,12 @@ export class ConfigServiceImpl implements ConfigService {
         const parsedPath = parseConfigPath(p);
         if (parsedPath?.uid) def = model.byPath.get(definitionPath(parsedPath.kind, parsedPath.uid));
       }
+      if (!def) {
+        // A definition's directory or extensionless name (`tools/<UID>`, `subagents/<UID>`), as agents often write it.
+        const m = /^(tools|circuits|subagents|mcp)\/([0-9A-HJKMNP-TV-Z]{20})(?:\.yaml)?\/?$/.exec(p);
+        const kind = m && ({ tools: 'tool', circuits: 'circuit', subagents: 'subagent', mcp: 'mcp' } as const)[m[1] as 'tools'];
+        if (m && kind) def = model.byPath.get(definitionPath(kind, m[2]!));
+      }
     }
     if (!def) throw new BreadboardError('not-found', `no definition '${uidOrPath}' at ${commit.slice(0, 12)}`);
 

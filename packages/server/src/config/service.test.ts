@@ -230,6 +230,11 @@ describe('ConfigService loaders', () => {
     expect(byPath.uid).toBe(SUB_B);
     expect((byPath.definition as any).slug).toBe('research-writer');
     expect((await svc.definition(`tools/${TOOL_A}/src/index.ts`)).uid).toBe(TOOL_A);
+    // A definition's directory or extensionless name resolves too.
+    expect((await svc.definition(`tools/${TOOL_A}`)).uid).toBe(TOOL_A);
+    expect((await svc.definition(`circuits/${CIRC}/`)).uid).toBe(CIRC);
+    expect((await svc.definition(`subagents/${SUB_B}`)).uid).toBe(SUB_B);
+    await expect(svc.definition(`circuits/${TOOL_A}`)).rejects.toMatchObject({ code: 'not-found' });
     expect((await svc.definition('tenets')).raw).toBe('Never fabricate data.\n');
     expect(Object.keys((await svc.definition(TOOL_A)).files!)).toEqual(['src/index.ts']);
 

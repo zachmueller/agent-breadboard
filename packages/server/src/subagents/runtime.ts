@@ -143,6 +143,15 @@ function stringifyOutput(output: unknown): string {
   return s;
 }
 
+/** The error result for a tool call whose arguments were cut off at the output token limit. */
+function truncatedResult(use: ToolUse, outputTokens: number): { output: unknown; content: string } {
+  const message =
+    `your response hit the output token limit (${outputTokens} tokens) while writing the arguments for '${use.name}', ` +
+    'so the call was incomplete and did not run. Re-issue it with smaller arguments: split large content across several ' +
+    'calls, or write less in one response.';
+  return { output: { error: { code: 'output-truncated', message } }, content: `Error (output-truncated): ${message}` };
+}
+
 function errorInfo(e: unknown): { code: string; message: string } {
   if (e instanceof BreadboardError) return { code: e.code, message: e.message };
   if (e instanceof Error) return { code: 'internal', message: e.message };
@@ -333,12 +342,24 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
       });
 
       const uses = res.message.content.filter((c): c is ToolUse => c.type === 'tool_use');
-      const term = uses.find((u) => terminal.has(u.name));
+      // Output cut off at max_tokens while the model was writing a tool call: its input is incomplete, so it never
+      // runs (nor finishes the step). The model gets an error result and re-issues it with smaller arguments.
+      const lastBlock = res.message.content[res.message.content.length - 1];
+      const truncated = res.stop_reason === 'max_tokens' && lastBlock?.type === 'tool_use' ? lastBlock.id : null;
+      if (truncated) this.deps.log.warn({ session_id, step_id, subagent: subagent.uid, tool: (lastBlock as ToolUse).name, output_tokens: res.usage.output_tokens }, 'tool call cut off at max_tokens; not executed');
+      const term = uses.find((u) => terminal.has(u.name) && u.id !== truncated);
       if (term) return done({ name: term.name, input: term.input, id: term.id });
 
       if (uses.length) {
         const results: ChatContent[] = [];
         for (const use of uses) {
+          if (use.id === truncated) {
+            const r = truncatedResult(use, res.usage.output_tokens);
+            await hooks.onToolCall?.({ name: use.name, input: use.input, id: use.id });
+            await hooks.onToolResult?.({ id: use.id, name: use.name, output: r.output, is_error: true });
+            results.push({ type: 'tool_result', tool_use_id: use.id, content: r.content, is_error: true });
+            continue;
+          }
           await hooks.onToolCall?.({ name: use.name, input: use.input, id: use.id });
           const r = await this.execute(use, surface.routes.get(use.name), { subagent, principal, session_id, step_id, attempt, call_index: callIndex++ });
           await hooks.onToolResult?.({ id: use.id, name: use.name, output: r.output, is_error: r.is_error });

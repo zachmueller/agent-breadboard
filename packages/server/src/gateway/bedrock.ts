@@ -84,11 +84,16 @@ export function acceptsTemperature(modelId: string): boolean {
   return false;
 }
 
-function defaultMaxTokens(modelId: string): number {
+/**
+ * Output ceiling when the request sets none. Claude models with a 128K output cap (the 4.6+ Opus/Sonnet family and
+ * every 5.x model) get 32K: designer chats write whole files into one tool call, and 16K cut those calls off mid-input.
+ */
+export function defaultMaxTokens(modelId: string): number {
   const id = normalizeModelId(modelId);
   switch (modelFamily(id)) {
     case 'anthropic':
-      return /claude-3-(?:haiku|opus)|claude-3-5/.test(id) ? 4096 : 16000;
+      if (/claude-3-(?:haiku|opus)|claude-3-5/.test(id)) return 4096;
+      return /claude-(?:opus|sonnet)-4-[6-9]|claude-(?:opus|sonnet|haiku|fable|mythos)-(?:[5-9]|\d{2,})/.test(id) ? 32000 : 16000;
     case 'nova':
       return 5000;
     case 'llama':

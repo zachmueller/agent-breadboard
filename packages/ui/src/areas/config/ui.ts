@@ -4,18 +4,19 @@
  * the remaining primitives (whose shell counterparts have different shapes) live in `_local/`.
  */
 import { createElement } from 'react';
-import { get, post, patch, del } from '../../lib/api';
+import { get, post, patch, del, type RequestOptions } from '../../lib/api';
 import { pushToast } from '../../lib/toast';
 import { Markdown, JsonView } from '../../components';
 
 /** Path-only HTTP client (`/api/v1` prefix, bearer + cookies, ApiError with `.status`/`.code`). */
 export const api = {
   get: <T = unknown>(path: string) => get<T>(path),
-  post: <T = unknown>(path: string, body?: unknown) => post<T>(path, body ?? {}),
+  post: <T = unknown>(path: string, body?: unknown, opts?: Pick<RequestOptions, 'headers' | 'idempotencyKey'>) => post<T>(path, body ?? {}, opts),
   patch: <T = unknown>(path: string, body?: unknown) => patch<T>(path, body ?? {}),
   del: <T = unknown>(path: string) => del<T>(path),
 };
 export { errorMessage } from '../../lib/api';
+export { useLiveEvents, useLiveConnected, payloadSessionId } from '../../lib/live';
 export { Button as Btn } from '../../components';
 
 export {

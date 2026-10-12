@@ -238,6 +238,14 @@ export const miscApi = {
 
 /* ------------------------------------------------------------------ query hooks */
 
+export interface ConversationSnapshot {
+  state: string | null;
+  turns: ConversationTurn[];
+  busy: boolean;
+  last_error: string | null;
+  proposals: string[];
+}
+
 export const convApi = {
   /** `POST /conversations` returns the session record ([08] §4 / [10] §4 designer chat). */
   start: async (body: { kind: 'conversation'; subagent_uid: string; context: Record<string, unknown>; title: string }): Promise<{ session_id: string }> => {
@@ -245,14 +253,23 @@ export const convApi = {
     const s = r?.session ?? r;
     return { session_id: String(s?.session_id ?? s?.id ?? '') };
   },
-  get: async (id: string): Promise<{ state: string | null; turns: ConversationTurn[] }> => {
+  /** Transcript plus reply progress: `busy` while the server runs a reply, `last_error` when the last one failed. */
+  get: async (id: string): Promise<ConversationSnapshot> => {
     const r = await api.get<any>(`/conversations/${enc(id)}`);
-    return { state: r?.session?.state ?? null, turns: listOf<ConversationTurn>(r?.turns ?? []) };
+    return {
+      state: r?.session?.state ?? null,
+      turns: listOf<ConversationTurn>(r?.turns ?? []),
+      busy: r?.busy === true,
+      last_error: typeof r?.last_error === 'string' && r.last_error ? r.last_error : null,
+      proposals: listOf<unknown>(r?.proposals ?? []).map(String).filter(Boolean),
+    };
   },
-  post: async (id: string, text: string, context: Record<string, unknown>): Promise<{ turns: ConversationTurn[]; proposals: string[] }> => {
-    const r = await api.post<any>(`/conversations/${enc(id)}/messages`, { text, context });
-    const proposals = listOf<any>(r?.proposals ?? []).map((p) => (typeof p === 'string' ? p : String(p?.proposal_id ?? p?.id ?? ''))).filter(Boolean);
-    return { turns: listOf<ConversationTurn>(r?.turns ?? []), proposals };
+  /**
+   * Hand a message to the designer. The server accepts it at once (`Prefer: respond-async`) and replies in the
+   * background, since a reply can outlast any proxy timeout; follow it with `get`. The key makes a resend safe.
+   */
+  submit: async (id: string, text: string, context: Record<string, unknown>, idempotencyKey: string): Promise<void> => {
+    await api.post(`/conversations/${enc(id)}/messages`, { text, context }, { headers: { Prefer: 'respond-async' }, idempotencyKey });
   },
 };
 
