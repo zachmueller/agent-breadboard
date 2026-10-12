@@ -50,6 +50,11 @@ export interface BreadboardStackProps extends StackProps {
    * cannot tell the proxy's users apart. Applied in place, like `publicUrl`.
    */
   trustedProxyUser?: string;
+  /**
+   * IAM roles the server may assume for `aws-role` broker credentials ([12] §5): a tool's AWS calls are then signed
+   * as that role, never with keys stored in Breadboard. Each role's trust policy must also name `ServerRoleArn`.
+   */
+  brokerRoleArns?: string[];
   dbEngineVersion?: string;
   dbInstanceClass?: string;
   dbAllocatedStorageGb?: number;
@@ -71,6 +76,7 @@ export const DEFAULTS = {
   sandboxRunner: 'docker',
   bootstrapAdmin: true,
   trustedProxyUser: '',
+  brokerRoleArns: [] as string[],
   sandboxImageTs: '',
   sandboxImagePy: '',
   dbEngineVersion: '16',
@@ -124,6 +130,12 @@ export function assertTrustedProxyUser(handle: string): void {
   if (handle && !HANDLE.test(handle)) throw new Error(`trustedProxyUser must be a user handle (letters, digits, . _ -), got ${handle}`);
 }
 
+const ROLE_ARN = /^arn:aws[a-z-]*:iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;
+
+export function assertBrokerRoleArns(arns: string[]): void {
+  for (const arn of arns) if (!ROLE_ARN.test(arn)) throw new Error(`brokerRoleArns must be IAM role ARNs, got ${arn}`);
+}
+
 /** Fail at synth on a malformed image: the host would otherwise boot, fail its one-time bootstrap, and serve nothing. */
 export function assertImageRef(key: string, image: string): void {
   if (!IMAGE_REF.test(image)) throw new Error(`${key} is not a valid image reference: ${image}`);
@@ -156,6 +168,7 @@ export class BreadboardStack extends Stack {
     if (p.sandboxImagePy) assertImageRef('sandboxImagePy', p.sandboxImagePy);
     assertPublicUrl(p.publicUrl);
     assertTrustedProxyUser(p.trustedProxyUser);
+    assertBrokerRoleArns(p.brokerRoleArns);
 
     // --- Network --------------------------------------------------------------
     // Subnet IDs are resolved against the looked-up VPC so their AZ and public/private kind come from AWS.
@@ -271,6 +284,7 @@ export class BreadboardStack extends Stack {
       role.addToPolicy(new iam.PolicyStatement({ actions: ['ecr:GetAuthorizationToken'], resources: ['*'] }));
       role.addToPolicy(new iam.PolicyStatement({ actions: ['ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchCheckLayerAvailability'], resources: repos }));
     }
+    if (p.brokerRoleArns.length) role.addToPolicy(new iam.PolicyStatement({ actions: ['sts:AssumeRole'], resources: p.brokerRoleArns }));
     db.grantConnect(role, 'breadboard');
     bucket?.grantRead(role);
     bucket?.grantPut(role);
@@ -386,6 +400,7 @@ export class BreadboardStack extends Stack {
     new CfnOutput(this, 'ServerPort', { value: String(p.serverPort) });
     new CfnOutput(this, 'VpcId', { value: p.vpcId });
     new CfnOutput(this, 'ServerSubnetId', { value: p.serverSubnetId });
+    new CfnOutput(this, 'ServerRoleArn', { value: role.roleArn, description: 'The instance role: trust it from roles listed in brokerRoleArns' });
     if (proxySecret) {
       new CfnOutput(this, 'TrustedProxySecretArn', { value: proxySecret.secretArn, description: `The proxy sends this secret's value in ${TRUSTED_PROXY_HEADER}` });
       new CfnOutput(this, 'TrustedProxyHeader', { value: TRUSTED_PROXY_HEADER });

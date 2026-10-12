@@ -59,6 +59,7 @@ const props: BreadboardStackProps = {
   sandboxRunner,
   bootstrapAdmin: bool('bootstrapAdmin'),
   trustedProxyUser: str('trustedProxyUser'),
+  brokerRoleArns: list('brokerRoleArns'),
   sandboxImageTs: str('sandboxImageTs'),
   sandboxImagePy: str('sandboxImagePy'),
   dbEngineVersion: str('dbEngineVersion'),

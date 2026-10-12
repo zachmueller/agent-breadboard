@@ -48,6 +48,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `publicUrl` | instance IP | Externally reachable base URL, `scheme://host[:port]` (e.g. the HTTPS address of a proxy in front of the server). Used for OIDC redirects and `Secure` cookies. When empty, the bootstrap script resolves the instance IP from IMDS. It lives in the deployment metadata, so it can be changed later like an image (see Upgrading). |
 | `sandboxRunner` | `docker` | `docker` or `process`. |
 | `trustedProxyUser` | none | Trusted proxy (see below): the handle that every request through your authenticating proxy signs in as. Generates the shared secret; applied in place. |
+| `brokerRoleArns` | none | IAM roles the server may assume for `aws-role` broker credentials (see AWS APIs from tools). IAM-only change, applied in place. |
 | `bootstrapAdmin` | `true` | Accept the generated bootstrap admin token. Set `false` once another admin can sign in (see First sign-in); applied in place, like `publicUrl`. |
 | `dbEngineVersion` | `16` | |
 | `dbInstanceClass` | `db.t4g.medium` | |
@@ -111,6 +112,14 @@ are, and its audience is one person, `-c trustedProxyUser=<handle>` removes the 
 To rotate the secret, redeploy with a different `trustedProxyUser`, or turn it off and on again (each creates a new
 secret), then redeploy the proxy.
 
+## AWS APIs from tools
+
+Tools reach AWS APIs through the credential broker's `aws-role` kind ([12](../../specs/12-security-deployment.md) §5): no keys are stored in Breadboard; the broker signs each brokered request as a role the server assumes.
+
+1. Create a role whose trust policy names the `ServerRoleArn` output, with the permissions the tools need.
+2. Deploy with `-c brokerRoleArns=<role ARN>[,<role ARN>…]` (plus the usual `-c` set). This only changes the instance role's policy.
+3. In Admin → Credential broker, add a credential of kind `aws-role` per AWS service the tools call, e.g. `{"region": "us-east-1", "service": "athena", "role_arn": "<role ARN>"}`, and a capability per credential scoped to the service endpoint (e.g. `athena.us-east-1.amazonaws.com`, method `POST`). Most AWS APIs are POST, so tools declare a scope other than `read` for these capabilities.
+
 ## Outputs
 
 | Output | |
@@ -120,6 +129,7 @@ secret), then redeploy the proxy.
 | `DbSecretArn`, `TokenSigningKeySecretArn`, `BrokerMasterKeySecretArn`, `AdminTokenSecretArn` | See Secrets. |
 | `ObjectsBucket` | When `enableS3Objects` is true. |
 | `TrustedProxySecretArn`, `TrustedProxyHeader`, `TrustedProxyUser` | With `trustedProxyUser`: what the proxy sends (see Behind an authenticating proxy). |
+| `ServerRoleArn` | The instance role: what roles in `brokerRoleArns` must trust. |
 | `ServerInstanceId`, `ServerSecurityGroupId`, `ServerPrivateDnsName`, `ServerPort`, `VpcId`, `ServerSubnetId` | For add-ons that front the server, such as a CloudFront distribution with a VPC origin to the instance. Plain outputs, not exports, so nothing can pin the stack. An add-on that adds an ingress rule to the server security group must be redeployed if this stack ever replaces the instance. |
 
 ## Behaviour to know about

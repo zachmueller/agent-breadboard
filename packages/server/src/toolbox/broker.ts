@@ -3,6 +3,7 @@
  *
  * - Storage: secrets are encrypted at rest with libsodium `crypto_secretbox_easy` (XSalsa20-Poly1305) under a
  *   32-byte key derived from `BROKER_MASTER_KEY`; they are never returned by list/get and never leave the server.
+ *   The `aws-role` kind stores no secret at all: the server's own AWS credentials sign, optionally as an assumed role.
  * - Capabilities bind a credential (or none, for allowlist-only `raw` use) to a scope
  *   `{hosts (exact | *.wildcard), methods, path_prefixes, scopes}`.
  * - `fetch()` validates that the calling tool's manifest declares the capability ∧ the request is within scope,
@@ -16,9 +17,10 @@ import type { Logger } from '../core/logger.js';
 import { requireAdmin, type Principal } from '../core/principal.js';
 import type { CredentialBroker } from '../core/services.js';
 import { hostMatches, normalizeHost } from './egress-proxy.js';
+import { ROLE_ARN, SESSION_NAME, defaultAwsRoleResolver, type AwsRoleResolver } from './aws-role.js';
 import { signSigV4 } from './sigv4.js';
 
-export const CREDENTIAL_KINDS = ['bearer', 'header', 'basic', 'query', 'aws-sigv4', 'raw'] as const;
+export const CREDENTIAL_KINDS = ['bearer', 'header', 'basic', 'query', 'aws-sigv4', 'aws-role', 'raw'] as const;
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
 
 export interface CapabilityScope {
@@ -43,6 +45,8 @@ export interface BrokerDeps {
   fallbackKey?: string;
   log: Logger;
   fetchImpl?: typeof fetch;
+  /** Signing credentials for `aws-role` (default: the server's AWS credential chain, plus STS AssumeRole). */
+  awsRoleResolver?: AwsRoleResolver;
 }
 
 /** Derive the 32-byte secretbox key. Exported for tests. */
@@ -92,6 +96,16 @@ export function normalizeSecret(kind: CredentialKind, secret: Record<string, str
       if (!obj?.access_key_id || !obj.secret_access_key || !obj.region || !obj.service) throw bad('expected {access_key_id, secret_access_key, region, service, session_token?}');
       return { ...obj };
     }
+    case 'aws-role': {
+      if (!obj?.region || !obj.service) throw bad('expected {region, service, role_arn?, external_id?, session_name?}');
+      const extra = Object.keys(obj).filter((k) => !['region', 'service', 'role_arn', 'external_id', 'session_name'].includes(k));
+      if (extra.length) throw bad(`unknown field(s) ${extra.join(', ')}: this kind stores no keys, the server's own AWS credentials sign`);
+      if (obj.role_arn !== undefined && !ROLE_ARN.test(obj.role_arn)) throw bad(`role_arn must be an IAM role ARN, got '${obj.role_arn}'`);
+      if (obj.session_name !== undefined && !SESSION_NAME.test(obj.session_name)) throw bad('session_name must be 2-64 chars of [A-Za-z0-9+=,.@_-]');
+      if (obj.external_id !== undefined && !/^[\w+=,.@:/-]{2,1224}$/.test(obj.external_id)) throw bad('external_id must be 2-1224 chars of [A-Za-z0-9+=,.@:/_-]');
+      if (obj.external_id !== undefined && obj.role_arn === undefined) throw bad('external_id needs role_arn');
+      return { ...obj };
+    }
     case 'raw':
       return typeof secret === 'string' ? (secret ? { value: secret } : {}) : { ...obj };
   }
@@ -127,6 +141,7 @@ export function checkScope(scope: CapabilityScope, toolScope: string, req: { met
 export class CredentialBrokerImpl implements CredentialBroker {
   private key: Uint8Array;
   private fetchImpl: typeof fetch;
+  private awsRole: AwsRoleResolver;
 
   private constructor(
     private deps: BrokerDeps,
@@ -134,6 +149,7 @@ export class CredentialBrokerImpl implements CredentialBroker {
   ) {
     this.key = key;
     this.fetchImpl = deps.fetchImpl ?? fetch;
+    this.awsRole = deps.awsRoleResolver ?? defaultAwsRoleResolver();
   }
 
   static async create(deps: BrokerDeps): Promise<CredentialBrokerImpl> {
@@ -320,6 +336,18 @@ export class CredentialBrokerImpl implements CredentialBroker {
             ),
           );
           break;
+        case 'aws-role': {
+          let creds;
+          try {
+            creds = await this.awsRole({ region: material.region!, role_arn: material.role_arn, external_id: material.external_id, session_name: material.session_name });
+          } catch (e) {
+            const msg = `could not obtain AWS credentials${material.role_arn ? ` for ${material.role_arn}` : ''}: ${(e as Error).message}`;
+            await audit({ ok: false, error: msg });
+            throw new BreadboardError('internal', `broker: ${msg}`, { capability: input.capability });
+          }
+          Object.assign(headers, signSigV4({ method, url: url.toString(), headers, body }, creds, { region: material.region!, service: material.service! }));
+          break;
+        }
         case 'raw':
           break;
       }
@@ -375,11 +403,12 @@ export class CredentialBrokerImpl implements CredentialBroker {
   /**
    * Credential material for MCP server auth ([06] §9) — internal only, never exposed over the API.
    * Returns `{kind, ...material}`: bearer → `token`; basic → `username`/`password`; header/query → name/value pairs;
-   * aws-sigv4 → key fields; null when the capability has no credential.
+   * aws-sigv4 → key fields; null when the capability has no credential. `aws-role` holds no material to hand over.
    */
   async credentialFor(capability: string): Promise<Record<string, string> | null> {
     const cap = await this.capability(capability);
     if (!cap?.credential) return null;
+    if (cap.credential.kind === 'aws-role') throw new BreadboardError('validation-failed', `capability '${capability}' uses an aws-role credential, which signs brokered requests only and cannot authenticate an MCP server`);
     return { kind: cap.credential.kind, ...cap.credential.material };
   }
 

@@ -16,6 +16,7 @@
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1144.0",
     "@aws-sdk/client-s3": "^3.1144.0",
+    "@aws-sdk/credential-providers": "^3.1144.0",
     "@aws-sdk/rds-signer": "^3.1144.0",
     "@breadboard/sandbox-runtime": "*",
     "@breadboard/shared": "*",

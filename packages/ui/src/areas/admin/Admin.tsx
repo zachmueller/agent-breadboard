@@ -6,7 +6,7 @@ import { useAdminList, useAdminMutation, del, get, post } from '../../lib/querie
 import { useCurrentUser } from '../../lib/auth';
 import { useUrlSearch } from '../../lib/url';
 import { asPage, errorMessage } from '../../lib/api';
-import { formatCost, formatDateTime, humanize } from '../../lib/format';
+import { formatCost, formatDateTime } from '../../lib/format';
 import { toast } from '../../lib/toast';
 import type { BrokerCapabilityDto, BrokerCredentialDto, CreatedServiceTokenDto, RoleDto, RoleMemberDto, ServiceTokenDto, UserDto } from '../../lib/types';
 import { cn } from '../../components/cn';
@@ -526,6 +526,7 @@ function BrokerTab() {
               {(c.scope.methods ?? ['*']).join('|')} {(c.scope.path_prefixes ?? []).join(', ')}
             </span>
           )}
+          {!!c.scope.scopes?.length && <span className="text-fg-subtle">scopes: {c.scope.scopes.join(', ')}</span>}
         </span>
       ),
     },
@@ -612,11 +613,31 @@ function AuditTable({ rows }: { rows: Array<Record<string, unknown>> }) {
   return <DataTable caption="Broker audit" columns={cols} rows={rows} rowKey={(r) => String(r.audit_id ?? `${r.at}-${r.capability}`)} empty={<EmptyState title="No brokered requests yet" compact />} dense maxHeight="28rem" />;
 }
 
+/** The broker's credential kinds (server `CREDENTIAL_KINDS`) and the secret shape each expects. */
+const CREDENTIAL_KINDS: Record<string, { structured: boolean; placeholder: string; hint?: string }> = {
+  bearer: { structured: false, placeholder: '' },
+  basic: { structured: false, placeholder: 'user:password' },
+  header: { structured: true, placeholder: '{"X-Api-Key": "…"}' },
+  query: { structured: true, placeholder: '{"api_key": "…"}' },
+  'aws-sigv4': { structured: true, placeholder: '{"access_key_id": "…", "secret_access_key": "…", "region": "us-east-1", "service": "execute-api"}' },
+  'aws-role': {
+    structured: true,
+    placeholder: '{"region": "us-east-1", "service": "athena", "role_arn": "arn:aws:iam::<account>:role/<name>"}',
+    hint: "No keys: the server's own AWS credentials sign, after assuming role_arn if given. Optional: external_id, session_name.",
+  },
+  raw: { structured: false, placeholder: '' },
+};
+
 function CredentialDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [kind, setKind] = useState('bearer');
   const [secret, setSecret] = useState('');
   const [structured, setStructured] = useState(false);
+  const shape = CREDENTIAL_KINDS[kind]!;
+  const chooseKind = (k: string) => {
+    setKind(k);
+    setStructured(CREDENTIAL_KINDS[k]!.structured);
+  };
   const create = useAdminMutation((b: { name: string; kind: string; secret: string | Record<string, string> }) => post('/admin/broker/credentials', b), ['credentials']);
   let value: string | Record<string, string> | null = secret || null;
   let err: string | null = null;
@@ -649,13 +670,13 @@ function CredentialDialog({ onClose }: { onClose: () => void }) {
     >
       <div className="grid grid-cols-[1fr_9rem] gap-3">
         <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus placeholder="e.g. github-token" />
-        <Select label="Kind" value={kind} onChange={(e) => setKind(e.target.value)} options={['bearer', 'basic', 'header', 'aws', 'oauth2', 'other'].map((k) => ({ value: k, label: humanize(k) }))} />
+        <Select label="Kind" value={kind} onChange={(e) => chooseKind(e.target.value)} options={Object.keys(CREDENTIAL_KINDS).map((k) => ({ value: k, label: k }))} />
       </div>
       <Checkbox label="Structured secret (JSON object of strings)" checked={structured} onChange={(e) => setStructured(e.target.checked)} />
       {structured ? (
-        <TextArea label="Secret" mono rows={5} value={secret} onChange={(e) => setSecret(e.target.value)} error={err ?? undefined} placeholder={'{"username": "…", "password": "…"}'} autoComplete="off" />
+        <TextArea label={kind === 'aws-role' ? 'Settings' : 'Secret'} mono rows={5} value={secret} onChange={(e) => setSecret(e.target.value)} error={err ?? undefined} hint={shape.hint} placeholder={shape.placeholder || '{"username": "…", "password": "…"}'} autoComplete="off" />
       ) : (
-        <Input label="Secret" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} required autoComplete="off" />
+        <Input label="Secret" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} required autoComplete="off" placeholder={shape.placeholder || undefined} />
       )}
     </ConfirmDialog>
   );
@@ -674,6 +695,7 @@ function CapabilityDialog({ credentials, onClose }: { credentials: string[]; onC
   const [hosts, setHosts] = useState('');
   const [methods, setMethods] = useState('');
   const [paths, setPaths] = useState('');
+  const [scopes, setScopes] = useState('');
   const create = useAdminMutation((b: Record<string, unknown>) => post('/admin/broker/capabilities', b), ['capabilities']);
   const hostList = splitList(hosts);
   return (
@@ -687,8 +709,9 @@ function CapabilityDialog({ credentials, onClose }: { credentials: string[]; onC
       onConfirm={async () => {
         const m = splitList(methods).map((x) => x.toUpperCase());
         const p = splitList(paths);
+        const sc = splitList(scopes);
         try {
-          await create.mutateAsync({ name: name.trim(), credential: credential || null, description: desc.trim() || undefined, scope: { hosts: hostList, ...(m.length ? { methods: m } : {}), ...(p.length ? { path_prefixes: p } : {}) } });
+          await create.mutateAsync({ name: name.trim(), credential: credential || null, description: desc.trim() || undefined, scope: { hosts: hostList, ...(m.length ? { methods: m } : {}), ...(p.length ? { path_prefixes: p } : {}), ...(sc.length ? { scopes: sc } : {}) } });
           toast.success('Capability defined');
           onClose();
         } catch (e) {
@@ -706,6 +729,7 @@ function CapabilityDialog({ credentials, onClose }: { credentials: string[]; onC
         <Input label="Methods (optional)" value={methods} onChange={(e) => setMethods(e.target.value)} placeholder="GET, POST" />
         <Input label="Path prefixes (optional)" value={paths} onChange={(e) => setPaths(e.target.value)} placeholder="/repos/" />
       </div>
+      <Input label="Tool scopes (optional)" value={scopes} onChange={(e) => setScopes(e.target.value)} placeholder="read, query" hint="The scopes a tool manifest may declare for this capability. A 'read' declaration only ever allows GET/HEAD/OPTIONS." />
     </ConfirmDialog>
   );
 }

@@ -367,6 +367,18 @@ describe('BreadboardStack', () => {
     expect(() => synth({ trustedProxyUser: 'zach; rm -rf /' })).toThrow(/trustedProxyUser must be a user handle/);
   });
 
+  it('lets the server assume broker roles only when listed, without touching the host', () => {
+    const assume = (x: Template) => statements(x).filter((st) => [st.Action].flat().includes('sts:AssumeRole'));
+    expect(assume(t)).toHaveLength(0);
+    t.hasOutput('ServerRoleArn', {});
+    const arns = ['arn:aws:iam::123456789012:role/breadboard-test-data', 'arn:aws:iam::123456789012:role/other'];
+    const withRoles = synth({ brokerRoleArns: arns });
+    expect(assume(withRoles).map((st) => st.Resource)).toEqual([arns]);
+    const ud = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
+    expect(ud(withRoles)).toBe(ud(t));
+    expect(() => synth({ brokerRoleArns: ['arn:aws:iam::123456789012:user/alice'] })).toThrow(/brokerRoleArns must be IAM role ARNs/);
+  });
+
   it('rejects a publicUrl that is not scheme://host[:port]', () => {
     for (const bad of ['https://bb.example.com/app', 'bb.example.com', 'https://bb.example.com;rm -rf /', 'ftp://bb.example.com']) {
       expect(() => synth({ publicUrl: bad })).toThrow(/publicUrl must be scheme:\/\/host\[:port\]/);
@@ -401,7 +413,7 @@ describe('BreadboardStack', () => {
     expect(Object.keys(t.findOutputs('*')).sort()).toEqual(
       [
         'AdminTokenSecretArn', 'BrokerMasterKeySecretArn', 'DbSecretArn', 'ObjectsBucket', 'RdsEndpoint', 'ServerIp', 'ServerUrl', 'TokenSigningKeySecretArn',
-        'ServerInstanceId', 'ServerSecurityGroupId', 'ServerPrivateDnsName', 'ServerPort', 'VpcId', 'ServerSubnetId',
+        'ServerInstanceId', 'ServerSecurityGroupId', 'ServerPrivateDnsName', 'ServerPort', 'VpcId', 'ServerSubnetId', 'ServerRoleArn',
       ].sort(),
     );
   });

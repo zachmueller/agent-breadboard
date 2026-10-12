@@ -194,3 +194,53 @@ describe('signSigV4', () => {
     expect(h['x-amz-date']).toBe('20150830T123600Z');
   });
 });
+
+describe('aws-role credentials', () => {
+  it('validates the material, which holds no keys', async () => {
+    const by = f.adminPrincipal;
+    const reg = (secret: Record<string, string>) => broker.registerCredential({ name: 'role-x', kind: 'aws-role', secret, by });
+    await expectError(reg({ region: 'us-east-1' }), 'validation-failed', /expected \{region, service/);
+    await expectError(reg({ region: 'us-east-1', service: 'athena', secret_access_key: 'x' }), 'validation-failed', /unknown field/);
+    await expectError(reg({ region: 'us-east-1', service: 'athena', role_arn: 'arn:aws:iam::123:user/x' }), 'validation-failed', /role_arn/);
+    await expectError(reg({ region: 'us-east-1', service: 'athena', external_id: 'abc' }), 'validation-failed', /needs role_arn/);
+    await expectError(reg({ region: 'us-east-1', service: 'athena', role_arn: 'arn:aws:iam::123456789012:role/r', session_name: 'x' }), 'validation-failed', /session_name/);
+  });
+
+  it('signs with resolved credentials, assumes the named role, and audits resolver failures', async () => {
+    const asked: Array<Record<string, unknown>> = [];
+    const roleBroker = await createCredentialBroker({
+      db: f.db,
+      team_id: f.team_id,
+      masterKey: MASTER,
+      log: f.log,
+      awsRoleResolver: async (m) => {
+        asked.push({ ...m });
+        if (m.role_arn?.endsWith('/broken')) throw new Error('AccessDenied');
+        return { access_key_id: 'ASIAROLEEXAMPLE', secret_access_key: 'role-SECRET', session_token: 'tok-SECRET' };
+      },
+    });
+    const by = f.adminPrincipal;
+    await roleBroker.registerCredential({ name: 'role', kind: 'aws-role', secret: { region: 'us-west-2', service: 'athena', role_arn: 'arn:aws:iam::123456789012:role/data', external_id: 'ext-1' }, by });
+    await roleBroker.registerCredential({ name: 'role-broken', kind: 'aws-role', secret: { region: 'us-west-2', service: 'glue', role_arn: 'arn:aws:iam::123456789012:role/broken' }, by });
+    await roleBroker.defineCapability({ name: 'role', credential: 'role', scope: { hosts: ['127.0.0.1'], methods: ['POST'], scopes: ['query'] }, by });
+    await roleBroker.defineCapability({ name: 'role-broken', credential: 'role-broken', scope: { hosts: ['127.0.0.1'] }, by });
+    const roleTool = (await makeToolDir({ language: 'typescript', entrypoint: 'src/index.ts', capabilities: [{ name: 'role', scope: 'query' }, { name: 'role-broken', scope: 'query' }] }, { 'src/index.ts': '' })).tool;
+    const callRole = (capability: string) =>
+      roleBroker.fetch({ capability, request: { url: `${base}/athena`, method: 'POST', headers: { 'x-amz-target': 'AmazonAthena.GetQueryExecution', 'content-type': 'application/x-amz-json-1.1' }, body: '{}' }, tool: roleTool, principal: f.adminPrincipal, execution_key: 'ses_X:s:1:0' });
+
+    seen.length = 0;
+    expect((await callRole('role')).status).toBe(200);
+    expect(asked[0]).toEqual({ region: 'us-west-2', role_arn: 'arn:aws:iam::123456789012:role/data', external_id: 'ext-1', session_name: undefined });
+    expect(seen[0]!.headers.authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=ASIAROLEEXAMPLE\/\d{8}\/us-west-2\/athena\/aws4_request, SignedHeaders=[a-z0-9;-]*x-amz-target[a-z0-9;-]*, Signature=[0-9a-f]{64}$/);
+    expect(seen[0]!.headers['x-amz-security-token']).toBe('tok-SECRET');
+
+    await expectError(callRole('role-broken'), 'internal', /could not obtain AWS credentials for arn:aws:iam::123456789012:role\/broken: AccessDenied/);
+    expect(seen.length).toBe(1);
+    const audit = await roleBroker.audit(20);
+    expect(audit.some((r) => r.capability === 'role-broken' && r.ok === false && String(r.error).includes('AccessDenied'))).toBe(true);
+    expect(JSON.stringify(audit)).not.toMatch(/SECRET/);
+
+    // Nothing to hand an MCP server: the kind stores no keys.
+    await expectError(roleBroker.credentialFor('role'), 'validation-failed', /signs brokered requests only/);
+  });
+});
