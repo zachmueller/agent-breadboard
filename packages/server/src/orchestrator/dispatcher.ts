@@ -1,6 +1,7 @@
 import type { BreadboardConfig, SessionRecord } from '@breadboard/shared';
 import type { Dispatcher, Orchestrator, SessionStore, TaskService } from '../core/services.js';
 import type { Logger } from '../core/logger.js';
+import { isOrchestrated } from './orchestrator.js';
 
 export interface DispatcherDeps {
   sessions: SessionStore;
@@ -138,7 +139,7 @@ export class DispatcherImpl implements Dispatcher {
   /** Running sessions (DB) plus in-flight launches, mapped to their parent ids. */
   private async liveSet(): Promise<Map<string, string | null>> {
     const m = new Map<string, string | null>();
-    for (const s of await this.d.sessions.running()) m.set(s.session_id, s.parent_session ?? null);
+    for (const s of (await this.d.sessions.running()).filter(isOrchestrated)) m.set(s.session_id, s.parent_session ?? null);
     for (const [id, r] of this.inflight) m.set(id, r.parent);
     return m;
   }

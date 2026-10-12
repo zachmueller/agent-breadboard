@@ -67,6 +67,10 @@ export interface OrchestratorDeps {
 
 export const FINISH_TOOL = 'breadboard_finish';
 const ACTOR = SERVICE_ACTOR('orchestrator');
+
+/** Session kinds the orchestrator executes. Chats (`intake`, `conversation`) stay `running` while open and are driven by the conversation service. */
+export const ORCHESTRATED_KINDS: readonly string[] = ['circuit-run', 'eval-run'];
+export const isOrchestrated = (s: { kind: string }): boolean => ORCHESTRATED_KINDS.includes(s.kind);
 const LIVE_STATES: readonly SessionState[] = ['queued', 'running'];
 /** state_detail keys that survive every state transition (admission parameters). */
 const PRESERVED_KEYS = ['config_ref', 'pinned_context'] as const;
@@ -450,7 +454,7 @@ export class OrchestratorImpl implements Orchestrator {
 
   async recover(): Promise<number> {
     let n = 0;
-    for (const s of await this.d.sessions.running()) {
+    for (const s of (await this.d.sessions.running()).filter(isOrchestrated)) {
       if (this.active.has(s.session_id)) continue;
       for (const cp of await this.d.sessions.checkpoints(s.session_id)) {
         if (cp.status !== 'running') continue;

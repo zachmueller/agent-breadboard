@@ -106,6 +106,26 @@ describe('dispatcher: max_concurrent_runs and per-run budget', () => {
     const started = (await k.sessions.events(s.session_id)).filter((e) => e.event_type === 'session-started');
     expect(started).toHaveLength(1);
   });
+
+  it('open chats are not runs: recover() leaves them alone and they hold no capacity', async () => {
+    const budget = { max_cost_usd: 5, max_tokens: 1_000_000, spent_usd: 0, spent_tokens: 0 };
+    const chats = await Promise.all(
+      (['conversation', 'intake'] as const).map((kind) => k.sessions.create({ kind, state: 'running', budget, config_commit: k.config.main, created_by: BY, state_detail: { subagent_uid: mintUid() } })),
+    );
+    expect(await k.orch.recover()).toBe(0);
+    for (const c of chats) expect((await k.sessions.mustGet(c.session_id)).state).toBe('running');
+    expect((await k.dispatcher.capacity()).running).toBe(0);
+    // At max_concurrent_runs = 1 a circuit run is still admitted alongside the open chats.
+    const s = await k.orch.enqueue({ circuit_uid: circuit.uid, input: {}, created_by: BY });
+    k.dispatcher.start();
+    try {
+      await until(() => gates.has(s.session_id));
+      gates.get(s.session_id)!.resolve();
+      expect((await k.orch.waitFor(s.session_id, 10000)).state).toBe('completed');
+    } finally {
+      await k.dispatcher.stop();
+    }
+  });
 });
 
 describe('dispatcher: hourly spend window', () => {

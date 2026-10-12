@@ -25,7 +25,7 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 72 files, 545 passed, 4 skipped (the skips are Docker-only); 2026-10-12 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 72 files, 546 passed, 4 skipped (the skips are Docker-only); 2026-10-12 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
 | CDK template | `cd deploy/aws && npm test` | 29 passed |
@@ -62,6 +62,7 @@ Prompted by a first tool-designer session behind an authenticating edge. The rep
 1. **Chat replies run in the background.** `POST /conversations/:id/messages` with `Prefer: respond-async` returns `202` at once and runs the reply on the server. The edge's 60 s origin timeout had cut off the old blocking request. `GET /conversations/:id` now reports `busy`, `last_error` and the session's `proposals`. Conversation sessions now publish `session.event` (before, only circuit runs did). The designer panel and the Intake chat follow a reply through those events and a slow fallback poll, and also after a reload. If a send fails, they check the server before showing an error, and they send an idempotency key. Without the header, the endpoint still replies inline for API and MCP callers.
 2. **A tool call cut off at `max_tokens` never runs.** The agent loop answers it with an `output-truncated` error result, so the model re-issues it with smaller arguments. Before, the half-written call ran with empty arguments. For Claude models with a 128K output cap, the Bedrock default output ceiling rose from 16K to 32K.
 3. **`read_config` accepts a definition's directory** (`tools/<UID>`, `subagents/<UID>`), as agents tend to write it.
+4. **Only circuit and eval runs are orchestrator runs.** Startup recovery and the dispatcher's run-slot count now skip `intake` and `conversation` sessions. Before, a server restart re-queued every open chat as a circuit run, which suspended it with `circuit null not found` (seen on the first upgrade of an instance with an open designer chat). Every open chat also held one `max_concurrent_runs` slot.
 
 ## Next steps (in priority order)
 
