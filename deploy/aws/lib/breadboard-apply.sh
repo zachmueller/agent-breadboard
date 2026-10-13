@@ -25,8 +25,8 @@ if [[ -n "$SANDBOX_IMAGE_PY" ]]; then pull "$SANDBOX_IMAGE_PY" && docker tag "$S
 
 # Deployment settings that override the boot-time env file, in a root-only env file passed after it (docker applies the
 # later file's values): PUBLIC_URL when set; an empty BREADBOARD_BOOTSTRAP_ADMIN_TOKEN (the server's "disabled") when
-# the bootstrap admin is off; and the trusted proxy, whose secret is fetched here so its value never enters a command
-# line or the CloudFormation template.
+# the bootstrap admin is off; the trusted proxy, whose secret is fetched here so its value never enters a command
+# line or the CloudFormation template; and the load-balancer identity settings when set.
 umask 077
 {
   if [[ -n "${PUBLIC_URL:-}" ]]; then echo "PUBLIC_URL=$PUBLIC_URL"; fi
@@ -36,6 +36,10 @@ umask 077
     echo "BREADBOARD_TRUSTED_PROXY_USER=$TRUSTED_PROXY_USER"
     echo "BREADBOARD_TRUSTED_PROXY_SECRET=$proxy_secret"
   fi
+  if [[ -n "${ALB_AUTH_ARN:-}" ]]; then echo "BREADBOARD_ALB_AUTH_ARN=$ALB_AUTH_ARN"; fi
+  if [[ -n "${ALB_AUTH_ISSUER:-}" ]]; then echo "BREADBOARD_ALB_AUTH_ISSUER=$ALB_AUTH_ISSUER"; fi
+  if [[ -n "${ALB_AUTH_CLIENT_ID:-}" ]]; then echo "BREADBOARD_ALB_AUTH_CLIENT_ID=$ALB_AUTH_CLIENT_ID"; fi
+  if [[ -n "${OIDC_ADOPT_HANDLES:-}" ]]; then echo "BREADBOARD_OIDC_ADOPT_HANDLES=$OIDC_ADOPT_HANDLES"; fi
 } > "$OVERRIDES.tmp"
 mv "$OVERRIDES.tmp" "$OVERRIDES"
 

@@ -93,6 +93,37 @@ describe('HocuspocusSyncServer over WebSocket', () => {
     expect(wrong.state.synced || none.state.synced).toBe(false);
   });
 
+  it('takes the edge identity once per socket, so documents opened later still authenticate', async () => {
+    const first = await kit.knowledge.createNote({ title: 'First', markdown: 'one', domains: ['ops'], by: kit.f.memberPrincipal });
+    const later = await kit.knowledge.createNote({ title: 'Later', markdown: 'two', domains: ['ops'], by: kit.f.memberPrincipal });
+    kit.proxy.principal = { ...kit.f.memberPrincipal, token_kind: 'proxy' };
+    const headers = { 'x-test-proxy': kit.proxy.secret };
+    const Polyfill = class extends (WsWebSocket as any) {
+      constructor(address: string, protocols?: string | string[]) {
+        super(address, protocols, { headers });
+      }
+    };
+    const socket = new HocuspocusProviderWebsocket({ url, WebSocketPolyfill: Polyfill as any });
+    const open = (name: string) => {
+      const state = { synced: false, authFailed: null as string | null };
+      const document = new Y.Doc({ gc: false });
+      const provider = new HocuspocusProvider({ websocketProvider: socket, name, document, token: '', onSynced: () => void (state.synced = true), onAuthenticationFailed: ({ reason }: { reason: string }) => void (state.authFailed = reason) } as any);
+      provider.attach();
+      cleanups.push(() => provider.destroy());
+      return { document, state };
+    };
+    cleanups.push(() => socket.destroy());
+    const a = open(first.uid);
+    await until(() => a.state.synced, 5000, 'first document synced');
+    // The edge's header would no longer verify (a load balancer's token expires within minutes); the socket keeps the
+    // identity it was opened with.
+    kit.proxy.secret = 'rotated';
+    const b = open(later.uid);
+    await until(() => b.state.synced || !!b.state.authFailed, 5000, 'later document settled');
+    expect(b.state.authFailed).toBeNull();
+    expect(docToMarkdown(b.document)).toBe('two');
+  });
+
   it('syncs edits between two clients and persists them to yjs_updates', async () => {
     const note = await kit.knowledge.createNote({ title: 'Shared', markdown: 'first block\n\nsecond block', domains: ['ops'], by: kit.f.memberPrincipal });
     const a = connect(note.uid, 'member-token');

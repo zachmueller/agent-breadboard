@@ -4,6 +4,7 @@ import {
   RELOAD_MIN_INTERVAL_MS,
   classifyEdgeForbidden,
   handleEdgeAuthLoss,
+  isEdgeRedirect,
   looksLikeEdgeAuthPage,
   probeEdgeAuth,
   reloadForEdgeAuth,
@@ -11,6 +12,7 @@ import {
 } from './edge-auth';
 
 const CFS_PAGE = '<!DOCTYPE html>\n<html>\n<head>\n    <script src="/js/cfs-handler.js"></script>\n</head>\n<body>…</body>\n</html>\n';
+const ALB_401 = '<html>\r\n<head><title>401 Authorization Required</title></head>\r\n<body>\r\n<center><h1>401 Authorization Required</h1></center>\r\n</body>\r\n</html>\r\n';
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));
@@ -32,7 +34,23 @@ describe('looksLikeEdgeAuthPage', () => {
     expect(looksLikeEdgeAuthPage(403, 'application/json', CFS_PAGE)).toBe(false);
     expect(looksLikeEdgeAuthPage(403, null, '{"error":"forbidden"}')).toBe(false);
     expect(looksLikeEdgeAuthPage(200, 'text/html', CFS_PAGE)).toBe(false);
-    expect(looksLikeEdgeAuthPage(401, 'text/html', CFS_PAGE)).toBe(false);
+    expect(looksLikeEdgeAuthPage(500, 'text/html', CFS_PAGE)).toBe(false);
+  });
+
+  it('recognises a load balancer’s 401, but not the server’s JSON one', () => {
+    expect(looksLikeEdgeAuthPage(401, 'text/html', ALB_401)).toBe(true);
+    expect(looksLikeEdgeAuthPage(401, null, '')).toBe(true);
+    expect(looksLikeEdgeAuthPage(401, 'text/plain', 'Unauthorized')).toBe(true);
+    expect(looksLikeEdgeAuthPage(401, 'application/json; charset=utf-8', '{"error":{"code":"unauthorized","message":"missing credentials"}}')).toBe(false);
+    expect(looksLikeEdgeAuthPage(401, null, '{"error":{"code":"unauthorized"}}')).toBe(false);
+  });
+});
+
+describe('isEdgeRedirect', () => {
+  it('is a fetch with redirect: manual that was redirected', () => {
+    expect(isEdgeRedirect({ type: 'opaqueredirect' })).toBe(true);
+    expect(isEdgeRedirect({ type: 'basic' })).toBe(false);
+    expect(isEdgeRedirect({ type: 'cors' })).toBe(false);
   });
 });
 
@@ -59,6 +77,10 @@ describe('probeEdgeAuth', () => {
   it('tells an expired proxy session from a healthy or unreachable server', async () => {
     expect(await probeEdgeAuth(fakeFetch(200, 'application/json', '{"ok":true}'))).toBe('ok');
     expect(await probeEdgeAuth(fakeFetch(403, 'text/html', CFS_PAGE))).toBe('edge-auth');
+    expect(await probeEdgeAuth(fakeFetch(401, 'text/html', ALB_401))).toBe('edge-auth');
+    const redirected = vi.fn(async () => ({ ok: false, status: 0, type: 'opaqueredirect', headers: new Headers(), text: async () => '' }) as unknown as Response) as unknown as typeof fetch;
+    expect(await probeEdgeAuth(redirected)).toBe('edge-auth');
+    expect(redirected).toHaveBeenCalledWith('/api/v1/health', expect.objectContaining({ redirect: 'manual' }));
     expect(await probeEdgeAuth(fakeFetch(502, 'text/html', '<html>bad gateway</html>'))).toBe('unknown');
     expect(await probeEdgeAuth(vi.fn(async () => { throw new TypeError('offline'); }) as unknown as typeof fetch)).toBe('unknown');
   });

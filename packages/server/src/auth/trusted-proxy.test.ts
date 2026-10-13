@@ -68,6 +68,13 @@ describe('trusted proxy: request authentication', () => {
     expect(twice.statusCode).toBe(401);
   });
 
+  it('gives no trust to a request another site made (the proxy secret rides on ambient cookies)', async () => {
+    const host = 'bb.example.com';
+    expect((await me({ host, origin: `https://${host}`, [HEADER]: SECRET })).statusCode).toBe(200);
+    expect((await me({ host, origin: 'https://evil.example.com', [HEADER]: SECRET })).statusCode).toBe(401);
+    expect((await me({ host, origin: 'null', [HEADER]: SECRET })).statusCode).toBe(401);
+  });
+
   it('lets an explicit credential win, and falls back to the proxy user when it is stale', async () => {
     expect((await me({ authorization: `Bearer ${memberTok}`, [HEADER]: SECRET })).json().user.handle).toBe(f.member.handle);
     expect((await me({ authorization: 'Bearer stale-or-revoked', [HEADER]: SECRET })).json()).toMatchObject({ user: { handle: 'operator' }, token_kind: 'proxy' });

@@ -49,6 +49,19 @@ const zEnv = z.object({
   BREADBOARD_TRUSTED_PROXY_SECRET: z.string().optional(),
   BREADBOARD_TRUSTED_PROXY_USER: z.string().optional(),
   BREADBOARD_TRUSTED_PROXY_HEADER: z.string().default('x-breadboard-proxy-auth'),
+  /**
+   * Load-balancer identity ([12] §3): an AWS Application Load Balancer that signs users in with OIDC and forwards their
+   * claims as a signed `x-amzn-oidc-data` JWT. Set to that load balancer's ARN; every request's header is verified
+   * against it and signs in as the token's subject. Optionally pin the IdP's issuer and the OIDC client id as well.
+   */
+  BREADBOARD_ALB_AUTH_ARN: z.string().optional(),
+  BREADBOARD_ALB_AUTH_ISSUER: z.string().optional(),
+  BREADBOARD_ALB_AUTH_CLIENT_ID: z.string().optional(),
+  /**
+   * Comma-separated handles of existing users without an OIDC subject (e.g. the trusted-proxy user) that the first
+   * OIDC or load-balancer sign-in with the same handle becomes, instead of a new suffixed user.
+   */
+  BREADBOARD_OIDC_ADOPT_HANDLES: z.string().optional(),
   UI_DIST_DIR: z.string().optional(),
   ORCHESTRATOR_ENABLED: bool.default(true),
   CONNECTORS_ENABLED: bool.default(true),
@@ -153,6 +166,53 @@ export function trustedProxyConfig(env: Env): TrustedProxyConfig | null {
   if (problems.length) throw new Error(`invalid trusted-proxy configuration:\n  - ${problems.join('\n  - ')}`);
   if (!env.BREADBOARD_TRUSTED_PROXY_SECRET) return null;
   return { header: env.BREADBOARD_TRUSTED_PROXY_HEADER.trim().toLowerCase(), secret: env.BREADBOARD_TRUSTED_PROXY_SECRET, user: env.BREADBOARD_TRUSTED_PROXY_USER!.trim() };
+}
+
+/** `arn:aws:elasticloadbalancing:<region>:<account>:loadbalancer/app/<name>/<id>`: Application Load Balancers only. */
+const ALB_ARN = /^arn:aws:elasticloadbalancing:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:loadbalancer\/app\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,30}[A-Za-z0-9])?\/[0-9a-f]{16}$/;
+const OIDC_CLIENT_ID = /^[A-Za-z0-9._~:@-]{1,255}$/;
+
+export interface AlbAuthConfig {
+  /** The load balancer's ARN: the `signer` every accepted token must name. */
+  signerArn: string;
+  /** Where the load balancer publishes the public key for a token's `kid`. */
+  keyUrl(kid: string): string;
+  /** When set, the token's `iss` must equal it. */
+  issuer: string | null;
+  /** When set, the token's `client` must equal it. */
+  clientId: string | null;
+}
+
+/** Load-balancer identity misconfigurations, refused in every environment. */
+export function albAuthProblems(env: Env): string[] {
+  const arn = env.BREADBOARD_ALB_AUTH_ARN?.trim() || undefined;
+  const issuer = env.BREADBOARD_ALB_AUTH_ISSUER?.trim() || undefined;
+  const clientId = env.BREADBOARD_ALB_AUTH_CLIENT_ID?.trim() || undefined;
+  if (!arn) return issuer || clientId ? ['BREADBOARD_ALB_AUTH_ISSUER and BREADBOARD_ALB_AUTH_CLIENT_ID need BREADBOARD_ALB_AUTH_ARN'] : [];
+  const problems: string[] = [];
+  if (!ALB_ARN.test(arn)) problems.push(`BREADBOARD_ALB_AUTH_ARN must be an Application Load Balancer ARN in the aws partition (arn:aws:elasticloadbalancing:<region>:<account>:loadbalancer/app/<name>/<id>), got ${arn}`);
+  if (issuer && !/^https:\/\/[^\s/?#]+(?:\/[^\s?#]*)?$/.test(issuer)) problems.push(`BREADBOARD_ALB_AUTH_ISSUER must be an https URL, got ${issuer}`);
+  if (clientId && !OIDC_CLIENT_ID.test(clientId)) problems.push('BREADBOARD_ALB_AUTH_CLIENT_ID has characters an OIDC client id cannot have');
+  return problems;
+}
+
+export function albAuthConfig(env: Env): AlbAuthConfig | null {
+  const problems = albAuthProblems(env);
+  if (problems.length) throw new Error(`invalid load-balancer identity configuration:\n  - ${problems.join('\n  - ')}`);
+  const signerArn = env.BREADBOARD_ALB_AUTH_ARN?.trim();
+  if (!signerArn) return null;
+  const region = ALB_ARN.exec(signerArn)![1]!;
+  return {
+    signerArn,
+    keyUrl: (kid) => `https://public-keys.auth.elb.${region}.amazonaws.com/${encodeURIComponent(kid)}`,
+    issuer: env.BREADBOARD_ALB_AUTH_ISSUER?.trim() || null,
+    clientId: env.BREADBOARD_ALB_AUTH_CLIENT_ID?.trim() || null,
+  };
+}
+
+/** `BREADBOARD_OIDC_ADOPT_HANDLES` as a list (lower-cased, deduplicated). */
+export function oidcAdoptHandles(env: Env): string[] {
+  return [...new Set((env.BREADBOARD_OIDC_ADOPT_HANDLES ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean))];
 }
 
 /** Refuse to start in production with missing or well-known secrets (see `productionSecretProblems`). */

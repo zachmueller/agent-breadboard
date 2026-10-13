@@ -16,12 +16,16 @@ import { SignJWT, EncryptJWT, jwtVerify, jwtDecrypt, type JWTPayload } from 'jos
 import * as oidc from 'openid-client';
 import { BreadboardError, type Actor, type BreadboardConfig } from '@breadboard/shared';
 import type { Db } from '../db/index.js';
-import type { TrustedProxyConfig } from '../core/env.js';
+import type { AlbAuthConfig, TrustedProxyConfig } from '../core/env.js';
 import type { Logger } from '../core/logger.js';
 import { WELL_KNOWN_SECRET } from '../core/env.js';
 import type { AuthService, SessionStore } from '../core/services.js';
 import { userPrincipal, type Grants, type Principal } from '../core/principal.js';
 import { hashToken, type IdentityStore, type UserRecord } from '../identity/identity.js';
+import { ALB_IDENTITY_HEADER, createAlbVerifier, type AlbVerifier, type FetchAlbKey } from './alb.js';
+
+type OidcSettings = NonNullable<BreadboardConfig['auth']['oidc']>;
+type RequestHeaders = Readonly<Record<string, string | string[] | undefined>>;
 
 export const USER_TOKEN_TTL_S = 12 * 60 * 60;
 const CACHE_TTL_MS = 30_000;
@@ -53,6 +57,15 @@ export interface AuthServiceDeps {
   bootstrapAdminToken?: string | null;
   /** Trusted proxy ([12] §3): requests carrying `header: secret` sign in as `user` (created as an admin on first use). */
   trustedProxy?: TrustedProxyConfig | null;
+  /** Load-balancer identity ([12] §3): a verified `x-amzn-oidc-data` header signs in as its subject. */
+  albAuth?: AlbAuthConfig | null;
+  /** Fetches the load balancer's public keys (defaults to HTTPS; tests stub it). */
+  fetchAlbKey?: FetchAlbKey;
+  /**
+   * `BREADBOARD_OIDC_ADOPT_HANDLES`: existing users without an OIDC subject that the first OIDC or load-balancer
+   * sign-in with the same handle becomes (keeping their id, admin flag and history) rather than a suffixed new user.
+   */
+  adoptHandles?: readonly string[];
 }
 
 export const BOOTSTRAP_ADMIN_HANDLE = 'bootstrap-admin';
@@ -119,6 +132,8 @@ export class AuthServiceImpl implements AuthService {
   private snapshot: BreadboardConfig | null = null;
   private localUsersSig: string | null = null;
   private oidcConfig: { key: string; config: oidc.Configuration } | null = null;
+  private readonly alb: AlbVerifier | null;
+  private readonly adopt: ReadonlySet<string>;
 
   readonly oidc: AuthService['oidc'];
 
@@ -126,6 +141,8 @@ export class AuthServiceImpl implements AuthService {
     if (!deps.signingKey) throw new Error('auth: signingKey is required');
     this.jwsKey = new TextEncoder().encode(deps.signingKey);
     this.jweKey = createHash('sha256').update(`breadboard-actor-token:${deps.signingKey}`).digest();
+    this.alb = deps.albAuth ? createAlbVerifier(deps.albAuth, { fetchKey: deps.fetchAlbKey }) : null;
+    this.adopt = new Set(deps.adoptHandles ?? []);
     this.oidc = {
       enabled: () => this.oidcEnabled(this.snapshot),
       authorizationUrl: (state, nonce) => this.oidcAuthorizationUrl(state, nonce),
@@ -339,7 +356,19 @@ export class AuthServiceImpl implements AuthService {
           'Recover by setting BREADBOARD_BOOTSTRAP_ADMIN_TOKEN again (deploy/aws: cdk deploy -c bootstrapAdmin=true).',
       );
     } else {
-      this.deps.log.info({ bootstrap_admin: !!this.deps.bootstrapAdminToken, trusted_proxy_user: this.deps.trustedProxy?.user ?? null, admin_sign_in: paths }, 'admin sign-in paths');
+      this.deps.log.info(
+        { bootstrap_admin: !!this.deps.bootstrapAdminToken, trusted_proxy_user: this.deps.trustedProxy?.user ?? null, load_balancer: this.deps.albAuth?.signerArn ?? null, admin_sign_in: paths },
+        'admin sign-in paths',
+      );
+    }
+    // Moving from the trusted proxy to the load balancer: without adoption, the proxy user's first sign-in through the
+    // load balancer creates a second, suffixed user (who is not an admin).
+    const proxyUser = this.deps.trustedProxy?.user;
+    if (this.alb && proxyUser && !this.adopt.has(proxyUser.toLowerCase())) {
+      const row = await this.deps.identity.getUserByHandle(this.deps.team_id, proxyUser);
+      if (row && !row.oidc_subject && !row.deactivated_at) {
+        this.deps.log.warn({ handle: proxyUser }, 'the trusted-proxy user has no OIDC subject: signing in through the load balancer creates a separate user. Set BREADBOARD_OIDC_ADOPT_HANDLES to keep the same one.');
+      }
     }
   }
 
@@ -373,10 +402,26 @@ export class AuthServiceImpl implements AuthService {
       if (settings.auth.oidc!.group_mappings.admin.length) paths.push('OIDC admin group');
       for (const u of await identity.listUsers(team_id)) if (u.is_admin && u.oidc_subject && !u.deactivated_at) paths.push(`OIDC user ${u.handle}`);
     }
+    if (this.alb) {
+      // Admin status of load-balancer users is managed in the DB; an adoptable admin becomes one at first sign-in.
+      for (const u of await identity.listUsers(team_id)) {
+        if (!u.is_admin || u.deactivated_at) continue;
+        if (u.oidc_subject) paths.push(`load balancer user ${u.handle}`);
+        else if (this.adopt.has(u.handle)) paths.push(`load balancer user ${u.handle} (adopted at first sign-in)`);
+      }
+    }
     return paths;
   }
 
-  async proxyPrincipal(headers: Readonly<Record<string, string | string[] | undefined>>): Promise<Principal | null> {
+  /**
+   * The principal an authenticating edge vouches for ([12] §3), or null: a verified load-balancer identity header signs
+   * in as its subject; otherwise the trusted-proxy secret signs in as the proxy user. Both ride on credentials the
+   * browser attaches by itself (the edge's cookies), so neither is honoured for a request another site's page made.
+   * A load-balancer header that is present but does not verify is refused outright, never passed on to the proxy check.
+   */
+  async proxyPrincipal(headers: RequestHeaders): Promise<Principal | null> {
+    if (!sameOrigin(headers)) return null;
+    if (this.alb && headers[ALB_IDENTITY_HEADER] !== undefined) return this.albPrincipal(headers[ALB_IDENTITY_HEADER]);
     const proxy = this.deps.trustedProxy;
     if (!proxy) return null;
     const given = headers[proxy.header];
@@ -390,6 +435,28 @@ export class AuthServiceImpl implements AuthService {
     const { identity, team_id } = this.deps;
     const user = (await identity.getUserByHandle(team_id, proxy.user)) ?? (await identity.upsertUser({ team_id, handle: proxy.user, display_name: proxy.user, is_admin: true }));
     if (user.deactivated_at) throw new BreadboardError('unauthorized', 'the trusted-proxy user is deactivated');
+    const principal: Principal = { ...(await this.principalForUser(user)), token_kind: 'proxy' };
+    this.remember(key, principal, now + CACHE_TTL_MS);
+    return principal;
+  }
+
+  private async albPrincipal(data: string | string[] | undefined): Promise<Principal> {
+    // A repeated header arrives as an array (or comma-joined): never trusted.
+    if (typeof data !== 'string') throw new BreadboardError('unauthorized', 'invalid load-balancer identity');
+    let sub: string;
+    let claims: Record<string, unknown>;
+    try {
+      ({ sub, claims } = await this.alb!.verify(data));
+    } catch (err: any) {
+      this.deps.log.warn({ reason: err?.message ?? String(err) }, 'load-balancer identity rejected');
+      throw new BreadboardError('unauthorized', 'invalid load-balancer identity');
+    }
+    // Keyed by subject, not token: the load balancer re-signs every request.
+    const key = `alb:${sub}`;
+    const now = Date.now();
+    const hit = this.cache.get(key);
+    if (hit && hit.until > now) return hit.principal;
+    const user = await this.upsertIdpUser(sub, claims, null);
     const principal: Principal = { ...(await this.principalForUser(user)), token_kind: 'proxy' };
     this.remember(key, principal, now + CACHE_TTL_MS);
     return principal;
@@ -516,22 +583,33 @@ export class AuthServiceImpl implements AuthService {
       this.deps.log.debug({ err: err?.message }, 'OIDC userinfo unavailable; using id token claims');
     }
     const merged = { ...claims, ...info };
-    const user = await this.upsertOidcUser(settings, sub, merged);
+    const user = await this.upsertIdpUser(sub, merged, o);
     return { user, session_token: await this.mintUserToken(user) };
   }
 
-  private async upsertOidcUser(settings: BreadboardConfig, sub: string, c: Record<string, unknown>): Promise<UserRecord> {
+  /**
+   * The user an identity provider vouches for, found by subject or created at first sign-in. Native OIDC passes its
+   * settings, whose group mappings govern admin and the mapped review roles; the load balancer passes null, leaving both
+   * as managed in the DB. Subjects from native OIDC and the load balancer share one namespace: use one IdP for both.
+   */
+  private async upsertIdpUser(sub: string, c: Record<string, unknown>, o: OidcSettings | null): Promise<UserRecord> {
     const { identity, team_id } = this.deps;
-    const o = settings.auth.oidc!;
     const existing = await identity.getUserByOidc(sub);
     if (existing?.deactivated_at) throw new BreadboardError('unauthorized', 'user is deactivated');
 
     const email = typeof c.email === 'string' ? c.email : '';
     let handle = sanitizeHandle(typeof c.preferred_username === 'string' && c.preferred_username ? c.preferred_username : email ? email.split('@')[0]! : sub);
-    // Never link to (or collide with) another account by handle: suffix on conflict.
+    // Never link to (or collide with) another account by handle: suffix on conflict. The one exception is a handle the
+    // operator named for adoption, while its user has no subject yet: the first sign-in becomes that user.
     const clash = await identity.getUserByHandle(team_id, handle);
-    if (clash && clash.oidc_subject !== sub) handle = `${handle}-${createHash('sha256').update(sub).digest('hex').slice(0, 6)}`;
-    const display_name = typeof c.name === 'string' && c.name ? c.name : handle;
+    if (clash && clash.oidc_subject !== sub) {
+      const adoptable = !existing && !clash.oidc_subject && !clash.deactivated_at && this.adopt.has(clash.handle);
+      if (adoptable && (await identity.linkOidcSubject(clash.user_id, sub))) this.deps.log.warn({ handle, sub }, 'adopted an existing user for this OIDC subject');
+      else handle = `${handle}-${createHash('sha256').update(sub).digest('hex').slice(0, 6)}`;
+    }
+    // Without a `name` claim a new user is named after the handle; an existing one keeps its name.
+    const display_name = typeof c.name === 'string' && c.name ? c.name : undefined;
+    if (!o) return identity.upsertUser({ team_id, handle, display_name, oidc_subject: sub });
 
     const groups = groupsOf(c[o.groups_claim]);
     const adminGroups = o.group_mappings.admin;
@@ -564,6 +642,23 @@ function localUsersSignature(s: BreadboardConfig): string {
   return createHash('sha256')
     .update(JSON.stringify(s.auth.local_users.map((u) => [u.handle, u.display_name ?? null, u.admin, u.roles])))
     .digest('hex');
+}
+
+/**
+ * True for a request without an `Origin` (a navigation, a same-origin GET, a non-browser client) or with one naming
+ * the host the request was sent to. Browsers send `Origin` on every cross-origin request and WebSocket upgrade.
+ */
+function sameOrigin(headers: RequestHeaders): boolean {
+  const origin = headers.origin;
+  if (origin === undefined) return true;
+  const host = headers.host;
+  if (typeof origin !== 'string' || typeof host !== 'string' || !host) return false;
+  try {
+    const u = new URL(origin);
+    return (u.protocol === 'https:' || u.protocol === 'http:') && u.host === host.toLowerCase();
+  } catch {
+    return false; // includes `Origin: null`
+  }
 }
 
 function sanitizeHandle(h: string): string {

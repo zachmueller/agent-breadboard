@@ -4,7 +4,7 @@
  * `{error:{code,message,detail}}` responses become `ApiError`.
  */
 import type { Page, StreamEvent } from '@breadboard/shared';
-import { classifyEdgeForbidden, looksLikeEdgeAuthPage } from './edge-auth';
+import { classifyEdgeForbidden, isEdgeRedirect, looksLikeEdgeAuthPage } from './edge-auth';
 
 export const API_BASE = '/api/v1';
 export const TOKEN_KEY = 'bb_token';
@@ -149,10 +149,16 @@ export async function request<T = unknown>(method: string, path: string, opts: R
 
   let res: Response;
   try {
-    res = await fetch(buildUrl(path, opts.query), { method, headers, body, credentials: 'include', signal: opts.signal });
+    // `manual`: the API never redirects, so a redirect is a proxy sending us to its sign-in page; following it would
+    // end in a cross-origin CORS failure that looks like the server being down.
+    res = await fetch(buildUrl(path, opts.query), { method, headers, body, credentials: 'include', redirect: 'manual', signal: opts.signal });
   } catch (e) {
     if ((e as Error)?.name === 'AbortError') throw e;
     throw new ApiError('network', 'Could not reach the Breadboard server', 0, e);
+  }
+  if (isEdgeRedirect(res)) {
+    const edge = await classifyEdgeForbidden();
+    throw new ApiError(edge.code, edge.message, 403, { edgeAuth: true, reloading: edge.reloading });
   }
   const raw = await res.text();
   let parsed: unknown = undefined;

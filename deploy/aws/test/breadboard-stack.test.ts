@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { App } from 'aws-cdk-lib';
-import { Match, Template } from 'aws-cdk-lib/assertions';
+import { Annotations, Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { BreadboardStack, assertImageRef, ecrRepositoryArn, renderUserData, type BreadboardStackProps } from '../lib/breadboard-stack.js';
 
@@ -308,7 +308,9 @@ describe('BreadboardStack', () => {
     expect(text).toContain('/opt/aws/bin/cfn-init');
     const apply = initFiles(t)['/usr/local/bin/breadboard-apply']!;
     for (const line of ['pull "$SERVER_IMAGE"', 'docker network connect breadboard-sandbox breadboard', '--user root', '--env-file /etc/breadboard.env']) expect(apply).toContain(line);
-    expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(`SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\nPUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\n`);
+    expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(
+      `SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\nPUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\nALB_AUTH_ARN=\nALB_AUTH_ISSUER=\nALB_AUTH_CLIENT_ID=\nOIDC_ADOPT_HANDLES=\n`,
+    );
     const attachment = logicalId(t, 'AWS::SecretsManager::SecretTargetAttachment', {});
     const tokenKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/token-signing-key' });
     const brokerKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/broker-master-key' });
@@ -365,6 +367,39 @@ describe('BreadboardStack', () => {
     const ud = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
     expect(ud(proxied)).toBe(ud(t));
     expect(() => synth({ trustedProxyUser: 'zach; rm -rf /' })).toThrow(/trustedProxyUser must be a user handle/);
+  });
+
+  it('applies the load-balancer identity in place, and refuses values bash would misread', () => {
+    const arn = 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/breadboard-test-alb/0123456789abcdef';
+    const lb = synth({ allowedCidrs: [], albAuthArn: arn, albAuthIssuer: 'https://idp.example.com', albAuthClientId: 'bb-client', oidcAdoptHandles: ['zach', 'ops.bot'] });
+    expect(initFiles(lb)['/etc/breadboard/deploy.env']).toContain(`ALB_AUTH_ARN=${arn}\nALB_AUTH_ISSUER=https://idp.example.com\nALB_AUTH_CLIENT_ID=bb-client\nOIDC_ADOPT_HANDLES=zach,ops.bot\n`);
+    lb.hasOutput('AlbAuthArn', { Value: arn });
+    expect(Object.keys(t.findOutputs('*'))).not.toContain('AlbAuthArn');
+    const ud = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
+    expect(ud(lb)).toBe(ud(t)); // no host replacement
+    for (const [over, err] of [
+      [{ albAuthArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/nlb/0123456789abcdef' }, /Application Load Balancer ARN/],
+      [{ albAuthArn: arn.replace('us-east-1', 'eu-west-1') }, /load balancer in us-east-1/],
+      [{ albAuthArn: `${arn};reboot` }, /Application Load Balancer ARN/],
+      [{ albAuthIssuer: 'https://idp.example.com' }, /need albAuthArn/],
+      [{ albAuthArn: arn, albAuthIssuer: 'https://idp.example.com/$(id)' }, /https URL/],
+      [{ albAuthArn: arn, albAuthClientId: '~root' }, /OIDC client id/],
+      [{ albAuthArn: arn, oidcAdoptHandles: ['zach', 'x y'] }, /oidcAdoptHandles must be user handles/],
+    ] as const) {
+      expect(() => synth(over as Partial<BreadboardStackProps>)).toThrow(err);
+    }
+  });
+
+  it('warns when the server port is open to CIDRs next to a load balancer', () => {
+    const props = { ...base, albAuthArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/breadboard-test-alb/0123456789abcdef' };
+    const probe = new App();
+    new BreadboardStack(probe, 'Probe', props);
+    const missing = probe.synth().manifest.missing ?? [];
+    const app = new App({ context: Object.fromEntries(missing.map((m) => [m.key, lookupAnswer(m.provider, AMI)])) });
+    const stack = new BreadboardStack(app, 'Warn', props);
+    expect(Annotations.fromStack(stack).findWarning('*', Match.stringLikeRegexp('albAuthArn is set but allowedCidrs opens the server port to 0.0.0.0/0'))).toHaveLength(1);
+    const closed = new BreadboardStack(new App({ context: Object.fromEntries(missing.map((m) => [m.key, lookupAnswer(m.provider, AMI)])) }), 'Closed', { ...props, allowedCidrs: [] });
+    expect(Annotations.fromStack(closed).findWarning('*', Match.stringLikeRegexp('albAuthArn'))).toHaveLength(0);
   });
 
   it('lets the server assume broker roles only when listed, without touching the host', () => {
@@ -464,6 +499,14 @@ describe('breadboard-apply.sh', () => {
       expect(r.create).toContain('--env-file /etc/breadboard.env --env-file <overrides> -p 4000:4000');
       expect(r.overrides).toBe('');
     }
+  });
+
+  it('passes the load-balancer identity through, and nothing for a deploy.env that predates it', () => {
+    const arn = 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/bb/0123456789abcdef';
+    const r = apply(`${base}PUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\nALB_AUTH_ARN=${arn}\nALB_AUTH_ISSUER=https://idp.example.com\nALB_AUTH_CLIENT_ID=bb-client\nOIDC_ADOPT_HANDLES=zach\n`);
+    expect(r.overrides).toBe(`BREADBOARD_ALB_AUTH_ARN=${arn}\nBREADBOARD_ALB_AUTH_ISSUER=https://idp.example.com\nBREADBOARD_ALB_AUTH_CLIENT_ID=bb-client\nBREADBOARD_OIDC_ADOPT_HANDLES=zach\n`);
+    expect(r.awsCalls).toBe('');
+    expect(apply(`${base}PUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\nALB_AUTH_ARN=\nALB_AUTH_ISSUER=\nALB_AUTH_CLIENT_ID=\nOIDC_ADOPT_HANDLES=\n`).overrides).toBe('');
   });
 
   it('writes PUBLIC_URL, the disabled bootstrap token and the trusted proxy to a root-only overrides file', () => {

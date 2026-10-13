@@ -48,6 +48,9 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `publicUrl` | instance IP | Externally reachable base URL, `scheme://host[:port]` (e.g. the HTTPS address of a proxy in front of the server). Used for OIDC redirects and `Secure` cookies. When empty, the bootstrap script resolves the instance IP from IMDS. It lives in the deployment metadata, so it can be changed later like an image (see Upgrading). |
 | `sandboxRunner` | `docker` | `docker` or `process`. |
 | `trustedProxyUser` | none | Trusted proxy (see below): the handle that every request through your authenticating proxy signs in as. Generates the shared secret; applied in place. |
+| `albAuthArn` | none | Load-balancer identity (see below): the ARN of an Application Load Balancer that authenticates users with OIDC; each request signs in as the user it names. Applied in place. |
+| `albAuthIssuer` / `albAuthClientId` | none | With `albAuthArn`: pin the IdP issuer and OIDC client id the identity header must carry. |
+| `oidcAdoptHandles` | none | Existing users without an OIDC subject (e.g. the `trustedProxyUser`) that the first OIDC or load-balancer sign-in with the same handle becomes. |
 | `brokerRoleArns` | none | IAM roles the server may assume for `aws-role` broker credentials (see AWS APIs from tools). IAM-only change, applied in place. |
 | `bootstrapAdmin` | `true` | Accept the generated bootstrap admin token. Set `false` once another admin can sign in (see First sign-in); applied in place, like `publicUrl`. |
 | `dbEngineVersion` | `16` | |
@@ -83,7 +86,8 @@ usual `-c` set). The container is recreated with an empty token, which the serve
 sessions stop working too. The host is not touched and the secret stays. If you are ever locked out, deploy with
 `-c bootstrapAdmin=true` and sign in with the same token. At startup the server logs `no admin can sign in` (an error
 in `docker logs breadboard`) if disabling left no admin path. An authenticating proxy in front of the server is not
-such a path, because it does not tell Breadboard who you are. Deactivating `bootstrap-admin` in Admin is the permanent
+such a path unless Breadboard trusts it (a trusted proxy, or an admin signing in through a load balancer), because
+otherwise it does not tell Breadboard who you are. Deactivating `bootstrap-admin` in Admin is the permanent
 alternative; it needs a second admin, since you cannot deactivate yourself.
 
 ## Upgrading the server
@@ -112,6 +116,26 @@ are, and its audience is one person, `-c trustedProxyUser=<handle>` removes the 
 To rotate the secret, redeploy with a different `trustedProxyUser`, or turn it off and on again (each creates a new
 secret), then redeploy the proxy.
 
+## Behind an Application Load Balancer with OIDC
+
+An Application Load Balancer can authenticate users itself: an HTTPS listener rule with an `authenticate-oidc` action
+signs people in with your IdP and forwards each request with their claims in `x-amzn-oidc-data`, a JWT it signs. With
+`-c albAuthArn=<load balancer ARN>`, the server verifies that header on every request (signature against the
+load balancer's regional public key, `signer` equal to the ARN, expiry) and signs the request in as its `sub`. Users
+are created at first sign-in as members; promote admins in Admin. Unlike the trusted proxy this tells people apart, so
+it suits a team. Optionally pin `-c albAuthIssuer=<issuer URL>` and `-c albAuthClientId=<client id>` as well.
+
+- The load balancer must be the only way to the server port: `allowedCidrs=none` and one ingress rule from its
+  security group (synth warns otherwise). A forged header fails verification, but a genuine one could be replayed
+  for its short lifetime by anyone who can reach the port directly.
+- Use `onUnauthenticatedRequest: deny` for `/api/*` and `authenticate` for everything else. The UI treats the
+  load balancer's non-JSON 401 (or its redirect) like any expired edge session and reloads the page through sign-in.
+- Requests with an `Origin` naming another site get no edge identity, so the load balancer's cookies cannot be used by
+  other pages. The SSM tunnel carries no header and still needs a token.
+- Moving from `trustedProxyUser`: deploy `albAuthArn` together with `-c oidcAdoptHandles=<handle>`, so the proxy user's
+  first sign-in through the load balancer becomes that same user (id, admin flag, history) instead of `<handle>-xxxxxx`.
+  Startup warns when this is missing. Drop both `trustedProxyUser` and `oidcAdoptHandles` once the proxy is gone.
+
 ## AWS APIs from tools
 
 Tools reach AWS APIs through the credential broker's `aws-role` kind ([12](../../specs/12-security-deployment.md) §5): no keys are stored in Breadboard; the broker signs each brokered request as a role the server assumes.
@@ -129,6 +153,7 @@ Tools reach AWS APIs through the credential broker's `aws-role` kind ([12](../..
 | `DbSecretArn`, `TokenSigningKeySecretArn`, `BrokerMasterKeySecretArn`, `AdminTokenSecretArn` | See Secrets. |
 | `ObjectsBucket` | When `enableS3Objects` is true. |
 | `TrustedProxySecretArn`, `TrustedProxyHeader`, `TrustedProxyUser` | With `trustedProxyUser`: what the proxy sends (see Behind an authenticating proxy). |
+| `AlbAuthArn` | With `albAuthArn`: the load balancer the server trusts (see Behind an Application Load Balancer with OIDC). |
 | `ServerRoleArn` | The instance role: what roles in `brokerRoleArns` must trust. |
 | `ServerInstanceId`, `ServerSecurityGroupId`, `ServerPrivateDnsName`, `ServerPort`, `VpcId`, `ServerSubnetId` | For add-ons that front the server, such as a CloudFront distribution with a VPC origin to the instance. Plain outputs, not exports, so nothing can pin the stack. An add-on that adds an ingress rule to the server security group must be redeployed if this stack ever replaces the instance. |
 

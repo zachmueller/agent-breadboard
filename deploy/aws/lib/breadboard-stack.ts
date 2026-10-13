@@ -1,7 +1,7 @@
 // Agent Breadboard — AWS reference deployment ([12] §1, §9): RDS Postgres (recommended production default)
 // + one reference server host running the container image. One deployment = one Breadboard ([00] §4.1).
 import { readFileSync } from 'node:fs';
-import { CfnOutput, Duration, RemovalPolicy, Stack, Validations, type StackProps } from 'aws-cdk-lib';
+import { Annotations, CfnOutput, Duration, RemovalPolicy, Stack, Token, Validations, type StackProps } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as rds from 'aws-cdk-lib/aws-rds';
@@ -51,6 +51,22 @@ export interface BreadboardStackProps extends StackProps {
    */
   trustedProxyUser?: string;
   /**
+   * Load-balancer identity ([12] §3): the ARN of an Application Load Balancer in front of the server whose listener
+   * authenticates users with OIDC. The server verifies the signed identity header it forwards and signs each request in
+   * as that user (created on first sign-in), so, unlike the trusted proxy, it suits a team. The load balancer must be
+   * the only way to the server port. Applied in place, like `publicUrl`; outputs `AlbAuthArn`.
+   */
+  albAuthArn?: string;
+  /** With `albAuthArn`: the IdP issuer the identity header must name (optional pin). */
+  albAuthIssuer?: string;
+  /** With `albAuthArn`: the OIDC client id the identity header must name (optional pin). */
+  albAuthClientId?: string;
+  /**
+   * Existing users without an OIDC subject (e.g. the `trustedProxyUser`) that the first OIDC or load-balancer sign-in
+   * with the same handle becomes, keeping their id and admin flag, instead of a new suffixed user.
+   */
+  oidcAdoptHandles?: string[];
+  /**
    * IAM roles the server may assume for `aws-role` broker credentials ([12] §5): a tool's AWS calls are then signed
    * as that role, never with keys stored in Breadboard. Each role's trust policy must also name `ServerRoleArn`.
    */
@@ -76,6 +92,10 @@ export const DEFAULTS = {
   sandboxRunner: 'docker',
   bootstrapAdmin: true,
   trustedProxyUser: '',
+  albAuthArn: '',
+  albAuthIssuer: '',
+  albAuthClientId: '',
+  oidcAdoptHandles: [] as string[],
   brokerRoleArns: [] as string[],
   sandboxImageTs: '',
   sandboxImagePy: '',
@@ -130,6 +150,23 @@ export function assertTrustedProxyUser(handle: string): void {
   if (handle && !HANDLE.test(handle)) throw new Error(`trustedProxyUser must be a user handle (letters, digits, . _ -), got ${handle}`);
 }
 
+// Each of these is written into the file the host's bash sources: no quotes, spaces, `$` or `~`.
+const ALB_ARN = /^arn:aws:elasticloadbalancing:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:loadbalancer\/app\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,30}[A-Za-z0-9])?\/[0-9a-f]{16}$/;
+const HTTPS_URL = /^https:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?(?:\/[A-Za-z0-9._/-]*)?$/;
+const CLIENT_ID = /^[A-Za-z0-9._:@-]{1,255}$/;
+
+export function assertAlbAuth(p: { albAuthArn: string; albAuthIssuer: string; albAuthClientId: string; oidcAdoptHandles: string[] }, region: string): void {
+  if (!p.albAuthArn && (p.albAuthIssuer || p.albAuthClientId)) throw new Error('albAuthIssuer and albAuthClientId need albAuthArn');
+  if (p.albAuthArn) {
+    const m = ALB_ARN.exec(p.albAuthArn);
+    if (!m) throw new Error(`albAuthArn must be an Application Load Balancer ARN (arn:aws:elasticloadbalancing:<region>:<account>:loadbalancer/app/<name>/<id>), got ${p.albAuthArn}`);
+    if (!Token.isUnresolved(region) && m[1] !== region) throw new Error(`albAuthArn must be a load balancer in ${region}, got one in ${m[1]}`);
+  }
+  if (p.albAuthIssuer && !HTTPS_URL.test(p.albAuthIssuer)) throw new Error(`albAuthIssuer must be an https URL, got ${p.albAuthIssuer}`);
+  if (p.albAuthClientId && !CLIENT_ID.test(p.albAuthClientId)) throw new Error('albAuthClientId must be an OIDC client id (letters, digits, . _ : @ -)');
+  for (const h of p.oidcAdoptHandles) if (!HANDLE.test(h)) throw new Error(`oidcAdoptHandles must be user handles (letters, digits, . _ -), got ${h}`);
+}
+
 const ROLE_ARN = /^arn:aws[a-z-]*:iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;
 
 export function assertBrokerRoleArns(arns: string[]): void {
@@ -168,6 +205,7 @@ export class BreadboardStack extends Stack {
     if (p.sandboxImagePy) assertImageRef('sandboxImagePy', p.sandboxImagePy);
     assertPublicUrl(p.publicUrl);
     assertTrustedProxyUser(p.trustedProxyUser);
+    assertAlbAuth(p, this.region);
     assertBrokerRoleArns(p.brokerRoleArns);
 
     // --- Network --------------------------------------------------------------
@@ -187,6 +225,9 @@ export class BreadboardStack extends Stack {
     const serverSg = new ec2.SecurityGroup(this, 'ServerSg', { vpc, description: 'Breadboard server host', allowAllOutbound: true });
     for (const cidr of p.allowedCidrs) {
       serverSg.addIngressRule(ec2.Peer.ipv4(cidr), ec2.Port.tcp(p.serverPort), 'HTTP(S) to the Breadboard server');
+    }
+    if (p.albAuthArn && p.allowedCidrs.length) {
+      Annotations.of(this).addWarning(`albAuthArn is set but allowedCidrs opens the server port to ${p.allowedCidrs.join(', ')}: the load balancer should be the only way in (allowedCidrs=none, and an ingress rule from its security group).`);
     }
     const dbSg = new ec2.SecurityGroup(this, 'DbSg', { vpc, description: 'Breadboard Postgres', allowAllOutbound: false });
 
@@ -344,9 +385,9 @@ export class BreadboardStack extends Stack {
     // first boot, and cfn-hup re-applies them in place when a deploy changes the metadata. No fingerprint in the user
     // data, so an image change neither restarts nor replaces the host (the config repo lives on its root volume).
     const serverId = this.getLogicalId(server.instance);
-    // PUBLIC_URL (when set), BOOTSTRAP_ADMIN=false and the trusted proxy override the boot-time /etc/breadboard.env:
-    // breadboard-apply writes them to a root-only overrides env file (fetching the proxy secret by ARN), so they
-    // change in place like the images and no secret value enters the template.
+    // PUBLIC_URL (when set), BOOTSTRAP_ADMIN=false, the trusted proxy and the load-balancer identity override the
+    // boot-time /etc/breadboard.env: breadboard-apply writes them to a root-only overrides env file (fetching the proxy
+    // secret by ARN), so they change in place like the images and no secret value enters the template.
     const deployEnv = [
       `SERVER_IMAGE=${p.serverImage}`,
       `SANDBOX_IMAGE_TS=${p.sandboxImageTs}`,
@@ -356,6 +397,10 @@ export class BreadboardStack extends Stack {
       `BOOTSTRAP_ADMIN=${p.bootstrapAdmin}`,
       `TRUSTED_PROXY_USER=${p.trustedProxyUser}`,
       `TRUSTED_PROXY_SECRET_ARN=${proxySecret?.secretArn ?? ''}`,
+      `ALB_AUTH_ARN=${p.albAuthArn}`,
+      `ALB_AUTH_ISSUER=${p.albAuthIssuer}`,
+      `ALB_AUTH_CLIENT_ID=${p.albAuthClientId}`,
+      `OIDC_ADOPT_HANDLES=${p.oidcAdoptHandles.join(',')}`,
       '',
     ].join('\n');
     server.applyCloudFormationInit(
@@ -406,5 +451,6 @@ export class BreadboardStack extends Stack {
       new CfnOutput(this, 'TrustedProxyHeader', { value: TRUSTED_PROXY_HEADER });
       new CfnOutput(this, 'TrustedProxyUser', { value: p.trustedProxyUser });
     }
+    if (p.albAuthArn) new CfnOutput(this, 'AlbAuthArn', { value: p.albAuthArn, description: 'The load balancer whose signed identity header the server trusts' });
   }
 }

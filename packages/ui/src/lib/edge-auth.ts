@@ -1,9 +1,10 @@
 /**
- * Recovery from an authenticating proxy in front of the server (e.g. CloudFront with a signed-cookie gate). Its session
- * expires on its own clock and only a top-level navigation renews it. Until then every request (fetch, EventSource,
- * WebSocket upgrade) gets the proxy's HTML 403 page instead of the API. The server itself only ever answers JSON, so a
- * 403 with an HTML body identifies the proxy; reloading the page sends the browser through the proxy's sign-in and
- * back to the same URL.
+ * Recovery from an authenticating proxy in front of the server: a CDN with a signed-cookie gate, or a load balancer
+ * that signs users in with OIDC. Its session expires on its own clock and only a top-level navigation renews it. Until
+ * then every request (fetch, EventSource, WebSocket upgrade) is answered by the proxy instead of the API: with an HTML
+ * 403 page (a signed-cookie gate), a non-JSON 401, or a redirect to its sign-in page (a load balancer). The server only
+ * ever answers JSON and never redirects an API call, so any of those identifies the proxy; reloading the page sends
+ * the browser through the proxy's sign-in and back to the same URL.
  *
  * A proxy that rewrites every 403 also rewrites the server's own permission denials. The public, never-403
  * `GET /api/v1/health` tells the two apart before anything reloads.
@@ -21,12 +22,19 @@ const LOSS_PROBE_INTERVAL_MS = 5_000;
 
 export type EdgeProbe = 'ok' | 'edge-auth' | 'unknown';
 
-/** A 403 whose body is an HTML page: something other than the API answered. */
+/** A 403 whose body is an HTML page, or a 401 that is not JSON: something other than the API answered. */
 export function looksLikeEdgeAuthPage(status: number, contentType: string | null, body: string): boolean {
-  if (status !== 403) return false;
+  if (status !== 401 && status !== 403) return false;
   if (contentType && /\bjson\b/i.test(contentType)) return false;
+  // The server's 401s are JSON; a load balancer's is a page (or empty).
+  if (status === 401) return !/^\s*[{[]/.test(body);
   if (contentType && /\btext\/html\b/i.test(contentType)) return true;
   return /^\s*<(?:!doctype html|html)[\s>]/i.test(body);
+}
+
+/** A fetch made with `redirect: 'manual'` that was redirected: the API never redirects, so the proxy did. */
+export function isEdgeRedirect(res: Pick<Response, 'type'>): boolean {
+  return res.type === 'opaqueredirect';
 }
 
 export interface EdgeAuthDeps {
@@ -70,7 +78,8 @@ let inflight: Promise<EdgeProbe> | null = null;
 export function probeEdgeAuth(fetchFn: typeof fetch = globalThis.fetch): Promise<EdgeProbe> {
   inflight ??= (async (): Promise<EdgeProbe> => {
     try {
-      const res = await fetchFn(HEALTH_URL, { credentials: 'include', cache: 'no-store', headers: { Accept: 'application/json' } });
+      const res = await fetchFn(HEALTH_URL, { credentials: 'include', cache: 'no-store', redirect: 'manual', headers: { Accept: 'application/json' } });
+      if (isEdgeRedirect(res)) return 'edge-auth';
       if (res.ok) return 'ok';
       const body = await res.text().catch(() => '');
       return looksLikeEdgeAuthPage(res.status, res.headers.get('content-type'), body) ? 'edge-auth' : 'unknown';
@@ -91,8 +100,8 @@ export interface EdgeAuthError {
 }
 
 /**
- * For a fetch that came back as an HTML 403: either the proxy session expired (reload, or ask the user to) or the
- * proxy replaced the server's own JSON 403 (a plain permission denial).
+ * For a fetch the proxy answered (see `looksLikeEdgeAuthPage`, `isEdgeRedirect`): either the proxy session expired
+ * (reload, or ask the user to) or the proxy replaced the server's own JSON 403 (a plain permission denial).
  */
 export async function classifyEdgeForbidden(deps: EdgeAuthDeps = {}): Promise<EdgeAuthError> {
   if ((await probeEdgeAuth(deps.fetchFn)) !== 'edge-auth') {

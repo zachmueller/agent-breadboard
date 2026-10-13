@@ -95,6 +95,12 @@ export class IdentityStore {
     return rowToUser(r.rows[0]);
   }
 
+  /** Give a user that has no OIDC subject this one (adoption, [12] §3). False when the user already has a subject. */
+  async linkOidcSubject(userId: string, subject: string, q: Queryable = this.db): Promise<boolean> {
+    const r = await q.query(`UPDATE users SET oidc_subject=$2 WHERE user_id=$1 AND oidc_subject IS NULL RETURNING user_id`, [userId, subject]);
+    return r.rows.length > 0;
+  }
+
   async deactivateUser(userId: string, q: Queryable = this.db): Promise<void> {
     await q.query(`UPDATE users SET deactivated_at = now() WHERE user_id=$1`, [userId]);
   }

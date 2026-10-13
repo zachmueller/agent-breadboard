@@ -199,7 +199,11 @@ export class HocuspocusSyncServer implements SyncServer {
     }
     const request = new Request(url.toString(), { headers });
     const fallbackToken = bearerFrom(req);
-    const proxied = () => this.deps.auth.proxyPrincipal?.(req.headers) ?? Promise.resolve(null);
+    // The edge's word is taken once, at the upgrade: a load balancer's signed identity header expires within minutes,
+    // long before the documents this socket opens later. Awaited (and its rejection handled) in `authenticate`.
+    const edge = this.deps.auth.proxyPrincipal?.(req.headers) ?? Promise.resolve(null);
+    edge.catch(() => undefined);
+    const proxied = () => edge;
     const cc = this.hocuspocus.handleConnection(socket, request, { principal: ((req as any).principal as Principal | null) ?? null, fallbackToken, proxied });
     socket.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
       const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
