@@ -1,7 +1,7 @@
 /** App shell ([10] §2): left rail (seven areas + dashboard + admin), top bar (search, review badge, user menu). */
 import { useState, type ReactNode } from 'react';
-import { Link, useRouterState } from '@tanstack/react-router';
-import { AlertTriangle, ChevronDown, ClipboardCheck, Keyboard, LogOut, Search, User } from 'lucide-react';
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
+import { AlertTriangle, ChevronDown, ClipboardCheck, Keyboard, KeyRound, LogOut, Search, User } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 import { useGlobalLiveInvalidation, useOpenProposalCount, useReviewCount } from '../lib/queries';
 import { useLiveConnected } from '../lib/live';
@@ -126,6 +126,7 @@ export function DevModeBanner({ className }: { className?: string }) {
 export function AppShell({ children }: { children: ReactNode }) {
   const { user, isAdmin, mode, logout, teamName } = useAuth();
   const path = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   useGlobalLiveInvalidation(true);
@@ -156,7 +157,8 @@ export function AppShell({ children }: { children: ReactNode }) {
                 label="User menu"
                 items={[
                   { key: 'who', label: <span className="text-fg-subtle">Signed in as @{user?.handle}</span>, disabled: true },
-                  { key: 'keys', label: 'Keyboard shortcuts', icon: <Keyboard size={14} />, hint: '?', onSelect: () => setHelpOpen(true), separator: true },
+                  { key: 'account', label: 'Account & tokens', icon: <KeyRound size={14} />, onSelect: () => void navigate({ to: '/account' }), separator: true },
+                  { key: 'keys', label: 'Keyboard shortcuts', icon: <Keyboard size={14} />, hint: '?', onSelect: () => setHelpOpen(true) },
                   user?.via_proxy
                     ? { key: 'proxy', label: <span className="text-fg-subtle">Signed in by this site’s proxy</span>, disabled: true, separator: true }
                     : { key: 'logout', label: 'Sign out', icon: <LogOut size={14} />, onSelect: () => void logout(), separator: true },

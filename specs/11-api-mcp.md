@@ -15,7 +15,7 @@
 ## 2. Conventions
 
 - Base path `/api/v1`. JSON bodies; `snake_case` fields.
-- **Auth:** `Authorization: Bearer <token>` — user tokens via OIDC session, service tokens for API callers, internal actor tokens for sandbox/tool calls ([12](12-security-deployment.md) §3). Every request resolves to an **actor** (`user | subagent | code-step | service`) recorded on all writes. This is the **single actor taxonomy** system-wide: `created_by`/authorship fields use the same four kinds ([09](09-content.md) §2.2 aligns to this; `service` replaces the earlier `system` label — server-internal writes such as connector syncs record `service` with the internal component as the ID).
+- **Auth:** `Authorization: Bearer <token>` — user session tokens (OIDC or local login), **personal access tokens** a member mints for their own tools (optionally read-only), service tokens for API callers, internal actor tokens for sandbox/tool calls ([12](12-security-deployment.md) §3). Every request resolves to an **actor** (`user | subagent | code-step | service`) recorded on all writes. This is the **single actor taxonomy** system-wide: `created_by`/authorship fields use the same four kinds ([09](09-content.md) §2.2 aligns to this; `service` replaces the earlier `system` label — server-internal writes such as connector syncs record `service` with the internal component as the ID).
 - **Service-token scoping:** service tokens carry **named capability scopes** (OAuth-style strings: `tasks:write`, `sessions:read`, `config:propose`, `mcp:call`, …), enforced by a middleware map of endpoint → required scope. Scopes are human-readable in the admin UI and are the designated substrate for future federation grants (e.g., `federation:incoming` scoped by circuit tags) — no endpoint-pattern grammar needed.
 - **Pagination:** cursor-based (`?cursor=…&limit=…`, default 50, max 200); responses carry `next_cursor`.
 - **Filtering:** query params per resource (documented per endpoint); repeated params OR within a field, distinct params AND across fields.
@@ -119,11 +119,23 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 | `query_knowledge`, `read_note`, `propose_note_edit` | Knowledge incl. the reconcile path ([07](07-knowledge.md) §5) |
 | `run_circuit`, `get_session_summary` | Session composition (grant-gated) |
 | `record_score`, `get_rubric` | Evals MCP ([04](04-evals.md) §5) |
-| `propose_config_change`, `read_config`, `search_config`, `validate_config` | Designer chats / meta-operation (lookup by UID, slug, or path) |
+| `propose_config_change`, `read_config`, `search_config`, `validate_config` | Designer chats / meta-operation (lookup by UID, slug, or path; `read_config` and `search_config` take an optional `commit`) |
+
+**Inspection catalog** (read-only; the deep-dive surface for a team member's local harness, and grantable to subagents like any primitive). Each tool is a thin wrapper over the service method its REST route calls, so scope, session visibility and knowledge grants are enforced identically:
+
+| Tool | Reads |
+|---|---|
+| `whoami`, `get_breadboard_overview`, `list_users`, `list_recent_events` | The connection's identity; instance health, capacity, spend, counts (the dashboard, plus config and knowledge facts); the roster; the event stream's recent events |
+| `list_sessions`, `read_session_transcript`, `read_session_events`, `list_session_executions` | Sessions by state/kind/circuit/task/creator/definition; every turn with tool calls, results, model, tokens and cost; the orchestrator event log; the tool journal. `get_session_summary` adds `proposals`, `busy`, `last_error`, `draft_task` for chats |
+| `search_nodes`, `inspect_node`, `get_review_queue` | Nodes by type, text, tags, status, need-input and time (bodies via `read_node`); revisions, edges, comments and lineage of one node; the caller's review queue |
+| `get_config_history`, `list_proposals`, `read_proposal`, `diff_config` | Commits touching a definition or path; proposals with diff, validation and tool checks; the patch between two refs |
+| `list_knowledge_domains`, `list_eval_runs`, `read_eval_run`, `get_eval_analysis` | Domains with note counts; eval runs, one run's per-fixture results, the analysis views |
+
+Long values are clipped by default (`max_chars`; a clipped value carries `truncated: true` and `total_chars`), with `turn_id` + `max_chars: 0` to read one turn in full. The `initialize` result carries `instructions` that walk a model through a run investigation (overview → sessions → summary → transcript / events / executions → the config at the run's commit).
 
 Plus: **tool extensions with `exposure.external_mcp: true` are appended to the external catalog** dynamically ([06](06-toolbox.md) §8) — shared team tooling usable from local harnesses without re-implementing MCP servers.
 
-External connections authenticate per-user; all calls execute under that user's grants and are logged like everything else — as Sessions of `kind: conversation` ([02](02-sessions-orchestrator.md) §2) whose writes record the **`user` actor** (the connecting team member). They are never `service`-actor: `service` is reserved for server-internal writes such as connector syncs (§2).
+External connections authenticate per-user with an explicit bearer credential: a personal access token or a user session token. Service tokens are refused, and so is edge identity (the trusted proxy's or a load balancer's, [12](12-security-deployment.md) §3), which vouches on the strength of browser cookies an MCP client never has; this lets an edge pass `/api/v1/mcp` through for local harnesses without handing out that identity. All calls execute under that user's grants (a read-only token's scopes included) and are logged like everything else — as Sessions of `kind: conversation` ([02](02-sessions-orchestrator.md) §2) whose writes record the **`user` actor** (the connecting team member). They are never `service`-actor: `service` is reserved for server-internal writes such as connector syncs (§2).
 
 ## 5. Event stream
 

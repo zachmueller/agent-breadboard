@@ -131,6 +131,8 @@ export interface ConfigService {
   attachEvalRun(proposalId: string, evalRunId: string): Promise<void>;
   revert(opts: { path?: string; to_commit: string; by: Principal; message?: string }): Promise<{ commit: string }>;
   history(opts?: { path?: string; ref?: string; limit?: number }): Promise<CommitInfo[]>;
+  /** Unified patch between two commits or branches (resolved like every other `ref`). */
+  diff(base: string, head: string): Promise<{ patch: string; files: Array<{ path: string; status: 'added' | 'modified' | 'deleted' | 'renamed' }> }>;
   /** Mint a UID + default skeleton for a new definition of a kind (editors' "new" action). */
   newDefinitionSkeleton(kind: 'circuit' | 'subagent' | 'tool' | 'mcp', slug: string, title: string, opts?: Record<string, unknown>): FileChange[];
   /** Regenerate INDEX.md content for a commit. */
@@ -259,6 +261,10 @@ export interface SessionFilter {
   circuit?: string;
   task?: string;
   parent?: string;
+  /** Actor id of the session's creator (`created_by->>'id'`). */
+  created_by?: string;
+  /** Designer chats opened on a definition (`state_detail.context.definition_uid`). */
+  definition?: string;
   created_after?: string;
   created_before?: string;
   cursor?: string | null;
@@ -626,7 +632,7 @@ export interface EvalService {
   startRun(input: { circuit: string; ref?: string | null; fixture_tags?: string[] | null; model_overrides?: Record<string, string> | null; by: Principal; proposal_id?: string | null; wait?: boolean }): Promise<Record<string, unknown>>;
   getRun(id: string): Promise<Record<string, unknown>>;
   listRuns(opts?: { circuit?: string; limit?: number; status?: string }): Promise<Array<Record<string, unknown>>>;
-  analysis(circuitUid: string, view: 'model-regression' | 'cheapest-model' | 'circuit-regression' | 'trend' | 'dashboard'): Promise<Record<string, unknown>>;
+  analysis(circuitUid: string, view: 'model-regression' | 'cheapest-model' | 'circuit-regression' | 'trend' | 'dashboard', opts?: { base?: string; head?: string; circuit_commit?: string; variant?: string }): Promise<Record<string, unknown>>;
   recordScore(input: { eval_run_id: string; fixture_id: string; dimension: string; value: unknown; rationale?: string | null; by: Principal }): Promise<void>;
   getFixtureOutput(evalRunId: string, fixtureId: string): Promise<unknown>;
   promoteFixture(input: { session_id: string; fixture_title: string; tags?: string[]; notes?: string; by: Principal }): Promise<{ fixture_id: string; commit: string }>;
@@ -683,6 +689,8 @@ export interface AuthService {
    */
   proxyPrincipal?(headers: Readonly<Record<string, string | string[] | undefined>>): Promise<Principal | null>;
   principalForUser(user: UserRecord): Promise<Principal>;
+  /** Drop cached principals (after a revocation or deactivation). */
+  invalidate?(): void;
 }
 
 // ---------------------------------------------------------------------------

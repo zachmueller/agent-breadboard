@@ -29,6 +29,8 @@ export interface MeDto {
   team_name?: string | null;
   /** Signed in by a trusted proxy in front of the server: there is no Breadboard session to sign out of. */
   via_proxy?: boolean;
+  /** How this request was authenticated (`user`, `proxy`, `personal`, `service`). */
+  token_kind?: string;
 }
 
 export interface LoginResponse {
@@ -76,6 +78,23 @@ export interface ServiceTokenDto {
 /** `POST /admin/service-tokens` → the token record spread plus the one-time `secret`. */
 export interface CreatedServiceTokenDto extends Partial<ServiceTokenDto> {
   secret?: string;
+}
+
+/** `GET /me/tokens`: a member's personal access tokens ([12] §3). `scopes` null = full access. */
+export interface PersonalTokenDto {
+  token_id: string;
+  name: string;
+  scopes: string[] | null;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+/** `POST /me/tokens` → the record plus the one-time `secret` and the MCP endpoint to connect to. */
+export interface CreatedPersonalTokenDto extends PersonalTokenDto {
+  secret?: string;
+  mcp_url?: string | null;
 }
 
 export interface BrokerCredentialDto {

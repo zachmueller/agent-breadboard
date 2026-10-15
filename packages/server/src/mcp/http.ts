@@ -69,6 +69,9 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
 
   const handler = async (req: FastifyRequest, reply: FastifyReply) => {
     const principal = principalOf(req);
+    // Edge identity (trusted proxy, load balancer) vouches on the strength of browser cookies, which an MCP client
+    // never has; refusing it here keeps an edge rule that passes this path through from handing out that identity.
+    if (principal.token_kind === 'proxy') throw new BreadboardError('unauthorized', 'MCP connections need an explicit bearer token: mint a personal access token on your Account page');
     requireScope(principal, 'mcp:call');
     const header = req.headers['mcp-session-id'];
     const mcpSessionId = Array.isArray(header) ? header[0] : header;

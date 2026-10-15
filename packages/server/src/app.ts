@@ -15,7 +15,12 @@ export const API_PREFIX = '/api/v1';
 /** Paths that don't require authentication. */
 const PUBLIC_PATHS = new Set([`${API_PREFIX}/health`, `${API_PREFIX}/auth/login`, `${API_PREFIX}/auth/oidc/start`, `${API_PREFIX}/auth/oidc/callback`, `${API_PREFIX}/auth/mode`, `${API_PREFIX}/auth/logout`, `${API_PREFIX}/sync`]);
 
-export async function buildApp(services: Services): Promise<FastifyInstance> {
+export interface BuildAppOptions {
+  /** Observe every registered route (tests sweep them for authorization). */
+  onRoute?: (route: { method: string | string[]; url: string }) => void;
+}
+
+export async function buildApp(services: Services, opts: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
     loggerInstance: services.log as any,
     bodyLimit: 32 * 1024 * 1024,
@@ -24,6 +29,7 @@ export async function buildApp(services: Services): Promise<FastifyInstance> {
   });
   app.decorateRequest('principal', null);
   app.decorate('services', services);
+  if (opts.onRoute) app.addHook('onRoute', (r) => opts.onRoute!({ method: r.method, url: r.url }));
 
   await app.register(cors, { origin: true, credentials: true });
   await app.register(cookie);

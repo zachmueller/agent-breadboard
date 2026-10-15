@@ -176,6 +176,7 @@ Every circuit run gets **its own Session ID** — whether initiated top-level, t
 - `POST /nodes/:uid/gate-verdict` (per-artifact `{verdict: approve|request-changes, comment?, edits?}` from a targeted reviewer; gate auto-resolves when verdicts complete — §5.4)
 - `POST /sessions/:id/retry`, `POST /sessions/:id/cancel`, `POST /sessions/:id/resume` (post-budget-raise)
 - Event stream: session state changes and gate suspensions are published on the Breadboard event stream (webhooks/SSE).
+- Over MCP ([11](11-api-mcp.md) §4) the same reads are `list_sessions`, `get_session_summary`, `read_session_transcript` (turns, with tool calls and results), `read_session_events` and `list_session_executions`, so a team member's local harness can investigate a run.
 
 ## 8. UI
 

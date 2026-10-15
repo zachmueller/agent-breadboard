@@ -9,7 +9,12 @@ import { BreadboardError } from '@breadboard/shared';
 import type { Services } from '../core/services.js';
 import { API_PREFIX } from '../app.js';
 import { principalOf, requireBody, requireField } from './util.js';
+import { requireUser, type Principal } from '../core/principal.js';
+import { READ_ONLY_SCOPES, type UserRecord } from '../identity/identity.js';
 import { randomToken, USER_TOKEN_TTL_S } from '../auth/service.js';
+
+const TOKEN_DEFAULT_DAYS = 90;
+const TOKEN_MAX_DAYS = 365;
 
 export const SESSION_COOKIE = 'bb_session';
 const OIDC_COOKIE = 'bb_oidc';
@@ -94,5 +99,46 @@ export async function register(app: FastifyInstance, services: Services): Promis
   app.get(`${API_PREFIX}/me`, async (req) => {
     const p = principalOf(req);
     return { user: p.user, roles: p.roles, is_admin: p.is_admin, actor: p.actor, scopes: p.scopes, token_kind: p.token_kind, session_id: p.session_id };
+  });
+
+  // --- Personal access tokens ([12] §3) -------------------------------------------------------------
+  // Only a browser sign-in may manage them: a session token or cookie (`user`), or an authenticating edge's
+  // identity (`proxy`, which is same-origin only). A token can never mint a token, so a leaked read-only
+  // token stays read-only, and service tokens stay the admin's business.
+  const requireTokenManager = (p: Principal): UserRecord => {
+    const user = requireUser(p);
+    if (p.scopes !== null || (p.token_kind !== 'user' && p.token_kind !== 'proxy')) throw new BreadboardError('forbidden', 'sign in through the browser to manage personal access tokens');
+    return user;
+  };
+  const mcpUrl = () => (services.publicUrl ? `${services.publicUrl.replace(/\/$/, '')}${API_PREFIX}/mcp` : null);
+
+  app.get(`${API_PREFIX}/me/tokens`, async (req) => {
+    const user = requireUser(principalOf(req));
+    return { items: await services.identity.listUserTokens(user.user_id), next_cursor: null, mcp_url: mcpUrl() };
+  });
+
+  app.post(`${API_PREFIX}/me/tokens`, async (req, reply) => {
+    const p = principalOf(req);
+    const user = requireTokenManager(p);
+    const body = requireBody(req);
+    const name = requireField<string>(body, 'name').trim();
+    if (!name) throw new BreadboardError('validation-failed', "field 'name' must be non-empty");
+    const read_only = body.read_only === undefined ? true : body.read_only;
+    if (typeof read_only !== 'boolean') throw new BreadboardError('validation-failed', "field 'read_only' must be a boolean");
+    const days = body.expires_in_days === undefined ? TOKEN_DEFAULT_DAYS : Number(body.expires_in_days);
+    if (!Number.isInteger(days) || days < 1 || days > TOKEN_MAX_DAYS) throw new BreadboardError('validation-failed', `field 'expires_in_days' must be an integer from 1 to ${TOKEN_MAX_DAYS}`);
+    const { token, secret } = await services.identity.createUserToken({ team_id: p.team_id, user_id: user.user_id, name, scopes: read_only ? [...READ_ONLY_SCOPES] : null, expires_at: new Date(Date.now() + days * 864e5).toISOString() });
+    reply.status(201);
+    return { ...token, secret, mcp_url: mcpUrl() };
+  });
+
+  app.post(`${API_PREFIX}/me/tokens/:id/revoke`, async (req) => {
+    const p = principalOf(req);
+    const user = requireTokenManager(p);
+    const { id } = req.params as { id: string };
+    const token = await services.identity.revokeUserToken(id, user.user_id);
+    if (!token) throw new BreadboardError('not-found', `personal access token ${id} not found`);
+    services.auth.invalidate?.();
+    return token;
   });
 }

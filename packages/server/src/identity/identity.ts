@@ -36,6 +36,22 @@ export interface ServiceTokenRecord {
 export const SERVICE_SCOPES = ['tasks:read', 'tasks:write', 'nodes:read', 'nodes:write', 'sessions:read', 'sessions:write', 'config:read', 'config:propose', 'config:merge', 'knowledge:read', 'knowledge:write', 'evals:read', 'evals:write', 'mcp:call', 'events:read', 'admin'] as const;
 export type ServiceScope = (typeof SERVICE_SCOPES)[number];
 
+/** A member's personal access token ([12] §3): `scopes` null = the user's full access. */
+export interface UserTokenRecord {
+  token_id: string;
+  team_id: string;
+  user_id: string;
+  name: string;
+  scopes: string[] | null;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+/** The scope set of a read-only personal token: every read scope plus the MCP connection itself. */
+export const READ_ONLY_SCOPES: readonly ServiceScope[] = ['tasks:read', 'nodes:read', 'sessions:read', 'config:read', 'knowledge:read', 'evals:read', 'events:read', 'mcp:call'];
+
 export function hashToken(secret: string): string {
   return createHash('sha256').update(secret).digest('hex');
 }
@@ -176,6 +192,56 @@ export class IdentityStore {
   async revokeServiceToken(tokenId: string, q: Queryable = this.db): Promise<void> {
     await q.query(`UPDATE service_tokens SET revoked_at = now() WHERE token_id=$1`, [tokenId]);
   }
+
+  // --- Personal access tokens ([12] §3) ---
+  async createUserToken(input: { team_id: string; user_id: string; name: string; scopes: string[] | null; expires_at: string }, q: Queryable = this.db): Promise<{ token: UserTokenRecord; secret: string }> {
+    for (const sc of input.scopes ?? []) {
+      if (!(SERVICE_SCOPES as readonly string[]).includes(sc)) throw new BreadboardError('validation-failed', `unknown scope '${sc}'`);
+      if (sc === 'admin') throw new BreadboardError('validation-failed', "a personal token's admin access comes from its user, not from a scope");
+    }
+    const secret = 'bbu_' + randomBytes(32).toString('base64url');
+    const r = await q.query(`INSERT INTO user_tokens (token_id, team_id, user_id, name, token_hash, scopes, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [
+      mintId('ptk'),
+      input.team_id,
+      input.user_id,
+      input.name,
+      hashToken(secret),
+      input.scopes,
+      input.expires_at,
+    ]);
+    return { token: rowToUserToken(r.rows[0]), secret };
+  }
+
+  /** The live token for a secret (stamps `last_used_at`); null when unknown, revoked or expired. */
+  async findUserToken(secret: string, q: Queryable = this.db): Promise<UserTokenRecord | null> {
+    const r = await q.query(`UPDATE user_tokens SET last_used_at = now() WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now() RETURNING *`, [hashToken(secret)]);
+    return r.rows[0] ? rowToUserToken(r.rows[0]) : null;
+  }
+
+  async listUserTokens(userId: string, q: Queryable = this.db): Promise<UserTokenRecord[]> {
+    const r = await q.query(`SELECT * FROM user_tokens WHERE user_id=$1 ORDER BY created_at DESC`, [userId]);
+    return r.rows.map(rowToUserToken);
+  }
+
+  /** Revoke one of `userId`'s tokens; null when it is not theirs. */
+  async revokeUserToken(tokenId: string, userId: string, q: Queryable = this.db): Promise<UserTokenRecord | null> {
+    const r = await q.query(`UPDATE user_tokens SET revoked_at = coalesce(revoked_at, now()) WHERE token_id=$1 AND user_id=$2 RETURNING *`, [tokenId, userId]);
+    return r.rows[0] ? rowToUserToken(r.rows[0]) : null;
+  }
+}
+
+function rowToUserToken(r: any): UserTokenRecord {
+  return {
+    token_id: String(r.token_id).trim(),
+    team_id: r.team_id,
+    user_id: r.user_id,
+    name: r.name,
+    scopes: r.scopes ?? null,
+    created_at: toIso(r.created_at),
+    expires_at: toIso(r.expires_at),
+    revoked_at: r.revoked_at ? toIso(r.revoked_at) : null,
+    last_used_at: r.last_used_at ? toIso(r.last_used_at) : null,
+  };
 }
 
 function rowToUser(r: any): UserRecord {

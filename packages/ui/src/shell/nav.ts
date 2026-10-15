@@ -31,4 +31,5 @@ export const NAV_AREAS: NavArea[] = [
 export const EXTRA_JUMPS: Array<{ jump: string; label: string; to: string }> = [
   { jump: 'r', label: 'Review queue', to: '/content/review' },
   { jump: 'q', label: 'Task inventory', to: '/tasks' },
+  { jump: 'u', label: 'Account & tokens', to: '/account' },
 ];

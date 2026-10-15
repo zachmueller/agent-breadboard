@@ -169,6 +169,11 @@ export class PgSessionStore implements SessionStore {
     if (f.circuit) where.push(`(circuit_uid = ${p(f.circuit)} OR circuit_slug = ${p(f.circuit)})`);
     if (f.task) where.push(`task_uid = ${p(f.task)}`);
     if (f.parent) where.push(`parent_session = ${p(f.parent)}`);
+    if (f.created_by) {
+      const who = p(f.created_by);
+      where.push(`(created_by->>'id' = ${who} OR state_detail->'started_by'->>'id' = ${who})`);
+    }
+    if (f.definition) where.push(`state_detail->'context'->>'definition_uid' = ${p(f.definition)}`);
     if (f.created_after) where.push(`created_at >= ${p(f.created_after)}::timestamptz`);
     if (f.created_before) where.push(`created_at <= ${p(f.created_before)}::timestamptz`);
     const cur = decodeCursor(f.cursor);

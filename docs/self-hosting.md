@@ -75,4 +75,4 @@ Validate the runbook on a staging instance after any schema migration.
 
 ## 6. Connecting external harnesses (MCP)
 
-See `docs/mcp.md`: the Breadboard MCP server lives at `/api/v1/mcp` (Streamable HTTP) and authenticates with a user or service token.
+See [mcp.md](mcp.md): the Breadboard MCP server lives at `/api/v1/mcp` (Streamable HTTP). Members connect with a personal access token minted on their Account page (read-only by default); service tokens and edge identity are refused there. If an authenticating proxy or load balancer fronts the server, it must pass `/api/v1/mcp*` through without a browser sign-in (an ALB listener rule without `authenticate-oidc`, a CloudFront behavior without the gate function); the server authenticates the bearer token itself. No new environment variables are involved.

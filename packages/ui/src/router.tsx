@@ -14,6 +14,7 @@ import { Dashboard } from './areas/dashboard/Dashboard';
 import { SessionsList, SessionExplorer } from './areas/sessions';
 import { ContentInventory, ContentViewer, ReviewQueuePage } from './areas/content';
 import { Admin } from './areas/admin/Admin';
+import { Account } from './areas/account/Account';
 import { useAuth } from './lib/auth';
 import { stringSearch } from './lib/url';
 import { AppShell } from './shell/AppShell';
@@ -81,6 +82,7 @@ const routeTree = rootRoute.addChildren([
     // Config deep link ([10] §2)
     page('/config/$uid', withParams(ConfigRedirect)),
     page('/admin', Admin, true),
+    page('/account', Account),
     // Intake ([08] §7)
     page('/intake', withParams(areaPage(IntakeArea, 'IntakeConversationsPage', 'Intake')), true),
     page('/intake/$id', withParams(areaPage(IntakeArea, 'IntakeConversationPage', 'Intake')), true),

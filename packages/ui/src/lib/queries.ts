@@ -37,6 +37,8 @@ import type {
   ExecutionDto,
   MeDto,
   RoleDto,
+  PersonalTokenDto,
+  CreatedPersonalTokenDto,
 } from './types';
 
 // ------------------------------------------------------------ query keys ---
@@ -44,6 +46,7 @@ import type {
 export const qk = {
   authMode: ['auth', 'mode'] as const,
   me: ['me'] as const,
+  myTokens: ['me', 'tokens'] as const,
   node: (uid: string) => ['node', uid] as const,
   nodes: (filter: Query) => ['nodes', filter] as const,
   nodeRevisions: (uid: string) => ['node', uid, 'revisions'] as const,
@@ -100,7 +103,8 @@ export function useMe(enabled = true) {
       const wrapped = r as { user?: MeDto; roles?: unknown[]; is_admin?: boolean };
       const u: MeDto = wrapped.user ? { ...wrapped.user, is_admin: wrapped.is_admin ?? wrapped.user.is_admin, roles: (wrapped.roles as string[] | undefined) ?? wrapped.user.roles ?? [] } : (r as MeDto);
       const roles = (u.roles ?? []).map((x: unknown) => (typeof x === 'string' ? x : String((x as { slug?: string; role_id?: string })?.slug ?? (x as { role_id?: string })?.role_id ?? '')));
-      return { ...u, roles, is_admin: !!u.is_admin, via_proxy: (r as { token_kind?: string }).token_kind === 'proxy' } as MeDto;
+      const token_kind = (r as { token_kind?: string }).token_kind;
+      return { ...u, roles, is_admin: !!u.is_admin, via_proxy: token_kind === 'proxy', token_kind } as MeDto;
     },
     staleTime: 5 * 60_000,
     retry: false,
@@ -489,6 +493,25 @@ export function useAdminMutation<TVars>(fn: (v: TVars) => Promise<unknown>, inva
       qc.invalidateQueries({ queryKey: qk.roles });
     },
   });
+}
+
+// --------------------------------------------------------- personal tokens ---
+
+export function useMyTokens() {
+  return useQuery({ queryKey: qk.myTokens, queryFn: () => get<{ items: PersonalTokenDto[]; mcp_url: string | null }>('/me/tokens'), staleTime: 15_000 });
+}
+
+export function useCreateMyToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (b: { name: string; read_only: boolean; expires_in_days: number }) => post<CreatedPersonalTokenDto>('/me/tokens', b),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.myTokens }),
+  });
+}
+
+export function useRevokeMyToken() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => post(`/me/tokens/${id}/revoke`, {}), onSuccess: () => qc.invalidateQueries({ queryKey: qk.myTokens }) });
 }
 
 export { del, get, patch, post };

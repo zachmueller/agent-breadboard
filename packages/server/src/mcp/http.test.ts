@@ -73,7 +73,27 @@ beforeAll(async () => {
     },
   };
   const proxy = new Proxy({}, { get: () => unimpl });
-  const primitives = createPrimitives({ content, knowledge: proxy as any, tasks: proxy as any, orchestrator: proxy as any, sessions: sessions as any, evals: proxy as any, config: { definition: async (ref: string) => ({ uid: ref, kind: 'tool', raw: 'r' }) } as any, toolbox: () => toolbox, broker: proxy as any, gateway: proxy as any, db: f.db, log: f.log });
+  const primitives = createPrimitives({
+    content,
+    knowledge: proxy as any,
+    tasks: proxy as any,
+    orchestrator: proxy as any,
+    sessions: sessions as any,
+    evals: proxy as any,
+    config: { definition: async (ref: string) => ({ uid: ref, kind: 'tool', raw: 'r' }) } as any,
+    toolbox: () => toolbox,
+    broker: proxy as any,
+    gateway: proxy as any,
+    db: f.db,
+    log: f.log,
+    team_id: f.team_id,
+    identity: proxy as any,
+    events: proxy as any,
+    conversations: () => proxy as any,
+    dispatcher: () => proxy as any,
+    connectors: () => proxy as any,
+    instance: { name: 'agent-breadboard', version: 'test', db: 'pglite', sandbox: 'process', public_url: 'http://localhost:4000' },
+  });
   const services = { primitives, toolbox, sessions, log: f.log } as unknown as Services;
 
   app = Fastify();
@@ -156,6 +176,35 @@ describe('Breadboard MCP over streamable HTTP', () => {
     await transport.terminateSession();
     await client.close();
     expect(sessions.rows.get(s.session_id)!.state).toBe('completed');
+  });
+
+  it('tells the harness how to navigate and lists the inspection tools', async () => {
+    const { client, transport } = await connect();
+    expect(client.getInstructions()).toMatch(/get_breadboard_overview/);
+    expect(client.getInstructions()).toMatch(/read_session_transcript/);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    for (const n of ['whoami', 'list_sessions', 'read_session_transcript', 'read_session_events', 'inspect_node', 'list_proposals']) expect(names).toContain(n);
+    const who = await client.callTool({ name: 'whoami', arguments: {} });
+    expect(JSON.parse((who.content as any)[0].text)).toMatchObject({ user: { handle: 'member' }, token_kind: 'user' });
+    await transport.terminateSession();
+    await client.close();
+  });
+
+  it('refuses edge identity: an MCP connection needs an explicit bearer token', async () => {
+    const before = principal;
+    const sessionsBefore = sessions.rows.size;
+    principal = { ...f.memberPrincipal, token_kind: 'proxy' };
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer proxy', 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } } }),
+      });
+      expect(res.status).toBe(401);
+      expect(sessions.rows.size).toBe(sessionsBefore); // refused before a conversation session was opened
+    } finally {
+      principal = before;
+    }
   });
 
   it('rejects unknown MCP session ids and non-initialize requests without a session', async () => {

@@ -1,7 +1,7 @@
 import { mintUid, isUid } from './uid.js';
 
-/** Prefixed identifiers: `ses_` sessions, `trn_` turns, `nir_` need-input requests, `evr_` eval runs, `prp_` config proposals, `tok_` tokens. */
-export type IdPrefix = 'ses' | 'trn' | 'nir' | 'evr' | 'prp' | 'tok' | 'cap' | 'exe' | 'whk' | 'con';
+/** Prefixed identifiers: `ses_` sessions, `trn_` turns, `nir_` need-input requests, `evr_` eval runs, `prp_` config proposals, `tok_` service tokens, `ptk_` personal access tokens. */
+export type IdPrefix = 'ses' | 'trn' | 'nir' | 'evr' | 'prp' | 'tok' | 'ptk' | 'cap' | 'exe' | 'whk' | 'con';
 
 export function mintId(prefix: IdPrefix): string {
   return `${prefix}_${mintUid()}`;

@@ -117,6 +117,11 @@ function build(): PrimitivesImpl {
         { uid: TOOL, kind: 'tool', slug: 'check-citations', title: 'Citation checker', path: `tools/${TOOL}/tool.yaml` },
         { uid: null, kind: 'presets', slug: null, title: null, path: 'presets/models.yaml' },
       ],
+      tree: () => [
+        { uid: CIRCUIT, kind: 'circuit', slug: 'lit-review', title: 'Literature review', path: `circuits/${CIRCUIT}/circuit.yaml` },
+        { uid: TOOL, kind: 'tool', slug: 'check-citations', title: 'Citation checker', path: `tools/${TOOL}/tool.yaml` },
+        { uid: null, kind: 'presets', slug: null, title: null, path: 'presets/models.yaml' },
+      ],
       rubric: () => ({ dimensions: [] }),
       tool: (uid: string) =>
         uid === MODEL_TOOL
@@ -132,11 +137,34 @@ function build(): PrimitivesImpl {
         ci: () => ({ ok: false, errors: ['src/index.ts: Unexpected token'], warnings: [] }),
       }),
     broker: fake('broker', calls, { fetch: () => ({ status: 200, headers: {}, body: 'ok' }) }),
-    gateway: fake('gateway', calls, {
-      complete: () => ({ model_id: 'm-1', provider: 'mock', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 2 }, cost_usd: 0.01, latency_ms: 5, fallback_from: null }),
-    }),
+    gateway: (() => {
+      // `providers` / `fallbackEvents` are synchronous in the real gateway, so they sit beside the recording fake.
+      const gw = fake<Pick<PrimitivesDeps['gateway'], 'complete'>>('gateway', calls, {
+        complete: () => ({ model_id: 'm-1', provider: 'mock', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 2 }, cost_usd: 0.01, latency_ms: 5, fallback_from: null }),
+      });
+      return { complete: (req) => gw.complete(req), providers: () => ['mock'], fallbackEvents: () => [] } as PrimitivesDeps['gateway'];
+    })(),
     db: f.db,
     log: f.log,
+    team_id: f.team_id,
+    identity: fake('identity', calls, {
+      listUsers: () => [
+        { user_id: 'U1', team_id: f.team_id, handle: 'zach', display_name: 'Zach', oidc_subject: null, is_admin: true, created_at: '', deactivated_at: null },
+        { user_id: 'U2', team_id: f.team_id, handle: 'gone', display_name: 'Gone', oidc_subject: null, is_admin: false, created_at: '', deactivated_at: '2026-01-01T00:00:00Z' },
+      ],
+      rolesOfUser: (id: string) => (id === 'U1' ? ['scientist'] : []),
+    }),
+    events: fake('events', calls, {
+      replay: () => [
+        { id: 'e1', topic: 'session.state', at: '', payload: { session_id: 'sess_1' }, visibility: { scope: 'team' } },
+        { id: 'e2', topic: 'task.status', at: '', payload: {}, visibility: { scope: 'session', session_id: 'sess_hidden' } },
+      ],
+      visibleTo: (e: any) => e.visibility.scope === 'team',
+    }),
+    conversations: () => fake('conversations', calls, { proposals: () => ['prp_1'], busy: () => false, draftTask: () => null }),
+    dispatcher: () => fake('dispatcher', calls, { capacity: () => ({ running: 1, max_concurrent_runs: 4, spend_last_hour_usd: 0.5, max_spend_usd_per_hour: 25, queued: 2 }) }),
+    connectors: () => fake('connectors', calls, { status: () => [] }),
+    instance: { name: 'agent-breadboard', version: 'test', db: 'pglite', sandbox: 'process', public_url: 'http://localhost:4000' },
   };
   return createPrimitives(deps);
 }
@@ -172,6 +200,11 @@ describe('primitives catalog', () => {
   it('covers the [11] §4 MCP core catalog', () => {
     const mcpCatalog = ['create_task', 'find_similar_tasks', 'create_artifact', 'update_artifact', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input', 'query_knowledge', 'read_note', 'propose_note_edit', 'run_circuit', 'get_session_summary', 'record_score', 'get_rubric', 'propose_config_change', 'read_config', 'search_config', 'validate_config', 'get_fixture_output'];
     for (const n of mcpCatalog) expect(prims.names).toContain(n);
+  });
+
+  it('covers the [11] §4 inspection catalog', () => {
+    const inspection = ['whoami', 'get_breadboard_overview', 'list_users', 'list_sessions', 'read_session_transcript', 'read_session_events', 'list_session_executions', 'search_nodes', 'inspect_node', 'get_review_queue', 'get_config_history', 'list_proposals', 'read_proposal', 'diff_config', 'list_knowledge_domains', 'list_eval_runs', 'read_eval_run', 'get_eval_analysis', 'list_recent_events'];
+    for (const n of inspection) expect(prims.names).toContain(n);
   });
 
   it('every spec has a description and an object input schema', () => {
@@ -393,5 +426,236 @@ describe('broker_fetch, run_tool, config', () => {
     const r = (await prims.call('propose_config_change', { changes, message: 'fix' }, p, { session_id: 'sess_parent' })) as any;
     expect(r.tool_checks).toEqual([{ uid: TOOL, ok: false, errors: ['src/index.ts: Unexpected token'], warnings: [] }]);
     expect(callsTo('toolbox', 'ci').at(-1)!.args).toEqual([TOOL, 'h1']);
+  });
+});
+
+describe('inspection primitives', () => {
+  const readOnly = (): Principal => ({ ...f.memberPrincipal, scopes: ['tasks:read', 'nodes:read', 'sessions:read', 'config:read', 'knowledge:read', 'evals:read', 'events:read', 'mcp:call'], token_kind: 'personal' });
+
+  it('whoami describes the principal, including read-only tokens', async () => {
+    expect(await prims.call('whoami', {}, f.memberPrincipal)).toMatchObject({ user: { handle: 'member' }, roles: ['scientist'], is_admin: false, token_kind: 'user', scopes: null, read_only: false });
+    expect(await prims.call('whoami', {}, readOnly())).toMatchObject({ token_kind: 'personal', read_only: true });
+    expect(await prims.call('whoami', {}, { ...f.servicePrincipal, scopes: ['tasks:write'] })).toMatchObject({ user: null, read_only: false });
+  });
+
+  it('list_users hides deactivated users unless asked, and carries roles', async () => {
+    const r = (await prims.call('list_users', {}, f.memberPrincipal)) as any;
+    expect(r.users).toEqual([{ user_id: 'U1', handle: 'zach', display_name: 'Zach', is_admin: true, created_at: '', deactivated_at: null, roles: ['scientist'] }]);
+    expect(((await prims.call('list_users', { include_deactivated: true, include_roles: false }, f.memberPrincipal)) as any).users.map((u: any) => [u.handle, u.roles])).toEqual([['zach', undefined], ['gone', undefined]]);
+  });
+
+  it('get_breadboard_overview assembles the dashboard, config counts and capacity', async () => {
+    const r = (await prims.call('get_breadboard_overview', {}, f.memberPrincipal)) as any;
+    expect(r.instance).toMatchObject({ name: 'agent-breadboard', providers: ['mock'], public_url: 'http://localhost:4000' });
+    expect(r.capacity).toMatchObject({ running: 1, queued: 2, max_concurrent_runs: 4 });
+    expect(r.config.definitions).toEqual({ circuit: 1, tool: 1, presets: 1 });
+    // Panels that fail (the fakes lack these methods) degrade to null instead of failing the call.
+    expect(r.open_proposals).toBeNull();
+    expect(r.sessions).toEqual({ gated: 0, suspended_error: 0, running: 0, queued: 0 });
+  });
+
+  it('list_sessions maps `me`, filters by visibility and adds cost including children', async () => {
+    let listed: any = null;
+    const sessionsFake = fake<PrimitivesDeps['sessions']>('sessions', calls, {
+      list: (filter: any) => {
+        listed = filter;
+        return { items: [session('sess_parent', 'running'), session('sess_other', 'completed')], next_cursor: 'c2' };
+      },
+      costIncludingChildren: () => 0.25,
+    });
+    const p2 = createPrimitives({ ...(prims as any).deps, sessions: sessionsFake });
+    const r = (await p2.call('list_sessions', { kind: ['circuit-run'], created_by: 'me', limit: 5 }, f.memberPrincipal)) as any;
+    expect(listed).toMatchObject({ kind: ['circuit-run'], created_by: f.member.user_id, limit: 5, cursor: null });
+    expect(r.sessions.map((s: any) => [s.session_id, s.cost_usd])).toEqual([
+      ['sess_parent', 0.25],
+      ['sess_other', 0.25],
+    ]);
+    expect(r.next_cursor).toBe('c2');
+    // A subagent sees only its family.
+    const sub = subagentPrincipal(f, grants({ primitives: ['list_sessions'] }));
+    expect(((await p2.call('list_sessions', {}, sub)) as any).sessions.map((s: any) => s.session_id)).toEqual(['sess_parent']);
+    expect(await codeOf(prims.call('list_sessions', { state: ['bogus'] }, f.memberPrincipal))).toBe('validation-failed');
+  });
+
+  it('read_session_transcript renders blocks, clips long text, and reads one turn in full', async () => {
+    const long = 'x'.repeat(5000);
+    const turns = [
+      { turn_id: 'trn_1', session_id: 'sess_parent', step_id: 'gather', attempt: 1, role: 'user', username: 'zach', content: 'Find papers', model_id: null, tokens_in: null, tokens_out: null, cost_usd: null, created_at: '', latency_ms: null, fallback_from: null },
+      { turn_id: 'trn_2', session_id: 'sess_parent', step_id: 'gather', attempt: 1, role: 'assistant', username: null, content: [{ type: 'text', text: long }, { type: 'tool_use', id: 'tu1', name: 'search', input: { q: 'crdt' } }], model_id: 'm-1', tokens_in: 10, tokens_out: 5, cost_usd: 0.01, created_at: '', latency_ms: 12, fallback_from: null },
+      { turn_id: 'trn_3', session_id: 'sess_parent', step_id: 'gather', attempt: 1, role: 'tool', username: null, content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'ok', is_error: false }], model_id: null, tokens_in: null, tokens_out: null, cost_usd: null, created_at: '', latency_ms: null, fallback_from: null },
+    ];
+    let asked: any[] = [];
+    const sessionsFake = fake<PrimitivesDeps['sessions']>('sessions', calls, {
+      get: (id: string) => (id === 'sess_parent' ? session(id, 'running') : null),
+      mustGet: (id: string) => session(id, 'running', { config_commit: 'abc' }),
+      turns: (...a: any[]) => {
+        asked = a;
+        return turns;
+      },
+    });
+    const p2 = createPrimitives({ ...(prims as any).deps, sessions: sessionsFake });
+    const r = (await p2.call('read_session_transcript', { session_id: 'sess_parent', step: 'gather#1' }, f.memberPrincipal)) as any;
+    expect(asked).toEqual(['sess_parent', 'gather', 1]);
+    expect(r.session).toMatchObject({ session_id: 'sess_parent', config_commit: 'abc' });
+    expect(r.total_turns).toBe(3);
+    expect(r.next_offset).toBeNull();
+    expect(r.turns[0]).toMatchObject({ index: 0, role: 'user', username: 'zach', blocks: [{ type: 'text', text: 'Find papers' }] });
+    expect(r.turns[1].blocks[0]).toEqual({ type: 'text', truncated: true, total_chars: 5000, text: 'x'.repeat(4000) });
+    expect(r.turns[1].blocks[1]).toEqual({ type: 'tool_use', id: 'tu1', name: 'search', input: { q: 'crdt' } });
+    expect(r.turns[1]).toMatchObject({ model_id: 'm-1', tokens_in: 10, cost_usd: 0.01, latency_ms: 12 });
+    expect(r.turns[2].blocks[0]).toEqual({ type: 'tool_result', tool_use_id: 'tu1', is_error: false, content: 'ok' });
+    // Paging and a single turn in full.
+    const page = (await p2.call('read_session_transcript', { session_id: 'sess_parent', offset: 1, limit: 1 }, f.memberPrincipal)) as any;
+    expect(page.turns.map((t: any) => t.turn_id)).toEqual(['trn_2']);
+    expect(page.next_offset).toBe(2);
+    const one = (await p2.call('read_session_transcript', { session_id: 'sess_parent', turn_id: 'trn_2' }, f.memberPrincipal)) as any;
+    expect(one.turns[0].blocks[0]).toEqual({ type: 'text', text: long });
+    expect(await codeOf(p2.call('read_session_transcript', { session_id: 'sess_parent', turn_id: 'trn_9' }, f.memberPrincipal))).toBe('not-found');
+    expect(await codeOf(p2.call('read_session_transcript', { session_id: 'sess_parent', step: 'gather#two' }, f.memberPrincipal))).toBe('validation-failed');
+    // Visibility: a subagent outside the family is refused.
+    const outsider = subagentPrincipal(f, grants({ primitives: ['read_session_transcript'] }), { session_id: 'sess_x', visible_sessions: ['sess_x'] });
+    expect(await codeOf(p2.call('read_session_transcript', { session_id: 'sess_parent' }, outsider))).toBe('grant-denied');
+  });
+
+  it('read_session_events skips turn events by default, filters and pages by seq', async () => {
+    events = [
+      { session_id: 'sess_parent', seq: 1, event_type: 'session-started', step_id: null, payload: {}, created_at: '' },
+      { session_id: 'sess_parent', seq: 2, event_type: 'turn', step_id: 'gather', payload: { role: 'user' }, created_at: '' },
+      { session_id: 'sess_parent', seq: 3, event_type: 'step-exited', step_id: 'gather', payload: { exit: 'done', big: 'y'.repeat(100) }, created_at: '' },
+      { session_id: 'sess_parent', seq: 4, event_type: 'session-completed', step_id: null, payload: {}, created_at: '' },
+    ];
+    const r = (await prims.call('read_session_events', { session_id: 'sess_parent', max_chars: 40 }, f.memberPrincipal)) as any;
+    expect(r.events.map((e: any) => e.event_type)).toEqual(['session-started', 'step-exited', 'session-completed']);
+    expect(r.events[1].payload).toMatchObject({ truncated: true, total_chars: 124 });
+    expect(r).toMatchObject({ next_seq: 4, has_more: false });
+    expect(((await prims.call('read_session_events', { session_id: 'sess_parent', include_turns: true }, f.memberPrincipal)) as any).events).toHaveLength(4);
+    expect(((await prims.call('read_session_events', { session_id: 'sess_parent', types: ['turn'] }, f.memberPrincipal)) as any).events.map((e: any) => e.seq)).toEqual([2]);
+    expect(((await prims.call('read_session_events', { session_id: 'sess_parent', step: 'gather' }, f.memberPrincipal)) as any).events.map((e: any) => e.seq)).toEqual([3]);
+    const first = (await prims.call('read_session_events', { session_id: 'sess_parent', limit: 1 }, f.memberPrincipal)) as any;
+    expect(first.events.map((e: any) => e.seq)).toEqual([1]);
+    expect(first.has_more).toBe(true);
+    const rest = (await prims.call('read_session_events', { session_id: 'sess_parent', after_seq: first.next_seq }, f.memberPrincipal)) as any;
+    expect(rest.events.map((e: any) => e.seq)).toEqual([3, 4]);
+  });
+
+  it('list_session_executions filters by step and clips output and logs', async () => {
+    const rows = [
+      { execution_key: 'k1', step_id: 'gather', attempt: 1, call_index: 0, tool_uid: `${TOOL}    `, tool_commit: 'c', status: 'completed', input_hash: 'h', output: { hits: 'z'.repeat(50) }, error: null, logs: [{ level: 'info', message: 'm' }], started_at: '', ended_at: '' },
+      { execution_key: 'k2', step_id: 'check', attempt: 2, call_index: 0, tool_uid: TOOL, tool_commit: 'c', status: 'failed', input_hash: 'h', output: null, error: 'boom', logs: null, started_at: '', ended_at: '' },
+    ];
+    const p2 = createPrimitives({ ...(prims as any).deps, toolbox: () => fake('toolbox', calls, { executions: () => rows }) });
+    const all = (await p2.call('list_session_executions', { session_id: 'sess_parent', max_chars: 40 }, f.memberPrincipal)) as any;
+    expect(all.total).toBe(2);
+    expect(all.executions[0]).toMatchObject({ tool_uid: TOOL, output: { truncated: true, total_chars: 61 }, logs: [{ level: 'info', message: 'm' }] });
+    expect(all.executions[1]).toMatchObject({ status: 'failed', error: 'boom', output: null, logs: null });
+    expect(((await p2.call('list_session_executions', { session_id: 'sess_parent', step: 'check#2' }, f.memberPrincipal)) as any).executions.map((e: any) => e.execution_key)).toEqual(['k2']);
+    expect(((await p2.call('list_session_executions', { session_id: 'sess_parent', step: 'check#1' }, f.memberPrincipal)) as any).executions).toEqual([]);
+  });
+
+  it('search_nodes forwards filters and returns previews, not bodies', async () => {
+    let filter: any = null;
+    const content = fake<PrimitivesDeps['content']>('content', calls, {
+      listNodes: (fl: any) => {
+        filter = fl;
+        return { items: [{ uid: 'N1', type: 'task', title: 'T', properties: { status: 'queued' }, body: 'b'.repeat(300), body_text: 'b'.repeat(300), crdt: false, tags: [], scope: 'team', head_revision: 1, created_at: '', created_by: { kind: 'user', id: 'u' }, updated_at: '' }], next_cursor: null };
+      },
+    });
+    const p2 = createPrimitives({ ...(prims as any).deps, content });
+    const r = (await p2.call('search_nodes', { type: 'task', status: ['queued'], q: 'crdt' }, f.memberPrincipal)) as any;
+    expect(filter).toMatchObject({ type: 'task', status: ['queued'], q: 'crdt', limit: 25 });
+    expect(r.nodes[0]).toMatchObject({ uid: 'N1', properties: { status: 'queued' }, body_preview: { truncated: true, total_chars: 300 } });
+    expect(r.nodes[0].body).toBeUndefined();
+    expect(await codeOf(p2.call('search_nodes', { type: 'rubric' }, f.memberPrincipal))).toBe('validation-failed');
+  });
+
+  it('inspect_node gathers revisions, edges, comments and lineage in one call', async () => {
+    const content = fake<PrimitivesDeps['content']>('content', calls, {
+      getNode: (uid: string) => ({ uid, type: 'artifact', title: 'A', properties: {}, body: '# a', body_text: '# a', crdt: false, tags: ['deliverable'], scope: 'team', head_revision: 2, created_at: '', created_by: { kind: 'subagent', id: 's' }, updated_at: '' }),
+      revisions: () => [{ uid: 'A', revision_id: 2, labels: ['step-completion'], properties: {}, body: null, body_text: null, created_at: '', created_by: { kind: 'subagent', id: 's' } }],
+      edges: () => [{ edge_id: 1, type: 'produces', src: 'sess_parent', dst: 'A' }],
+      comments: () => [{ uid: 'C1', type: 'comment', title: '', properties: {}, body: 'nice', body_text: 'nice', crdt: false, tags: [], scope: 'team', head_revision: 1, created_at: '', created_by: { kind: 'user', id: 'u' }, updated_at: '', stale: false, anchor_status: 'resolved' }],
+      lineage: (_uid: string, direction: string) => ({ root: 'A', direction, edges: [], nodes: [], sessions: [], truncated: false }),
+    });
+    const p2 = createPrimitives({ ...(prims as any).deps, content });
+    const r = (await p2.call('inspect_node', { uid: 'A', lineage_depth: 3, revisions_limit: 5 }, f.memberPrincipal)) as any;
+    expect(r.node).toMatchObject({ uid: 'A', body_preview: '# a' });
+    expect(r.revisions).toEqual([{ revision_id: 2, labels: ['step-completion'], created_at: '', created_by: { kind: 'subagent', id: 's' } }]);
+    expect(r.edges).toHaveLength(1);
+    expect(r.comments[0]).toMatchObject({ uid: 'C1', body: 'nice', anchor_status: 'resolved' });
+    expect(r.lineage.up.direction).toBe('up');
+    expect(callsTo('content', 'revisions').at(-1)!.args[2]).toEqual({ limit: 5 });
+    expect(callsTo('content', 'lineage').map((c) => c.args[2])).toEqual([3, 3]);
+    const flat = (await p2.call('inspect_node', { uid: 'A', lineage_depth: 0 }, f.memberPrincipal)) as any;
+    expect(flat.lineage).toEqual({ up: null, down: null });
+  });
+
+  it('config inspection: history resolves definitions, proposals drop the diff, diff_config clips the patch', async () => {
+    const config = fake<PrimitivesDeps['config']>('config', calls, {
+      definition: (ref: string) => ({ uid: ref === 'lit-review' ? CIRCUIT : TOOL, kind: ref === 'lit-review' ? 'circuit' : 'subagent', path: ref === 'lit-review' ? `circuits/${CIRCUIT}/circuit.yaml` : `subagents/${TOOL}.yaml`, commit: 'c', slug: ref, title: 't', definition: {}, raw: '', validation: { ok: true, errors: [], warnings: [] }, referenced_by: [] }),
+      history: (o: any) => [{ commit: 'c1', author: 'a', date: '', message: `m ${o.path ?? 'all'}` }],
+      listProposals: () => [{ proposal_id: 'prp_1', status: 'open', diff: 'PATCH', changes: [], validation: { ok: true, errors: [], warnings: [] }, eval_runs: [] }],
+      getProposal: (id: string) => ({ proposal_id: id, head_commit: 'h', status: 'open', diff: 'p'.repeat(100), changes: [{ path: `tools/${TOOL}/tool.yaml`, status: 'modified' }], validation: { ok: true, errors: [], warnings: [] }, eval_runs: [] }),
+      diff: (base: string, head: string) => ({ patch: `${base}..${head} ${'d'.repeat(100)}`, files: [{ path: 'tenets.md', status: 'modified' }] }),
+    });
+    const p2 = createPrimitives({ ...(prims as any).deps, config });
+    expect((await p2.call('get_config_history', { ref: 'lit-review', limit: 5 }, f.memberPrincipal)) as any).toMatchObject({ path: `circuits/${CIRCUIT}`, commits: [{ message: `m circuits/${CIRCUIT}` }] });
+    expect(((await p2.call('get_config_history', { ref: 'planner' }, f.memberPrincipal)) as any).path).toBe(`subagents/${TOOL}.yaml`);
+    expect(((await p2.call('get_config_history', { ref: 'config/presets/models.yaml' }, f.memberPrincipal)) as any).path).toBe('presets/models.yaml');
+    expect(((await p2.call('get_config_history', {}, f.memberPrincipal)) as any).commits[0].message).toBe('m all');
+    expect(callsTo('config', 'history').at(-1)!.args[0]).toEqual({ path: undefined, ref: undefined, limit: 20 });
+
+    const proposals = (await p2.call('list_proposals', { status: 'open' }, f.memberPrincipal)) as any;
+    expect(proposals.proposals[0]).toMatchObject({ proposal_id: 'prp_1' });
+    expect(proposals.proposals[0].diff).toBeUndefined();
+    const one = (await p2.call('read_proposal', { proposal_id: 'prp_1', max_chars: 10 }, f.memberPrincipal)) as any;
+    expect(one.diff).toEqual({ truncated: true, total_chars: 100, text: 'pppppppppp' });
+    expect(one.tool_checks).toEqual([{ uid: TOOL, ok: false, errors: ['src/index.ts: Unexpected token'], warnings: [] }]);
+    expect(((await p2.call('read_proposal', { proposal_id: 'prp_1', include_diff: false }, f.memberPrincipal)) as any).diff).toBeUndefined();
+    const diff = (await p2.call('diff_config', { base: 'a', head: 'b', max_chars: 4 }, f.memberPrincipal)) as any;
+    expect(diff).toEqual({ base: 'a', head: 'b', files: [{ path: 'tenets.md', status: 'modified' }], patch: { truncated: true, total_chars: 105, text: 'a..b' } });
+  });
+
+  it('read_config and search_config accept a commit', async () => {
+    await prims.call('read_config', { ref: TOOL, commit: 'abc123' }, f.memberPrincipal);
+    expect(callsTo('config', 'definition').at(-1)!.args).toEqual([TOOL, 'abc123', { lenient: true }]);
+    await prims.call('search_config', { q: 'x', commit: 'abc123' }, f.memberPrincipal);
+    expect(callsTo('config', 'search').at(-1)!.args).toEqual(['x', 'abc123']);
+  });
+
+  it('get_session_summary adds conversation fields for chats only', async () => {
+    const sessionsFake = fake<PrimitivesDeps['sessions']>('sessions', calls, {
+      get: (id: string) => session(id, 'running'),
+      summary: (id: string) => ({ ...session(id, 'completed', { kind: id === 'sess_chat' ? 'conversation' : 'circuit-run', state_detail: { last_error: 'oops' } }), steps: [], cost_usd: 0 }),
+    });
+    const p2 = createPrimitives({ ...(prims as any).deps, sessions: sessionsFake });
+    expect((await p2.call('get_session_summary', { session_id: 'sess_chat' }, f.memberPrincipal)) as any).toMatchObject({ proposals: ['prp_1'], busy: false, draft_task: null, last_error: 'oops' });
+    const run = (await p2.call('get_session_summary', { session_id: 'sess_run' }, f.memberPrincipal)) as any;
+    expect(run.proposals).toBeUndefined();
+  });
+
+  it('knowledge domains, evals and events pass through with their gates', async () => {
+    const knowledge = fake<PrimitivesDeps['knowledge']>('knowledge', calls, { domains: () => [{ slug: 'eng', description: '', note_count: 2 }, { slug: 'ops', description: '', note_count: 1 }] });
+    const evals = fake<PrimitivesDeps['evals']>('evals', calls, { listRuns: (o: any) => [o], getRun: (id: string) => ({ eval_run_id: id }), analysis: (c: string, v: string, o: any) => ({ c, v, o }) });
+    const p2 = createPrimitives({ ...(prims as any).deps, knowledge, evals });
+    expect(((await p2.call('list_knowledge_domains', {}, f.memberPrincipal)) as any).domains).toHaveLength(2);
+    const sub = subagentPrincipal(f, grants({ primitives: ['list_knowledge_domains'] }));
+    expect(((await p2.call('list_knowledge_domains', {}, sub)) as any).domains.map((x: any) => x.slug)).toEqual(['eng']);
+    expect(((await p2.call('list_eval_runs', { circuit: CIRCUIT }, f.memberPrincipal)) as any).runs).toEqual([{ circuit: CIRCUIT, status: undefined, limit: 20 }]);
+    expect(await p2.call('read_eval_run', { eval_run_id: 'evr_1' }, f.memberPrincipal)).toEqual({ eval_run_id: 'evr_1' });
+    expect(await p2.call('get_eval_analysis', { circuit_uid: CIRCUIT, view: 'trend', variant: 'v' }, f.memberPrincipal)).toEqual({ c: CIRCUIT, v: 'trend', o: { base: undefined, head: undefined, circuit_commit: undefined, variant: 'v' } });
+    expect(await codeOf(p2.call('get_eval_analysis', { circuit_uid: CIRCUIT, view: 'nope' }, f.memberPrincipal))).toBe('validation-failed');
+    const ev = (await prims.call('list_recent_events', { topics: ['session.state', 'task.status'] }, f.memberPrincipal)) as any;
+    expect(ev.events.map((e: any) => e.id)).toEqual(['e1']); // e2 is session-scoped and not visible
+    expect(ev.next_after).toBe('e2');
+  });
+
+  it('read-only tokens can inspect but not write; subagents need the grant', async () => {
+    const ro = readOnly();
+    expect(await codeOf(prims.call('get_review_queue', {}, ro))).not.toBe('forbidden');
+    expect(await codeOf(prims.call('list_recent_events', {}, ro))).toBe('ok');
+    expect(await codeOf(prims.call('create_task', { title: 't', body: 'b' }, ro))).toBe('forbidden');
+    expect(await codeOf(prims.call('propose_config_change', { changes: [{ path: 'tenets.md', content: 'x' }], message: 'm' }, ro))).toBe('forbidden');
+    expect(await codeOf(prims.call('whoami', {}, subagentPrincipal(f, grants())))).toBe('grant-denied');
+    expect(await codeOf(prims.call('whoami', {}, subagentPrincipal(f, grants({ primitives: ['whoami'] }))))).toBe('ok');
   });
 });

@@ -1257,6 +1257,10 @@ export class ConfigServiceImpl implements ConfigService {
     return this.repo.log(opts);
   }
 
+  async diff(base: string, head: string): Promise<{ patch: string; files: Array<{ path: string; status: 'added' | 'modified' | 'deleted' | 'renamed' }> }> {
+    return this.repo.diff(await this.resolveRef(base), await this.resolveRef(head));
+  }
+
   async renderIndex(ref?: string): Promise<string> {
     return renderIndexFromModel(await this.model(await this.resolveRef(ref)));
   }

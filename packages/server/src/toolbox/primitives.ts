@@ -8,46 +8,13 @@
  * execute grants, circuit read grants on `read_config`, session visibility on `get_session_summary`).
  */
 import { BreadboardError, validateAgainst, type JsonSchema } from '@breadboard/shared';
-import type { Queryable } from '../db/index.js';
 import { proposalToolChecks } from './proposal-checks.js';
-import type { Logger } from '../core/logger.js';
-import { canSeeSession, requireScope, type Principal } from '../core/principal.js';
-import type { ChatMessage, ConfigService, ContentService, CredentialBroker, EvalService, KnowledgeService, ModelGateway, Orchestrator, Primitives, SessionStore, TaskService, Toolbox, ToolSpec } from '../core/services.js';
+import { requireScope, type Principal } from '../core/principal.js';
+import type { ChatMessage, Primitives, SessionStore, ToolSpec } from '../core/services.js';
+import { obj, sessionVisible, STRING_ARRAY, UID, type PrimitiveCallCtx, type PrimitiveDef, type PrimitivesDeps } from './primitive-defs.js';
+import { inspectionCatalog } from './inspection.js';
 
-export interface PrimitiveCallCtx {
-  session_id?: string | null;
-  step_id?: string | null;
-  attempt?: number | null;
-  call_index?: number | null;
-  depth?: number;
-}
-
-export interface PrimitiveDef {
-  name: string;
-  description: string;
-  input_schema: JsonSchema;
-  /** Service-token capability scope required ([11] §2); no-op for unscoped principals. */
-  scope: string;
-  handler(args: any, principal: Principal, ctx: PrimitiveCallCtx): Promise<unknown>;
-}
-
-export interface PrimitivesDeps {
-  content: ContentService;
-  knowledge: KnowledgeService;
-  tasks: TaskService;
-  orchestrator: Orchestrator;
-  sessions: SessionStore;
-  evals: EvalService;
-  config: ConfigService;
-  /** Lazy: toolbox → sandbox API → primitives is cyclic. */
-  toolbox: () => Toolbox;
-  broker: CredentialBroker;
-  /** `model_converse`: tool code's model calls go through the gateway like every other LLM call. */
-  gateway: Pick<ModelGateway, 'complete'>;
-  /** Used to resolve the executing tool from the execution journal (`broker_fetch`). */
-  db: Queryable;
-  log: Logger;
-}
+export type { PrimitiveCallCtx, PrimitiveDef, PrimitivesDeps } from './primitive-defs.js';
 
 /** Composition nesting cap for `run_tool` / `run_circuit` ([06] §2.2). */
 export const MAX_COMPOSITION_DEPTH = 8;
@@ -67,7 +34,6 @@ const OWNED_EDGE_TYPES = new Set(['produces', 'updates']);
 // ---------------------------------------------------------------------------
 // Schema fragments
 // ---------------------------------------------------------------------------
-const UID = { type: 'string', description: '20-character Breadboard UID of a content node.' };
 const ARTIFACT_REF = {
   type: 'object',
   description: 'Revision-pinned reference to a content node.',
@@ -75,7 +41,6 @@ const ARTIFACT_REF = {
   required: ['uid', 'revision_id'],
   additionalProperties: false,
 };
-const STRING_ARRAY = (description: string) => ({ type: 'array', items: { type: 'string' }, description });
 const FILE_CHANGES = {
   type: 'array',
   minItems: 1,
@@ -90,10 +55,6 @@ const FILE_CHANGES = {
     additionalProperties: false,
   },
 };
-
-function obj(properties: Record<string, unknown>, required: string[] = []): JsonSchema {
-  return { type: 'object', properties, required, additionalProperties: false };
-}
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -125,10 +86,11 @@ export class PrimitivesImpl implements Primitives {
   async call(name: string, args: unknown, principal: Principal, ctx: PrimitiveCallCtx = {}): Promise<unknown> {
     const def = this.defs.get(name);
     if (!def) throw new BreadboardError('not-found', `unknown primitive '${name}'`);
+    // Who may call comes before what they sent: an unauthorized caller learns nothing about the schema.
+    if (!this.allowed(name, principal)) throw new BreadboardError('grant-denied', `primitive '${name}' is not available to ${principal.actor.kind}:${principal.actor.id}`);
+    if (def.scope) requireScope(principal, def.scope);
     const v = validateAgainst(def.input_schema, args ?? {});
     if (!v.ok) throw new BreadboardError('validation-failed', `invalid arguments for '${name}': ${v.errors.join('; ')}`, { errors: v.errors });
-    if (!this.allowed(name, principal)) throw new BreadboardError('grant-denied', `primitive '${name}' is not available to ${principal.actor.kind}:${principal.actor.id}`);
-    requireScope(principal, def.scope);
     this.deps.log.debug({ primitive: name, actor: principal.actor, session_id: ctx.session_id ?? null, step_id: ctx.step_id ?? null, depth: ctx.depth ?? 0 }, 'primitive call');
     return def.handler(v.value, principal, ctx);
   }
@@ -444,11 +406,16 @@ export class PrimitivesImpl implements Primitives {
       {
         name: 'get_session_summary',
         scope: 'sessions:read',
-        description: 'Summarize a session you can see: state, cost (including child sessions), steps with exits, and child sessions.',
+        description:
+          'Summarize a session you can see: state, cost (including child sessions), steps with exits, and child sessions. For intake and designer conversations also `proposals` (ids opened in the chat), `busy`, `last_error` and `draft_task`. Read the turns with `read_session_transcript`.',
         input_schema: obj({ session_id: { type: 'string', minLength: 1, description: 'Session id.' } }, ['session_id']),
         handler: async (a, p) => {
           if (!(await sessionVisible(d.sessions, p, a.session_id))) throw new BreadboardError('grant-denied', `session ${a.session_id} is not visible to this principal`);
-          return d.sessions.summary(a.session_id);
+          const summary = await d.sessions.summary(a.session_id);
+          if (summary.kind !== 'intake' && summary.kind !== 'conversation') return summary;
+          const chats = d.conversations();
+          const [proposals, draft_task, busy] = await Promise.all([chats.proposals(a.session_id), chats.draftTask(a.session_id), chats.busy(a.session_id)]);
+          return { ...summary, proposals, draft_task, busy, last_error: (summary.state_detail as { last_error?: unknown }).last_error ?? null };
         },
       },
 
@@ -607,7 +574,7 @@ export class PrimitivesImpl implements Primitives {
         name: 'read_config',
         scope: 'config:read',
         description:
-          'Read a configuration-plane definition (circuit, subagent, tool incl. source files, MCP onboarding, presets, tenets) at the current main commit. Returns the raw file text and the parsed definition. A miss lists the closest definitions; find UIDs with `search_config`. Circuits require a read or execute grant.',
+          'Read a configuration-plane definition (circuit, subagent, tool incl. source files, MCP onboarding, presets, tenets) at main, or at `commit`. Returns the raw file text and the parsed definition. A miss lists the closest definitions; find UIDs with `search_config`. Circuits require a read or execute grant.',
         input_schema: obj(
           {
             ref: {
@@ -616,11 +583,12 @@ export class PrimitivesImpl implements Primitives {
               description:
                 'A definition UID; a slug (`check-citations`, or `tool:check-citations` when kinds share a slug); `presets`, `tenets` or `breadboard`; or a repo-relative path (`presets/models.yaml`, `tools/<UID>/src/index.ts`).',
             },
+            commit: { type: 'string', minLength: 1, description: 'Read at this commit hash or branch instead of main (e.g. a session\'s `config_commit`, to see exactly what a run used).' },
           },
           ['ref'],
         ),
         handler: async (a, p) => {
-          const def = await d.config.definition(a.ref, undefined, { lenient: true });
+          const def = await d.config.definition(a.ref, a.commit, { lenient: true });
           if (def.kind === 'circuit' && p.grants && p.actor.kind === 'subagent') {
             const uid = def.uid ?? '';
             if (!p.grants.circuits.read.has(uid) && !p.grants.circuits.execute.has(uid)) throw new BreadboardError('grant-denied', `no read grant for circuit ${uid}`);
@@ -632,14 +600,15 @@ export class PrimitivesImpl implements Primitives {
         name: 'search_config',
         scope: 'config:read',
         description:
-          'Find configuration-plane definitions at the current main commit by slug, title, UID, or path words, best match first; an empty `q` lists them all. Returns metadata only (uid, kind, slug, title, path): use it to get the UID that references need, then `read_config` for the content.',
+          'Find configuration-plane definitions at main (or at `commit`) by slug, title, UID, or path words, best match first; an empty `q` lists them all. Returns metadata only (uid, kind, slug, title, path): use it to get the UID that references need, then `read_config` for the content.',
         input_schema: obj({
           q: { type: 'string', description: 'Search text (default: everything).' },
           kind: { type: 'string', enum: ['circuit', 'subagent', 'tool', 'mcp', 'presets', 'tenets', 'breadboard'], description: 'Only definitions of this kind.' },
           limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Max entries (default 25).' },
+          commit: { type: 'string', minLength: 1, description: 'Search at this commit hash or branch instead of main.' },
         }),
         handler: async (a) => {
-          const all = await d.config.search(a.q ?? '');
+          const all = await d.config.search(a.q ?? '', a.commit);
           const hits = a.kind ? all.filter((e) => e.kind === a.kind) : all;
           return { total: hits.length, entries: hits.slice(0, a.limit ?? 25).map(({ uid, kind, slug, title, path }) => ({ uid, kind, slug, title, path })) };
         },
@@ -679,6 +648,9 @@ export class PrimitivesImpl implements Primitives {
           };
         },
       },
+
+      // ---------------- Inspection ([11] §4) ----------------
+      ...inspectionCatalog(d),
     ];
     return defs;
   }
@@ -702,15 +674,6 @@ function isToolCode(p: Principal): boolean {
 
 function checkDepth(ctx: PrimitiveCallCtx): void {
   if ((ctx.depth ?? 0) >= MAX_COMPOSITION_DEPTH) throw new BreadboardError('invalid-state', `composition depth cap (${MAX_COMPOSITION_DEPTH}) reached`);
-}
-
-async function sessionVisible(sessions: SessionStore, p: Principal, id: string): Promise<boolean> {
-  if (canSeeSession(p, id)) return true;
-  if (p.visible_sessions === null) return true;
-  // Children spawned after the principal was minted (e.g. run_circuit with wait=false).
-  const s = await sessions.get(id);
-  if (!s) return false;
-  return !!s.parent_session && (s.parent_session === p.session_id || p.visible_sessions.includes(s.parent_session));
 }
 
 async function lastEvent(sessions: SessionStore, id: string, type: string) {

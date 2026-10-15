@@ -2,6 +2,8 @@
  * AuthService ([12] §3, [11] §2): resolves every bearer token to a Principal.
  *
  * Token kinds:
+ *  - `bbu_…` personal access tokens (user-minted from the Account page, hashed at rest, expiring; optionally
+ *    limited to read scopes) — they resolve to the user's own principal with `token_kind: 'personal'`;
  *  - `bbs_…` service tokens (admin-issued, hashed at rest, named capability scopes);
  *  - local-dev static user tokens from `breadboard.yaml` `auth.local_users` (mode `local` only) —
  *    the users are real `users` rows (`syncLocalUsers`);
@@ -172,6 +174,13 @@ export class AuthServiceImpl implements AuthService {
   }
 
   private async resolve(token: string): Promise<{ principal: Principal; expiresAtMs: number | null }> {
+    if (token.startsWith('bbu_')) {
+      const t = await this.deps.identity.findUserToken(token);
+      if (!t || t.team_id !== this.deps.team_id) throw new BreadboardError('unauthorized', 'invalid personal access token');
+      const user = await this.activeUser(t.user_id);
+      const roles = await this.deps.identity.rolesOfUser(user.user_id);
+      return { principal: userPrincipal(user, roles, { scopes: t.scopes, token_kind: 'personal' }), expiresAtMs: Date.parse(t.expires_at) };
+    }
     if (token.startsWith('bbs_')) {
       const t = await this.deps.identity.findServiceToken(token);
       if (!t || t.team_id !== this.deps.team_id) throw new BreadboardError('unauthorized', 'invalid service token');

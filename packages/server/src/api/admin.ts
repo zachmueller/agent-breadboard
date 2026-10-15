@@ -60,7 +60,7 @@ export async function register(app: FastifyInstance, services: Services): Promis
     if (!user || user.team_id !== team_id) throw new BreadboardError('not-found', `user ${id} not found`);
     if (principalOf(req).user?.user_id === id) throw new BreadboardError('validation-failed', 'you cannot deactivate yourself');
     await identity.deactivateUser(id);
-    (services.auth as { invalidate?: () => void }).invalidate?.();
+    services.auth.invalidate?.();
     return (await identity.getUser(id))!;
   });
 
@@ -83,7 +83,7 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const exists = (await identity.listRoles(team_id)).some((r) => r.slug === slug);
     if (!exists) throw new BreadboardError('not-found', `role '${slug}' not found`);
     await identity.deleteRole(team_id, slug);
-    (services.auth as { invalidate?: () => void }).invalidate?.();
+    services.auth.invalidate?.();
     reply.status(204);
   });
 
@@ -97,7 +97,7 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const user = await identity.getUser(user_id);
     if (!user || user.team_id !== team_id) throw new BreadboardError('not-found', `user ${user_id} not found`);
     await identity.setMembership(role.role_id, user_id, member);
-    (services.auth as { invalidate?: () => void }).invalidate?.();
+    services.auth.invalidate?.();
     return (await rolesWithMembers(services)).find((r) => r.slug === slug)!;
   });
 
@@ -129,7 +129,7 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const existing = (await identity.listServiceTokens(team_id)).find((t) => t.token_id === id);
     if (!existing) throw new BreadboardError('not-found', `service token ${id} not found`);
     await identity.revokeServiceToken(id);
-    (services.auth as { invalidate?: () => void }).invalidate?.();
+    services.auth.invalidate?.();
     return (await identity.listServiceTokens(team_id)).find((t) => t.token_id === id)!;
   });
 

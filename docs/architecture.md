@@ -20,12 +20,12 @@ packages/
       orchestrator/  SessionStore, Orchestrator (stepping/gates/retries/sub-sessions), Dispatcher
       gateway/       ModelGateway, Bedrock + Mock providers, presets/fallback, pricing
       subagents/     SubagentRuntime: resolution (tenets, {{knowledge:…}}), tool surface, conversation loop
-      toolbox/       Toolbox (journal, settings), sandbox runners (docker/process), egress proxy, broker, MCP clients, primitives
+      toolbox/       Toolbox (journal, settings), sandbox runners (docker/process), egress proxy, broker, MCP clients, primitives (incl. the read-only inspection catalog)
       knowledge/     Y.Doc block model, Hocuspocus sync, reconcile (three-way), search, injection, connectors
       intake/        TaskService, ConversationService
       evals/         EvalService (runs, results store, analysis views, fixture promotion)
       events/        EventBus (outbox, SSE, webhooks)
-      auth/          AuthService (local static users, OIDC, service tokens, actor tokens)
+      auth/          AuthService (local static users, OIDC, personal access tokens, service tokens, actor tokens, edge identity)
       mcp/           Breadboard MCP server (streamable HTTP) over the primitives + external tools
       api/           Fastify route modules, one per area, all under /api/v1
       test/          shared test harness (PGlite in-memory)

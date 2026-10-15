@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-14.
+**As of:** 2026-10-15.
 **Branch:** `main`; the `cdk-aws-deploy` work was merged on 2026-10-10. The verification pass and its follow-ups start at `467a8b1` (`git log 467a8b1..HEAD`).
 **Read first when resuming:** this file, then the checklist at the end of [verification-plan.md](verification-plan.md).
 
@@ -25,7 +25,7 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 75 files, 577 passed, 4 skipped (the skips are Docker-only); 2026-10-14 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 79 files, 613 passed, 4 skipped (the skips are Docker-only); 2026-10-15 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
 | CDK template | `cd deploy/aws && npm test` | 29 passed |
@@ -97,11 +97,25 @@ Prompted by a subagent-designer chat in which every `read_config` by name failed
 
 The designer changes reach only new config repos. On existing instances, the three designer files need the new primitive and the lookup bullet in their config repos, after the server is upgraded (an older server silently drops a primitive it does not know).
 
+## Decisions made 2026-10-15
+
+Prompted by wanting a local Claude Code to investigate what a Breadboard has done. The MCP server already served the primitive catalog, but its read side stopped at `get_session_summary` and `read_config` at main, and a member behind the pilot's edge or carp's load balancer had no token to connect with (user tokens live in an httpOnly cookie; service tokens are refused by the MCP endpoint by design). Recorded in spec [11](../specs/11-api-mcp.md) §2 and §4, [12](../specs/12-security-deployment.md) §3, [06](../specs/06-toolbox.md) §7, [02](../specs/02-sessions-orchestrator.md) §7 and [mcp.md](mcp.md).
+
+1. **Inspection primitives.** Nineteen read-only primitives in `packages/server/src/toolbox/inspection.ts`: `whoami`, `get_breadboard_overview`, `list_users`, `list_sessions`, `read_session_transcript`, `read_session_events`, `list_session_executions`, `search_nodes`, `inspect_node`, `get_review_queue`, `get_config_history`, `list_proposals`, `read_proposal`, `diff_config`, `list_knowledge_domains`, `list_eval_runs`, `read_eval_run`, `get_eval_analysis`, `list_recent_events`. They are part of the shared catalog, so subagents get them only through `grants.primitives`, and each calls the service method its REST route calls. Long values are clipped (`max_chars`; a clipped value carries `truncated: true` and `total_chars`), and `read_session_transcript` reads a turn in full by `turn_id`. `read_config` and `search_config` take `commit`; `get_session_summary` carries `proposals`, `busy`, `last_error` and `draft_task` for chats; `SessionFilter` gained `created_by` and `definition`; `ConfigService.diff` exposes the repo diff. The `initialize` result carries `instructions` that walk the model through a run investigation. The primitive gate now checks who is calling before validating what they sent. `toBlocks` moved from the UI into `@breadboard/shared` so the transcript tool and the Session explorer agree on what a turn contains.
+2. **Personal access tokens.** `bbu_…`, minted on the new Account page (`/account`; user menu → Account & tokens; `g u`), hashed in `user_tokens` (migration 0006), expiring (90 days by default, a year at most), revocable at once, read-only by default (the eight read scopes plus `mcp:call`) or full access (`scopes` null). They resolve to the user's own principal with `token_kind: 'personal'`. Only a browser sign-in may mint or revoke: a session token or cookie, or an authenticating edge's identity (`proxy`), which is what every member's session is on the pilot and on carp. A token never mints a token, and service tokens cannot either. `requireAdmin` now also needs an unscoped credential (or the `admin` scope), so a read-only token of an admin is a member everywhere, admin reads included. `POST /me/tokens` returns `mcp_url`, and the page shows the `claude mcp add` command with the secret.
+3. **MCP connections need an explicit bearer token.** `/api/v1/mcp` refuses edge identity (`token_kind: 'proxy'`) with 401 before opening a session, so an edge rule that passes the path through for Claude Code can never hand out the trusted-proxy identity.
+4. **A route sweep guards the read-only promise.** `packages/server/src/api/scope-sweep.test.ts` builds the full app from the seed, collects every route through the new `buildApp` `onRoute` observer, and calls every mutating route with a read-only token, expecting 403 (`POST /config/validate` and the MCP transport excepted).
+
+Exercised: unit tests over fakes, the transcript and listing against a real PGlite session store, the token routes with browser, edge, service and personal credentials, the sweep, and the MCP transport (instructions, inspection tools, proxy refusal). Not yet: the Account page in a browser, and Claude Code against a running instance.
+
+Deployment follow-ups, outside this repo: the pilot's CloudFront needs a behavior for `/api/v1/mcp*` without the signed-cookie function, and carp's load balancer a listener rule for that path without `authenticate-oidc`. Migration `0006_user_tokens.sql` runs at upgrade; the catalog change is code only, so no config-repo update is needed.
+
 ## Next steps (in priority order)
 
 1. **Before inviting anyone to the pilot:** set up OIDC. The pilot's trusted proxy signs every edge user in as one admin, so it must stay single-person; widening the edge's access group first would give everyone that identity. Once the browser pass through the edge is confirmed, the bootstrap admin can go (`-c bootstrapAdmin=false`), at the cost of the SSM tunnel's token sign-in; `bootstrapAdmin=true` is the way back. `publicUrl` now points at the edge hostname. The edge's last steps are manual and outside this repo: its access group, onboarding with the internal identity gate, and the grant. After them comes a real-browser pass through the edge: the session-expiry reload, WebSocket editing, and the SSE Live indicator.
 2. **Close the verification gaps:**
    - The proposal review flow (decisions of 2026-10-14) on Bedrock behind a load balancer, after updating that instance's three designer prompts to the seed's.
+   - The Account page in a browser and a Claude Code connection against a running instance (decisions of 2026-10-15), after the edge rules for `/api/v1/mcp*` on the pilot's CloudFront and carp's load balancer.
    - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).
    - The egress-relay question for Docker Desktop and for a Linux host running the server outside a container ([deploy/sandbox/README.md](../deploy/sandbox/README.md)).

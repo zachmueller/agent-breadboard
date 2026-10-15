@@ -35,8 +35,8 @@ export interface Principal {
   config_commit: string | null;
   /** Tool execution key when the caller is sandboxed tool code. */
   execution_key: string | null;
-  /** `proxy`: signed in by a trusted proxy (no token; [12] §3). */
-  token_kind: 'user' | 'service' | 'actor' | 'internal' | 'proxy';
+  /** `proxy`: signed in by an authenticating edge (no token); `personal`: a member's own access token ([12] §3). */
+  token_kind: 'user' | 'service' | 'actor' | 'internal' | 'proxy' | 'personal';
 }
 
 export function requireUser(p: Principal): UserRecord {
@@ -44,8 +44,13 @@ export function requireUser(p: Principal): UserRecord {
   return p.user;
 }
 
+/** Admin rights need the admin flag and an unscoped credential (or the `admin` scope): a read-only token of an admin is a member. */
+export function hasAdmin(p: Principal): boolean {
+  return p.is_admin && (p.scopes === null || p.scopes.includes('admin'));
+}
+
 export function requireAdmin(p: Principal): void {
-  if (!p.is_admin) throw new BreadboardError('forbidden', 'admin role required');
+  if (!hasAdmin(p)) throw new BreadboardError('forbidden', p.is_admin ? 'admin actions need an unscoped credential' : 'admin role required');
 }
 
 export function requireScope(p: Principal, scope: string): void {
@@ -54,7 +59,7 @@ export function requireScope(p: Principal, scope: string): void {
   // read scopes are implied by write scopes
   const [res, verb] = scope.split(':');
   if (verb === 'read' && p.scopes.includes(`${res}:write`)) return;
-  throw new BreadboardError('forbidden', `service token lacks scope '${scope}'`);
+  throw new BreadboardError('forbidden', `token lacks scope '${scope}'`);
 }
 
 export function servicePrincipal(teamId: string, component: string): Principal {

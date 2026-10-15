@@ -25,8 +25,20 @@ type McpServices = Pick<Services, 'primitives' | 'toolbox' | 'sessions' | 'log'>
 
 const MAX_LOGGED_OUTPUT_BYTES = 64 * 1024;
 
+/** Sent in the `initialize` result; harnesses such as Claude Code show it to the model. */
+export const INSTRUCTIONS = [
+  "Agent Breadboard: this team's AI circuits, their runs (sessions), content, knowledge and configuration.",
+  'Ids: sessions `ses_…`, proposals `prp_…`, turns `trn_…`; content nodes and configuration definitions use 20-character UIDs (config tools also take slugs).',
+  'Start with `whoami` and `get_breadboard_overview`.',
+  'To investigate a run: `list_sessions` (filter by state, kind, circuit, task) → `get_session_summary` (steps, exits, cost, children) → `read_session_transcript` (every LLM turn with tool calls and results; `step` focuses on one step, `turn_id` with `max_chars: 0` reads one turn in full) → `read_session_events` (the orchestrator log: retries, gates, resolved config commits) → `list_session_executions` (sandboxed tool runs with their logs).',
+  'Read the configuration a run actually used with `read_config {ref, commit: <session.config_commit>}`; find definitions with `search_config`; `get_config_history`, `list_proposals`, `read_proposal` and `diff_config` cover how it changed.',
+  'Content: `search_nodes` to find tasks, artifacts, comments and notes; `inspect_node` for revisions, edges, comments and lineage; `read_node` for a body. Knowledge: `query_knowledge`, `read_note`, `list_knowledge_domains`.',
+  'Long values are clipped by default and carry `truncated: true` with `total_chars`; raise `max_chars` (0 = unlimited) to read them in full. List tools page with `cursor`, `offset` or `after_seq`.',
+  'Every call is recorded on a Breadboard session under your identity.',
+].join('\n');
+
 export function createBreadboardMcpServer(services: McpServices, principal: Principal, opts: BreadboardMcpServerOptions): McpServer {
-  const mcp = new McpServer({ name: 'agent-breadboard', version: '0.1.0' }, { capabilities: { tools: { listChanged: false }, resources: {} } });
+  const mcp = new McpServer({ name: 'agent-breadboard', version: '0.1.0' }, { capabilities: { tools: { listChanged: false }, resources: {} }, instructions: INSTRUCTIONS });
   const record = opts.record_events ?? true;
   let callIndex = 0;
 

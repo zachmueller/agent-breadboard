@@ -57,9 +57,7 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const view = (strParam(q.view) ?? 'trend') as AnalysisView;
     if (!ANALYSIS_VIEWS.includes(view)) throw validationFailed(`view must be one of ${ANALYSIS_VIEWS.join(', ')}`);
     const opts: AnalysisOptions = { base: strParam(q.base), head: strParam(q.head), circuit_commit: strParam(q.circuit_commit), variant: strParam(q.variant) };
-    // `opts` is an optional extension over the EvalService interface (see EvalServiceImpl.analysis).
-    const analysis = services.evals.analysis as (c: string, v: AnalysisView, o?: AnalysisOptions) => Promise<Record<string, unknown>>;
-    return analysis.call(services.evals, (req.params as { circuit: string }).circuit, view, opts);
+    return services.evals.analysis((req.params as { circuit: string }).circuit, view, opts);
   });
 
   app.get(`${P}/dashboard`, async (req) => {
