@@ -279,3 +279,26 @@ describe('MCP conversations left by an earlier process', () => {
     }
   });
 });
+
+describe('graceful shutdown', () => {
+  it('app.close() closes open MCP conversations, even while a client holds its SSE stream', async () => {
+    const store = createSessionStore({ db: f.db, team_id: f.team_id });
+    const live = Fastify();
+    live.decorateRequest('principal', null);
+    live.addHook('preHandler', async (req) => {
+      (req as any).principal = f.memberPrincipal;
+    });
+    await register(live, { ...services, sessions: store } as Services);
+    await live.listen({ port: 0, host: '127.0.0.1' });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(live.server.address() as { port: number }).port}${MCP_PATH}`), { requestInit: { headers: { Authorization: 'Bearer x' } } });
+    const client = new Client({ name: 'shutdown-probe', version: '1' });
+    await client.connect(transport);
+    await new Promise((r) => setTimeout(r, 200)); // let the client open its GET stream
+    const open = (await store.list({ kind: ['conversation'], state: ['running'] })).items.filter((x) => (x.state_detail as any).client?.name === 'shutdown-probe');
+    expect(open).toHaveLength(1);
+    const outcome = await Promise.race([live.close().then(() => 'closed'), new Promise((r) => setTimeout(() => r('hung'), 5000))]);
+    expect(outcome).toBe('closed');
+    expect(await store.get(open[0]!.session_id)).toMatchObject({ state: 'completed', state_detail: { closed_reason: 'server-shutdown' } });
+    await client.close().catch(() => undefined);
+  }, 15000);
+});

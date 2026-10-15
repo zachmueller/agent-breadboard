@@ -63,7 +63,9 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
   }, opts.sweep_interval_ms ?? 60_000);
   sweep.unref();
 
-  app.addHook('onClose', async () => {
+  // preClose, not onClose: a connected client holds an SSE stream open, and `app.close()` waits for in-flight
+  // requests before onClose hooks run, so closing the connections there would never happen.
+  app.addHook('preClose', async () => {
     clearInterval(sweep);
     await Promise.all([...connections.keys()].map((id) => close(id, 'server-shutdown')));
   });
