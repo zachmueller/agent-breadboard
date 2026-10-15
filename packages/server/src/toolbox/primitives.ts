@@ -7,12 +7,13 @@
  * themselves; this layer adds the primitive-level gates (which names a principal may call, `run_circuit`
  * execute grants, circuit read grants on `read_config`, session visibility on `get_session_summary`).
  */
-import { BreadboardError, validateAgainst, type JsonSchema } from '@breadboard/shared';
+import { BreadboardError, validateAgainst, type ConfigDefinitionDto, type JsonSchema } from '@breadboard/shared';
 import { proposalToolChecks } from './proposal-checks.js';
 import { hasScope, requireScope, type Principal } from '../core/principal.js';
 import type { ChatMessage, Primitives, SessionStore, ToolSpec } from '../core/services.js';
 import { obj, sessionVisible, STRING_ARRAY, UID, type PrimitiveCallCtx, type PrimitiveDef, type PrimitivesDeps } from './primitive-defs.js';
 import { inspectionCatalog } from './inspection.js';
+import { normalizePath } from '../config/repo.js';
 
 export type { PrimitiveCallCtx, PrimitiveDef, PrimitivesDeps } from './primitive-defs.js';
 
@@ -587,7 +588,7 @@ export class PrimitivesImpl implements Primitives {
               type: 'string',
               minLength: 1,
               description:
-                'A definition UID; a slug (`check-citations`, or `tool:check-citations` when kinds share a slug); `presets`, `tenets` or `breadboard`; or a repo-relative path (`presets/models.yaml`, `tools/<UID>/src/index.ts`).',
+                'A definition UID; a slug (`check-citations`, or `tool:check-citations` when kinds share a slug); `presets`, `tenets` or `breadboard`; or a repo-relative path. A definition (or its file, `presets/models.yaml`, `tools/<UID>/tool.yaml`) returns the definition with all its files; any other file of a tool or circuit (`tools/<UID>/src/index.ts`, `circuits/<UID>/prompts/<name>.md`) returns only that file\'s text.',
             },
             commit: { type: 'string', minLength: 1, description: 'Read at this commit hash or branch instead of main (e.g. a session\'s `config_commit`, to see exactly what a run used).' },
           },
@@ -599,7 +600,7 @@ export class PrimitivesImpl implements Primitives {
             const uid = def.uid ?? '';
             if (!p.grants.circuits.read.has(uid) && !p.grants.circuits.execute.has(uid)) throw new BreadboardError('grant-denied', `no read grant for circuit ${uid}`);
           }
-          return def;
+          return subFileOf(def, a.ref) ?? def;
         },
       },
       {
@@ -679,6 +680,24 @@ export class PrimitivesImpl implements Primitives {
     if (p.actor.kind === 'code-step') return { uid: p.actor.id, commit: p.config_commit };
     throw new BreadboardError('grant-denied', 'broker_fetch is only callable from tool code with a journaled execution');
   }
+}
+
+/**
+ * `read_config` on one file of a tool or circuit (`tools/<UID>/src/index.ts`, `circuits/<slug>/prompts/x.md`): just that
+ * file, not the whole definition the path resolves to. Null when `ref` names the definition itself.
+ */
+function subFileOf(def: ConfigDefinitionDto, ref: string) {
+  if (def.kind !== 'tool' && def.kind !== 'circuit') return null;
+  const sub = /^(?:tools|circuits)\/[^/]+\/(.+)$/.exec(normalizePath(ref.trim()))?.[1];
+  const slash = def.path.lastIndexOf('/');
+  const dir = def.path.slice(0, slash);
+  if (!sub || sub === def.path.slice(slash + 1)) return null;
+  const text = def.files?.[sub];
+  if (text === undefined) {
+    const names = [def.path.slice(slash + 1), ...Object.keys(def.files ?? {})].sort();
+    throw new BreadboardError('not-found', `no file '${sub}' in ${def.kind} ${def.slug ?? def.uid} at ${def.commit.slice(0, 12)}; its files: ${names.join(', ')}`);
+  }
+  return { path: `${dir}/${sub}`, commit: def.commit, owner: { uid: def.uid, kind: def.kind, slug: def.slug, title: def.title, path: def.path }, text };
 }
 
 /** Sandboxed tool code (actor token with an execution key) or a code-step actor. */

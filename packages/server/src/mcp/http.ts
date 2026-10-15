@@ -26,6 +26,8 @@ interface McpConnection {
   actor_key: string;
   last_seen: number;
   closed: boolean;
+  /** The session's state_detail as created; closing adds `closed_reason` to it. */
+  state_detail: Record<string, unknown>;
 }
 
 type HttpServices = Pick<Services, 'primitives' | 'toolbox' | 'sessions' | 'log'>;
@@ -51,7 +53,7 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
       /* already closed */
     }
     try {
-      await services.sessions.update(c.session_id, { state: 'completed', ended_at: new Date().toISOString(), state_detail: { mcp: true, external: true, closed_reason: reason } });
+      await services.sessions.update(c.session_id, { state: 'completed', ended_at: new Date().toISOString(), state_detail: { ...c.state_detail, closed_reason: reason } });
     } catch (err) {
       services.log.warn({ err, session_id: c.session_id }, 'failed to close MCP conversation session');
     }
@@ -95,12 +97,13 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
 
     // External connections are user connections, logged with the `user` actor ([11] §4).
     requireUser(principal);
+    const stateDetail = { mcp: true, external: true, client: clientInfo(req.body) };
     const session = await services.sessions.create({
       kind: 'conversation',
       budget: { max_cost_usd: 0, max_tokens: 0, spent_usd: 0, spent_tokens: 0 },
       created_by: principal.actor,
       state: 'running',
-      state_detail: { mcp: true, external: true, client: clientInfo(req.body) },
+      state_detail: stateDetail,
     });
     await services.sessions.update(session.session_id, { started_at: new Date().toISOString() }).catch(() => undefined);
     const scoped: Principal = { ...principal, session_id: session.session_id, actor: { ...principal.actor, session_id: session.session_id } };
@@ -109,7 +112,7 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
-        conn = { transport, server, session_id: session.session_id, actor_key: actorKey(principal), last_seen: Date.now(), closed: false };
+        conn = { transport, server, session_id: session.session_id, actor_key: actorKey(principal), last_seen: Date.now(), closed: false, state_detail: stateDetail };
         connections.set(id, conn);
         services.log.info({ mcp_session: id, session_id: session.session_id, actor: principal.actor }, 'MCP connection opened');
       },

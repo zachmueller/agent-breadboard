@@ -119,6 +119,8 @@ export interface ParseResult<T = unknown> {
   value?: T;
   errors: string[];
   kind?: ConfigKind;
+  /** The YAML document as parsed, when it parsed but failed the schema check (for lint-style warnings on it). */
+  doc?: unknown;
 }
 
 /** Parse + validate a YAML config document against the schema its `schema:` tag declares. */
@@ -136,7 +138,7 @@ export function parseConfigYaml(text: string, expectKind?: Exclude<ConfigKind, '
   if (expectKind && kind !== expectKind) return { ok: false, errors: [`expected ${SCHEMA_TAGS[expectKind]} but found ${tag}`], kind };
   const res = CONFIG_SCHEMAS[kind].safeParse(doc);
   if (!res.success) {
-    return { ok: false, kind, errors: res.error.issues.map((i) => `${i.path.join('.') || '/'}: ${i.message}`) };
+    return { ok: false, kind, doc, errors: res.error.issues.map((i) => `${i.path.join('.') || '/'}: ${i.message}`) };
   }
   return { ok: true, kind, value: res.data, errors: [] };
 }

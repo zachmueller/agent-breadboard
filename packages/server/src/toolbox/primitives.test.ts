@@ -109,8 +109,12 @@ function build(): PrimitivesImpl {
     evals: fake('evals', calls, { recordScore: () => undefined, getFixtureOutput: () => ({ out: 1 }) }),
     config: fake('config', calls, {
       definition: (ref: string, _at?: string, opts?: { lenient?: boolean }) => {
-        const uid = opts?.lenient && ref === 'lit-review' ? CIRCUIT : ref;
-        return { uid, kind: uid.startsWith('01J8FQ2ZK7XW9MBT4PV') && uid !== TOOL ? 'circuit' : 'tool', path: `x/${uid}`, commit: 'c', slug: 's', title: 't', definition: {}, raw: 'raw', validation: { ok: true, errors: [], warnings: [] }, referenced_by: [] };
+        // A path to any file under a definition resolves to the definition, as the real lookup does.
+        const uid = opts?.lenient && ref === 'lit-review' ? CIRCUIT : (/^(?:tools|circuits)\/([^/]+)\//.exec(ref)?.[1] ?? ref);
+        const kind = uid.startsWith('01J8FQ2ZK7XW9MBT4PV') && uid !== TOOL ? 'circuit' : 'tool';
+        const path = kind === 'circuit' ? `circuits/${uid}/circuit.yaml` : `tools/${uid}/tool.yaml`;
+        const files = kind === 'circuit' ? { 'prompts/draft.md': 'Draft {{input.q}}' } : { 'src/index.ts': 'export const handler = () => 1;' };
+        return { uid, kind, path, commit: 'c0ffee1234567890', slug: 's', title: 't', definition: {}, raw: 'raw', files, validation: { ok: true, errors: [], warnings: [] }, referenced_by: [] };
       },
       search: () => [
         { uid: CIRCUIT, kind: 'circuit', slug: 'lit-review', title: 'Literature review', path: `circuits/${CIRCUIT}/circuit.yaml` },
@@ -389,6 +393,24 @@ describe('broker_fetch, run_tool, config', () => {
     expect(callsTo('config', 'definition').at(-1)!.args).toEqual(['lit-review', undefined, { lenient: true }]);
     const granted = subagentPrincipal(f, grants({ primitives: ['read_config'], read: [CIRCUIT] }));
     expect(await prims.call('read_config', { ref: 'lit-review' }, granted)).toMatchObject({ uid: CIRCUIT, kind: 'circuit' });
+  });
+
+  it('read_config: a path to one file of a tool or circuit returns just that file', async () => {
+    const p = subagentPrincipal(f, grants({ primitives: ['read_config'], read: [OTHER_CIRCUIT] }));
+    expect(await prims.call('read_config', { ref: `tools/${TOOL}/src/index.ts` }, p)).toEqual({
+      path: `tools/${TOOL}/src/index.ts`,
+      commit: 'c0ffee1234567890',
+      owner: { uid: TOOL, kind: 'tool', slug: 's', title: 't', path: `tools/${TOOL}/tool.yaml` },
+      text: 'export const handler = () => 1;',
+    });
+    // The definition file itself (and a bare UID) still returns the whole definition.
+    expect(await prims.call('read_config', { ref: `tools/${TOOL}/tool.yaml` }, p)).toMatchObject({ uid: TOOL, raw: 'raw', files: { 'src/index.ts': expect.any(String) } });
+    expect(await prims.call('read_config', { ref: `circuits/${OTHER_CIRCUIT}/prompts/draft.md` }, p)).toMatchObject({ path: `circuits/${OTHER_CIRCUIT}/prompts/draft.md`, text: 'Draft {{input.q}}' });
+    const miss = await prims.call('read_config', { ref: `tools/${TOOL}/src/main.ts` }, p).catch((e) => e);
+    expect(miss).toMatchObject({ code: 'not-found' });
+    expect(miss.message).toMatch(/no file 'src\/main\.ts' in tool s at c0ffee123456; its files: src\/index\.ts, tool\.yaml/);
+    // A circuit's files need the same grant as the circuit.
+    expect(await codeOf(prims.call('read_config', { ref: `circuits/${CIRCUIT}/prompts/draft.md` }, p))).toBe('grant-denied');
   });
 
   it('search_config: metadata of every kind, filtered and capped, with no circuit grant needed', async () => {

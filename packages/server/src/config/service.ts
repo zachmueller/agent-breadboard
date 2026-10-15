@@ -90,6 +90,8 @@ interface DefEntry {
   raw: string;
   parsed: unknown | null;
   parseErrors: string[];
+  /** The YAML document when it parsed but failed its schema check; validation still lints its JSON schemas. */
+  rawDoc?: unknown;
   slug: string | null;
   title: string | null;
   /** The definition's `description`, searched by `search` only. */
@@ -190,6 +192,7 @@ async function buildModel(vt: VirtualTree): Promise<TreeModel> {
         if (kind === 'presets') model.presets = v as Presets;
       } else {
         entry.parseErrors = res.errors;
+        entry.rawDoc = res.doc;
       }
     }
     model.defs.push(entry);
@@ -279,9 +282,34 @@ class Report {
 function checkSchema(rep: Report, def: DefEntry, label: string, schema: Record<string, any>): void {
   const err = schemaCompileError(schema);
   if (err) rep.error(def.path, `${label} does not compile: ${err}`);
+  warnNullKeys(rep, def, label, schema);
+}
+
+function warnNullKeys(rep: Report, def: DefEntry, label: string, schema: unknown): void {
   for (const key of schemaNullKeys(schema)) {
     rep.warn(def.path, `${label} has a key with no value at '${key}'; an unquoted comma inside a YAML { ... } mapping splits the text there, so quote the value`);
   }
+}
+
+/**
+ * The JSON schemas of a circuit or tool document that failed its schema check, labelled as `validateCircuit` /
+ * `validateTool` label them: the stray keys an unquoted comma leaves are worth reporting while the author is still
+ * fixing the errors.
+ */
+function rawSchemaSites(kind: ConfigKind, doc: unknown): Array<[string, unknown]> {
+  const isObj = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  if (!isObj(doc)) return [];
+  const sites: Array<[string, unknown]> = [];
+  if (kind === 'circuit') {
+    for (const e of list(doc.exits)) if (isObj(e) && typeof e.name === 'string' && isObj(e.output)) sites.push([`exit '${e.name}' output schema`, e.output]);
+    if (isObj(doc.input)) sites.push(['input schema', doc.input]);
+    for (const st of list(doc.steps)) if (isObj(st) && typeof st.id === 'string' && isObj(st.output)) sites.push([`step '${st.id}' output schema`, st.output]);
+  } else if (kind === 'tool') {
+    if (isObj(doc.input)) sites.push(['input schema', doc.input]);
+    if (isObj(doc.output)) sites.push(['output schema', doc.output]);
+  }
+  return sites;
 }
 
 function dedupe(xs: string[]): string[] {
@@ -298,6 +326,7 @@ function validateModel(model: TreeModel, opts: ValidateOptions, providers: strin
   const seenSlugs = new Map<string, DefEntry[]>();
   for (const def of model.defs) {
     for (const e of def.parseErrors) rep.error(def.path, e);
+    for (const [label, schema] of rawSchemaSites(def.kind, def.rawDoc)) warnNullKeys(rep, def, label, schema);
     if (!def.parsed || def.kind === 'tenets') continue;
     const v = def.parsed as any;
     if (UID_KINDS.includes(def.kind)) {
@@ -333,7 +362,10 @@ function validateModel(model: TreeModel, opts: ValidateOptions, providers: strin
   // Dangling references.
   for (const r of model.refs) {
     const target = model.byUid.get(r.to);
-    if (!target) rep.error(r.from.path, `${r.what} references ${KIND_LABEL[r.expect]} '${r.to}' which does not exist (${definitionPath(r.expect, r.to)})`);
+    // A file at the target's path that is not addressable failed its own checks, which are reported against it.
+    const invalid = !target && model.byPath.has(definitionPath(r.expect, r.to));
+    if (invalid) rep.error(r.from.path, `${r.what} references ${KIND_LABEL[r.expect]} '${r.to}', whose definition ${definitionPath(r.expect, r.to)} is invalid (see that file's errors)`);
+    else if (!target) rep.error(r.from.path, `${r.what} references ${KIND_LABEL[r.expect]} '${r.to}' which does not exist (${definitionPath(r.expect, r.to)})`);
     else if (target.kind !== r.expect) rep.error(r.from.path, `${r.what} references '${r.to}' which is a ${KIND_LABEL[target.kind]}, not a ${KIND_LABEL[r.expect]}`);
   }
 

@@ -33,6 +33,9 @@ describe('config parsing', () => {
     const r = parseConfigYaml(circuitYaml.replace('01J8SVBAG0RSRCHSCT00', 'lowercase-uid'));
     expect(r.ok).toBe(false);
     expect(r.errors.join()).toMatch(/UID/);
+    // The document is still handed back for warnings that do not need it to be valid.
+    expect(JSON.stringify(r.doc)).toContain('lowercase-uid');
+    expect(r.value).toBeUndefined();
   });
   it('rejects unknown schema tags', () => {
     expect(parseConfigYaml('schema: nope@v9\n').ok).toBe(false);

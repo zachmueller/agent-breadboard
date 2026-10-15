@@ -299,7 +299,7 @@ describe('graceful shutdown', () => {
     expect(open).toHaveLength(1);
     const outcome = await Promise.race([live.close().then(() => 'closed'), new Promise((r) => setTimeout(() => r('hung'), 5000))]);
     expect(outcome).toBe('closed');
-    expect(await store.get(open[0]!.session_id)).toMatchObject({ state: 'completed', state_detail: { closed_reason: 'server-shutdown' } });
+    expect(await store.get(open[0]!.session_id)).toMatchObject({ state: 'completed', state_detail: { mcp: true, external: true, client: { name: 'shutdown-probe' }, closed_reason: 'server-shutdown' } });
     await client.close().catch(() => undefined);
   }, 15000);
 });

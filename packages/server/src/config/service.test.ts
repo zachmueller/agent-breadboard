@@ -483,6 +483,17 @@ describe('ConfigService validation rules', () => {
     expect(r.warnings).toEqual([`${CONFIG_PATHS.tool(TOOL_A)}: output schema has a key with no value at 'properties.sql.LIMIT applied)'; an unquoted comma inside a YAML { ... } mapping splits the text there, so quote the value`]);
   });
 
+  it('still warns about null-valued schema keys in a definition that fails its schema, and its referrers call it invalid', async () => {
+    const raw = toolYaml()
+      .replace(/^language: typescript$/m, 'language: cobol')
+      .replace(/^output:[\s\S]*?(?=^settings:)/m, 'output:\n  type: object\n  properties:\n    csv: { type: string, description: Header then rows, RFC4180 quoting }\n');
+    const r = await validate([{ path: CONFIG_PATHS.tool(TOOL_A), content: raw }]);
+    err(r, /language/);
+    expect(r.warnings).toContain(`${CONFIG_PATHS.tool(TOOL_A)}: output schema has a key with no value at 'properties.csv.RFC4180 quoting'; an unquoted comma inside a YAML { ... } mapping splits the text there, so quote the value`);
+    err(r, new RegExp(`tool grant references tool '${TOOL_A}', whose definition tools/${TOOL_A}/tool.yaml is invalid \\(see that file's errors\\)`));
+    expect(r.errors.some((e) => /which does not exist/.test(e))).toBe(false);
+  });
+
   it('rejects deleting a uid that is still referenced, and a uid vanishing without an explicit delete', async () => {
     const del = await validate([{ path: CONFIG_PATHS.tool(TOOL_A), content: null }]);
     err(del, /cannot delete tool 'check-citations'; still referenced by/);
