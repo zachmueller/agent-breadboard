@@ -8,7 +8,8 @@ export function useGo() {
   return (href: string) => router.history.push(href);
 }
 
-export function AppLink({ href, children, className, title }: { href: string | null | undefined; children: ReactNode; className?: string; title?: string }) {
+/** `bare` drops the default link styling (e.g. for a link styled as a button). */
+export function AppLink({ href, children, className, title, bare }: { href: string | null | undefined; children: ReactNode; className?: string; title?: string; bare?: boolean }) {
   const router = useRouter();
   if (!href) return <span className={className}>{children}</span>;
   const onClick = (e: MouseEvent<HTMLAnchorElement>) => {
@@ -17,7 +18,7 @@ export function AppLink({ href, children, className, title }: { href: string | n
     router.history.push(href);
   };
   return (
-    <a href={href} onClick={onClick} title={title} className={clsx('text-accent-text hover:underline', className)}>
+    <a href={href} onClick={onClick} title={title} className={clsx(!bare && 'text-accent-text hover:underline', className)}>
       {children}
     </a>
   );

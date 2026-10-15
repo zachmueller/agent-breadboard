@@ -205,6 +205,13 @@ describe('orchestrator: re-asks, retries, and manual actions', () => {
     expect((await k.orch.run(s.session_id)).state).toBe('cancelled');
     await expect(k.orch.cancel(s.session_id, k.f.adminPrincipal)).rejects.toMatchObject({ code: 'invalid-state' });
   });
+
+  it('cancel() keeps a conversation’s record (subagent, context, who started it)', async () => {
+    const detail = { subagent_uid: mintUid(), context: { definition_uid: mintUid() }, started_by: BY, title: 'Designer: x' };
+    const s = await k.sessions.create({ kind: 'conversation', state: 'running', budget: { max_cost_usd: 1, max_tokens: 1000, spent_usd: 0, spent_tokens: 0 }, created_by: BY, state_detail: detail });
+    const r = await k.orch.cancel(s.session_id, k.f.adminPrincipal);
+    expect(r.state_detail).toMatchObject({ ...detail, reason: 'cancelled', previous_state: 'running' });
+  });
 });
 
 describe('orchestrator: gates', () => {

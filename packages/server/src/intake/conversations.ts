@@ -336,7 +336,11 @@ export class ConversationServiceImpl implements ConversationService {
       const a = ((s.state_detail as any)?.started_by ?? (s as any).created_by) as { kind?: string; id?: string } | undefined;
       return a?.kind === me.kind && a?.id === me.id;
     };
-    const visible = page.items.filter((s) => s.team_id === undefined || s.team_id === this.d.team_id).filter((s) => !input.by.grants || canSeeSession(input.by, s.session_id));
+    const visible = page.items
+      .filter((s) => s.team_id === undefined || s.team_id === this.d.team_id)
+      .filter((s) => !input.by.grants || canSeeSession(input.by, s.session_id))
+      .filter((s) => !input.definition_uid || (s.state_detail as any)?.context?.definition_uid === input.definition_uid);
+    if (input.mine) return visible.filter(own).slice(0, limit);
     // The user's own sessions first; all team sessions visible. Stable within each group (store order).
     return [...visible.filter(own), ...visible.filter((s) => !own(s))].slice(0, limit);
   }
@@ -461,7 +465,9 @@ export class ConversationServiceImpl implements ConversationService {
       try {
         const p = await this.d.config.getProposal(context.proposal_id);
         const changes = (p.changes ?? []).map((c) => `- ${c.status} ${c.path}`).join('\n');
-        parts.push(`[Open proposal] ${p.proposal_id} (${p.status}) on branch ${p.branch}: ${p.message}\n${changes}\n\`\`\`diff\n${cap(p.diff ?? '', DIFF_CAP)}\n\`\`\``);
+        // The id sticks in the session context; once merged or discarded the diff is only cost.
+        if (p.status === 'open') parts.push(`[Open proposal] ${p.proposal_id} (${p.status}) on branch ${p.branch}: ${p.message}\n${changes}\n\`\`\`diff\n${cap(p.diff ?? '', DIFF_CAP)}\n\`\`\``);
+        else parts.push(`[Proposal] ${p.proposal_id} was ${p.status}; open a new proposal for further changes.`);
       } catch (e) {
         parts.push(`[Open proposal] ${context.proposal_id} (unavailable: ${errMsg(e)})`);
       }

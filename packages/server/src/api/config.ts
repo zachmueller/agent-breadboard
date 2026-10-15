@@ -8,6 +8,7 @@ import type { Services, FileChange } from '../core/services.js';
 import { requireScope, type Principal } from '../core/principal.js';
 import { intParam, principalOf, requireBody, requireField, strParam } from './util.js';
 import { API_PREFIX } from '../app.js';
+import { proposalToolChecks } from '../toolbox/proposal-checks.js';
 
 function changesOf(body: any): FileChange[] {
   const raw = requireField<unknown[]>(body, 'changes', 'array');
@@ -98,12 +99,19 @@ export async function register(app: FastifyInstance, services: Services): Promis
   app.get(`${base}/proposals`, async (req) => {
     requireRead(principalOf(req));
     const q = req.query as any;
-    return config.listProposals({ status: strParam(q.status), limit: intParam(q.limit, 50) });
+    return config.listProposals({ status: strParam(q.status), limit: intParam(q.limit, 50), session_id: strParam(q.session_id), definition: strParam(q.definition) });
   });
 
   app.get(`${base}/proposals/:id`, async (req) => {
     requireRead(principalOf(req));
     return config.getProposal((req.params as any).id);
+  });
+
+  app.get(`${base}/proposals/:id/checks`, async (req) => {
+    requireRead(principalOf(req));
+    const p = await config.getProposal((req.params as any).id);
+    if (!services.toolbox) return { proposal_id: p.proposal_id, head_commit: p.head_commit, tools: [] };
+    return proposalToolChecks(services.toolbox, p);
   });
 
   app.post(`${base}/proposals/:id/amend`, async (req) => {

@@ -64,6 +64,10 @@ POST   /tasks                        create (title, body, priority?, target_circ
 GET    /tasks                        inventory filters (status, priority, origin, tag, circuit, date)
 POST   /tasks/:uid/accept | reject | promote
 GET    /tasks/similar                ?q=   (dedup helper surface)
+POST   /conversations                {kind: intake|conversation, subagent_uid?, context?, title?}  (designer chats pass the editor's designer)
+GET    /conversations                ?kind=&definition=<uid>&mine=1   (designer chats on a definition; `mine` = only the caller's)
+GET    /conversations/:id            turns, busy, last_error, proposals (ids opened in the session)
+POST   /conversations/:id/messages   {text, context?}   (`Prefer: respond-async` → 202, follow via GET / session.event)
 ```
 
 ### Sessions & orchestrator ([02](02-sessions-orchestrator.md))
@@ -82,8 +86,11 @@ GET    /config/tree                  ?ref=commit|branch      list definitions (u
 GET    /config/search                ?q=          search definitions by slug/title (backs global search, [10] §2)
 GET    /config/definitions/:uid      parsed + validated definition, resolved by direct UID-derived path
                                      ([01] §6.1–6.2; same shape for circuits, subagents, tools, mcp, presets, tenets)
-POST   /config/proposals             {changes: [{path, content}], message}  → branch + proposal id
-GET    /config/proposals/:id         diff, validation results, eval results
+POST   /config/proposals             {changes: [{path, content}], message, session_id?}  → branch + proposal id
+GET    /config/proposals             ?status=open|merged|discarded&session_id=&definition=<uid>&limit=
+GET    /config/proposals/:id         diff, validation results, eval results, session_id (the conversation that opened it)
+GET    /config/proposals/:id/checks  tool CI per touched tool at the head: manifest, TypeScript/Python syntax ([06] §6)
+POST   /config/proposals/:id/amend   {changes, message}  (another commit on the same branch; same id)
 POST   /config/proposals/:id/merge | discard
 POST   /config/revert                {path, to_commit}
 GET    /config/history               ?path=

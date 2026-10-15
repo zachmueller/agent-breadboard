@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseConfigYaml, parseConfigPath, definitionPath, knowledgeTokens } from './config/index.js';
+import { parseConfigYaml, parseConfigPath, definitionPath, owningDefinition, knowledgeTokens } from './config/index.js';
 import { validateAgainst, schemaRequiredSubset } from './json-schema.js';
 import { needInputTags, requestTargetsUser } from './need-input.js';
 
@@ -44,6 +44,14 @@ describe('config parsing', () => {
     expect(parseConfigPath('tools/01J8T00XCHKC1TAT1N00/src/index.ts')).toEqual({ kind: 'tool', uid: '01J8T00XCHKC1TAT1N00', sub: 'src/index.ts' });
     expect(parseConfigPath('random.txt')).toBeNull();
     expect(definitionPath('circuit', '01J8C1RCV1TREV000000')).toBe('circuits/01J8C1RCV1TREV000000/circuit.yaml');
+  });
+  it('maps paths to the definition that owns them', () => {
+    expect(owningDefinition('circuits/01J8C1RCV1TREV000000/fixtures.yaml')).toEqual({ kind: 'circuit', uid: '01J8C1RCV1TREV000000' });
+    expect(owningDefinition('circuits/01J8C1RCV1TREV000000/prompts/gather.md')).toEqual({ kind: 'circuit', uid: '01J8C1RCV1TREV000000' });
+    expect(owningDefinition('tools/01J8T00XCHKC1TAT1N00/src/index.ts')).toEqual({ kind: 'tool', uid: '01J8T00XCHKC1TAT1N00' });
+    expect(owningDefinition('mcp/01J8T00XCHKC1TAT1N00.yaml')).toEqual({ kind: 'mcp', uid: '01J8T00XCHKC1TAT1N00' });
+    expect(owningDefinition('tenets.md')).toBeNull();
+    expect(owningDefinition('INDEX.md')).toBeNull();
   });
   it('extracts knowledge tokens', () => {
     expect(knowledgeTokens('a {{knowledge:01J8FQ2ZK7XW9MBT4PVN}} b {{ knowledge:01J8FQ2ZK7XW9MBT4PVM }}')).toEqual(['01J8FQ2ZK7XW9MBT4PVN', '01J8FQ2ZK7XW9MBT4PVM']);

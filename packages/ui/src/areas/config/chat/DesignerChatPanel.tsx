@@ -2,24 +2,29 @@
  * Designer chat panel ([10] §4): a `conversation` Session with the editor's designer Subagent,
  * started lazily on the first message. Every message carries the live working tree so the designer
  * reasons about unsaved edits; config changes come back as proposals rendered as proposal cards.
+ *
+ * The server holds the conversation: the panel resumes this tab's session, else a `?chat=` link's, else the
+ * user's latest designer chat on this definition. Cards are placed from the transcript itself, so they survive
+ * reloads, other tabs and ended conversations. An ended conversation stays readable; the next message starts a
+ * new one.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { Send, Wrench, Sparkles, RotateCcw, ExternalLink } from 'lucide-react';
-import { convApi, useBreadboardSettings, type ConversationSnapshot, type ConversationTurn } from '../lib/configApi';
+import { useQueryClient } from '@tanstack/react-query';
+import { Send, Wrench, Sparkles, RotateCcw, ExternalLink, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { convApi, proposalPath, useBreadboardSettings, type ConversationSnapshot, type ConversationTurn } from '../lib/configApi';
 import { useWorkingTree } from '../model/workingTree';
 import { Btn, Md, Spin, TextAreaInput, notify, errorMessage, useLiveEvents, useLiveConnected, payloadSessionId } from '../ui';
 import { AppLink } from '../components/AppLink';
-import type { DiffRenderer } from '../components/snapshot';
 import { ProposalCard } from './ProposalCard';
-import { blocksOf, resultText } from './turns';
+import { blocksOf, conversationEnded, placeProposals, proposeOutcomes, resultText, toolNamesById, PROPOSE_TOOL, type ProposeOutcome } from './turns';
 
 type DesignerKind = 'circuit' | 'tool' | 'subagent';
 
+/** This tab's conversation for the definition; `reset_at` marks "Start a new conversation" so it is not re-found. */
 interface Stored {
-  session_id: string;
-  /** Proposal ids with the transcript length at which they appeared (cards render inline there). */
-  proposals: Array<{ id: string; at: number }>;
+  session_id: string | null;
+  reset_at?: string;
 }
 
 const storeKey = (uid: string) => `bb.designer.${uid}`;
@@ -27,7 +32,8 @@ function readStored(uid: string): Stored | null {
   try {
     const raw = sessionStorage.getItem(storeKey(uid));
     const v = raw ? JSON.parse(raw) : null;
-    return v && typeof v.session_id === 'string' ? { session_id: v.session_id, proposals: Array.isArray(v.proposals) ? v.proposals : [] } : null;
+    if (!v || typeof v !== 'object') return null;
+    return { session_id: typeof v.session_id === 'string' ? v.session_id : null, ...(typeof v.reset_at === 'string' ? { reset_at: v.reset_at } : {}) };
   } catch {
     return null;
   }
@@ -41,16 +47,27 @@ function writeStored(uid: string, s: Stored | null) {
   }
 }
 
+/** A `?chat=<session>` deep link (from a proposal's review page), read once and removed from the URL. */
+function takeChatParam(): string | null {
+  const u = new URL(window.location.href);
+  const v = u.searchParams.get('chat');
+  if (!v) return null;
+  u.searchParams.delete('chat');
+  window.history.replaceState(window.history.state, '', u);
+  return v;
+}
+
 const userTurns = (turns: ConversationTurn[]) => turns.filter((t) => t.role === 'user').length;
 
-export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }: { kind: DesignerKind; renderDiff: DiffRenderer; canRunEvals?: boolean; placeholder?: string }) {
+export function DesignerChatPanel({ kind, canRunEvals, placeholder }: { kind: DesignerKind; canRunEvals?: boolean; placeholder?: string }) {
   const wt = useWorkingTree();
+  const qc = useQueryClient();
   const settings = useBreadboardSettings();
   const designerUid: string | undefined = settings.data?.designers?.[kind];
 
-  const [stored, setStored] = useState<Stored | null>(() => readStored(wt.uid));
-  const [turns, setTurns] = useState<ConversationTurn[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(!!stored);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [snap, setSnap] = useState<ConversationSnapshot | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(true);
   /** The message just sent, shown until the server records it. */
   const [pending, setPending] = useState<string | null>(null);
   /** The server is running a reply; the panel follows it until it finishes. */
@@ -62,79 +79,70 @@ export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }
   const sentAt = useRef(0);
   /** The last send that failed, so resending it unchanged reuses its idempotency key. */
   const failed = useRef<{ body: string; key: string } | null>(null);
-  const sessionId = stored?.session_id ?? null;
+  const turns = useMemo(() => snap?.turns ?? [], [snap]);
+  const ended = conversationEnded(snap?.state ?? null, snap?.reason ?? null);
   const busy = pending !== null || following;
 
-  const persist = useCallback(
-    (s: Stored | null) => {
-      setStored(s);
-      writeStored(wt.uid, s);
-    },
-    [wt.uid],
-  );
-
-  /** Add proposals the session opened that the panel has not shown yet; their cards render at transcript length `at`. */
-  const mergeProposals = useCallback(
-    (ids: string[], at: number) => {
-      setStored((cur) => {
-        const known = new Set(cur?.proposals.map((p) => p.id));
-        const fresh = ids.filter((id) => !known.has(id));
-        if (!cur || !fresh.length) return cur;
-        const next = { ...cur, proposals: [...cur.proposals, ...fresh.map((id) => ({ id, at }))] };
-        writeStored(wt.uid, next);
-        return next;
-      });
+  const adopt = useCallback(
+    (sid: string | null) => {
+      setSessionId(sid);
+      writeStored(wt.uid, sid ? { session_id: sid } : { session_id: null, reset_at: new Date().toISOString() });
     },
     [wt.uid],
   );
 
   const apply = useCallback(
     (r: ConversationSnapshot) => {
-      setTurns(r.turns);
-      mergeProposals(r.proposals, r.turns.length);
+      setSnap(r);
       if (userTurns(r.turns) > sentAt.current) setPending(null);
       if (!r.busy) {
         setFollowing(false);
         setPending(null);
-        setLastError(r.last_error ?? (r.state && r.state !== 'running' ? `the conversation is ${r.state}` : null));
+        setLastError(r.last_error);
       }
     },
-    [mergeProposals],
+    [],
   );
 
-  // Rehydrate an existing designer session for this definition (per browser tab), resuming a reply still running.
+  // A reply that just finished may have amended a proposal under the same id: refresh the cards and badges.
+  const wasFollowing = useRef(false);
   useEffect(() => {
-    const s = readStored(wt.uid);
-    setStored(s);
-    setTurns([]);
+    if (wasFollowing.current && !following) {
+      void qc.invalidateQueries({ queryKey: ['config', 'proposal'] });
+      void qc.invalidateQueries({ queryKey: ['config', 'proposals'] });
+    }
+    wasFollowing.current = following;
+  }, [following, qc]);
+
+  // Find this definition's conversation: this tab's, a `?chat=` link's, else the user's latest one on it.
+  useEffect(() => {
+    let cancelled = false;
+    setSessionId(null);
+    setSnap(null);
     setPending(null);
     setFollowing(false);
     setLastError(null);
-    if (!s) {
-      setLoadingHistory(false);
-      return;
-    }
-    let cancelled = false;
     setLoadingHistory(true);
-    convApi
-      .get(s.session_id)
-      .then((r) => {
-        if (cancelled) return;
-        if (r.state && r.state !== 'running' && !r.busy) {
-          writeStored(wt.uid, null);
-          setStored(null);
-          return;
-        }
-        sentAt.current = userTurns(r.turns);
-        apply(r);
-        if (r.busy) setFollowing(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        writeStored(wt.uid, null);
-        setStored(null);
-      })
-      .finally(() => !cancelled && setLoadingHistory(false));
+    // Record a link's session before any await, so an effect that runs again (StrictMode) still finds it.
+    const linked = takeChatParam();
+    if (linked) writeStored(wt.uid, { session_id: linked });
+    (async () => {
+      const stored = readStored(wt.uid);
+      let sid = stored?.session_id ?? null;
+      if (!sid && !stored?.reset_at) sid = (await convApi.forDefinition(wt.uid, 1).catch(() => []))[0]?.session_id ?? null;
+      if (!sid) return;
+      const r = await convApi.get(sid).catch(() => null);
+      if (cancelled) return;
+      if (!r || (r.definition_uid && r.definition_uid !== wt.uid)) {
+        if (sid === stored?.session_id) writeStored(wt.uid, null);
+        return;
+      }
+      writeStored(wt.uid, { session_id: sid });
+      setSessionId(sid);
+      sentAt.current = userTurns(r.turns);
+      apply(r);
+      if (r.busy) setFollowing(true);
+    })().finally(() => !cancelled && setLoadingHistory(false));
     return () => {
       cancelled = true;
     };
@@ -169,9 +177,11 @@ export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }
     return () => clearInterval(t);
   }, [following, live, refresh]);
 
+  const proposals = snap?.proposals;
+  const outcomes = useMemo(() => proposeOutcomes(turns), [turns]);
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
-  }, [turns.length, pending, following, stored?.proposals.length]);
+  }, [turns.length, pending, following, proposals?.length]);
 
   const contextNow = useCallback(
     (extra: Record<string, unknown> = {}) => {
@@ -187,27 +197,29 @@ export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }
       setPending(message);
       setLastError(null);
       setText('');
-      sentAt.current = userTurns(turns);
-      let s = stored;
+      // An ended conversation takes no messages: this one starts a new conversation (which can still amend an open proposal).
+      let sid = ended ? null : sessionId;
+      sentAt.current = sid ? userTurns(turns) : 0;
       try {
-        if (!s) {
+        if (!sid) {
           const title = `Designer: ${wt.state.definition?.slug ?? wt.uid}`;
           const started = await convApi.start({ kind: 'conversation', subagent_uid: designerUid, context: contextNow(), title });
           if (!started.session_id) throw new Error('server did not return a session id');
-          s = { session_id: started.session_id, proposals: [] };
-          persist(s);
+          sid = started.session_id;
+          adopt(sid);
+          setSnap(null);
         }
         const context = contextNow(extra);
-        const body = JSON.stringify([s.session_id, message, context]);
+        const body = JSON.stringify([sid, message, context]);
         const key = failed.current?.body === body ? failed.current.key : crypto.randomUUID();
         failed.current = { body, key };
-        await convApi.submit(s.session_id, message, context, key);
+        await convApi.submit(sid, message, context, key);
         failed.current = null;
         setFollowing(true);
       } catch (e) {
         // The message may have reached the server even though its answer did not (a proxy timeout, a dropped
         // connection): follow the reply if one is running or already recorded, rather than inviting a duplicate.
-        const r = s ? await convApi.get(s.session_id).catch(() => null) : null;
+        const r = sid ? await convApi.get(sid).catch(() => null) : null;
         if (r && (r.busy || userTurns(r.turns) > sentAt.current)) {
           failed.current = null;
           apply(r);
@@ -219,19 +231,26 @@ export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }
         setPending(null);
       }
     },
-    [designerUid, busy, stored, turns, wt, contextNow, persist, apply],
+    [designerUid, busy, ended, sessionId, turns, wt, contextNow, adopt, apply],
   );
 
   const items = useMemo(() => {
-    const out: Array<{ t: 'turn'; turn: ConversationTurn } | { t: 'proposal'; id: string }> = [];
-    const props = stored?.proposals ?? [];
+    const out: Array<{ t: 'turn'; turn: ConversationTurn } | { t: 'proposal'; id: string; amended: boolean }> = [];
+    // The session's own proposals, plus any older one this conversation amended (it belongs to the chat that opened it).
+    const ids = [...new Set([...(proposals ?? []), ...outcomes.flatMap((o) => (o.proposal_id ? [o.proposal_id] : []))])];
+    const at = placeProposals(turns, ids);
+    const amended = new Set(outcomes.filter((o) => o.amended && o.proposal_id).map((o) => o.proposal_id!));
+    const cards = (i: number) => [...at].filter(([, n]) => n === i).map(([id]) => ({ t: 'proposal' as const, id, amended: amended.has(id) }));
     turns.forEach((turn, i) => {
       out.push({ t: 'turn', turn });
-      for (const p of props) if (p.at === i + 1) out.push({ t: 'proposal', id: p.id });
+      out.push(...cards(i + 1));
     });
-    for (const p of props) if (p.at > turns.length || p.at < 1) out.push({ t: 'proposal', id: p.id });
+    if (!turns.length) out.push(...cards(0));
     return out;
-  }, [turns, stored]);
+  }, [turns, proposals, outcomes]);
+
+  const toolNames = useMemo(() => toolNamesById(turns), [turns]);
+  const outcomeById = useMemo(() => new Map(outcomes.map((o) => [o.tool_use_id, o])), [outcomes]);
 
   const label = kind === 'circuit' ? 'Circuit designer' : kind === 'tool' ? 'Tool designer' : 'Subagent designer';
   return (
@@ -242,19 +261,19 @@ export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }
           {label}
         </div>
         <div className="flex items-center gap-1">
-          {stored && (
-            <AppLink href={`/s/${stored.session_id}`} className="rounded p-1 text-fg-subtle hover:bg-hover" title="Open the conversation session">
+          {sessionId && (
+            <AppLink href={`/s/${sessionId}`} className="rounded p-1 text-fg-subtle hover:bg-hover" title="Open the conversation session">
               <ExternalLink className="size-3.5" />
             </AppLink>
           )}
-          {stored && (
+          {sessionId && (
             <button
               type="button"
               className="rounded p-1 text-fg-subtle hover:bg-hover"
               title="Start a new conversation"
               onClick={() => {
-                persist(null);
-                setTurns([]);
+                adopt(null);
+                setSnap(null);
                 setPending(null);
                 setFollowing(false);
                 setLastError(null);
@@ -280,9 +299,9 @@ export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }
         ) : null}
         {items.map((it, i) =>
           it.t === 'turn' ? (
-            <TurnView key={it.turn.turn_id ?? i} turn={it.turn} />
+            <TurnView key={it.turn.turn_id ?? i} turn={it.turn} toolNames={toolNames} outcomes={outcomeById} />
           ) : (
-            <ProposalCard key={`p:${it.id}`} proposalId={it.id} renderDiff={renderDiff} canRunEvals={canRunEvals} busy={busy} onRevise={(msg, proposal_id) => void send(msg, { proposal_id })} />
+            <ProposalCard key={`p:${it.id}`} proposalId={it.id} amended={it.amended} canRunEvals={canRunEvals} busy={busy} onRevise={(msg, proposal_id) => void send(msg, { proposal_id })} />
           ),
         )}
         {pending !== null && <UserBubble text={pending} />}
@@ -294,6 +313,11 @@ export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }
         {!busy && lastError && (
           <div className="rounded-md border border-danger/40 bg-danger-soft p-2 text-xs text-danger-fg" role="alert">
             The designer's last reply failed: {lastError}
+          </div>
+        )}
+        {!busy && ended && (
+          <div className="rounded-md border border-warn/40 bg-warn-soft p-2 text-xs text-warn-fg">
+            This conversation has {ended}. Its proposals above can still be reviewed and merged. Your next message starts a new conversation.
           </div>
         )}
       </div>
@@ -322,7 +346,7 @@ export function DesignerChatPanel({ kind, renderDiff, canRunEvals, placeholder }
         <div className="mt-1.5 flex items-center justify-between">
           <span className="text-[11px] text-fg-subtle">{wt.state.dirty.size ? `Sends ${wt.state.dirty.size} unsaved file(s) as context` : 'Sends the committed definition as context'}</span>
           <Btn type="submit" size="sm" variant="primary" icon={<Send className="size-3.5" />} disabled={!designerUid || !text.trim()} loading={busy}>
-            Send
+            {ended ? 'Send (new chat)' : 'Send'}
           </Btn>
         </div>
       </form>
@@ -338,7 +362,7 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
-function TurnView({ turn }: { turn: ConversationTurn }) {
+function TurnView({ turn, toolNames, outcomes }: { turn: ConversationTurn; toolNames: Map<string, string>; outcomes: Map<string, ProposeOutcome> }) {
   const blocks = blocksOf(turn.content);
   if (turn.role === 'system' || !blocks.length) return null;
   if (turn.role === 'user') {
@@ -359,6 +383,8 @@ function TurnView({ turn }: { turn: ConversationTurn }) {
             </details>
           );
         }
+        const o = toolNames.get(b.id) === PROPOSE_TOOL ? outcomes.get(b.id) : undefined;
+        if (o) return <ProposeResult key={i} o={o} />;
         const body = resultText(b.content);
         return (
           <details key={i} className={clsx('rounded-md border text-xs', b.is_error ? 'border-danger/40 bg-danger-soft' : 'border-line bg-sunken')}>
@@ -369,6 +395,28 @@ function TurnView({ turn }: { turn: ConversationTurn }) {
           </details>
         );
       })}
+    </div>
+  );
+}
+
+/** A `propose_config_change` result, in words: a failed call must never read as a proposal. */
+function ProposeResult({ o }: { o: ProposeOutcome }) {
+  if (o.error || !o.proposal_id)
+    return (
+      <div className="flex items-start gap-1.5 rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs text-danger-fg" role="alert">
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+        <span>
+          <span className="font-semibold">No proposal was {o.amended ? 'amended' : 'opened'}:</span> {o.error ?? 'the result carried no proposal id'}
+        </span>
+      </div>
+    );
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-fg-muted">
+      <CheckCircle2 className="size-3.5 text-ok-fg" aria-hidden />
+      {o.amended ? 'Amended' : 'Opened'} proposal
+      <AppLink href={proposalPath(o.proposal_id)} className="font-mono">
+        {o.proposal_id}
+      </AppLink>
     </div>
   );
 }

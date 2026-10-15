@@ -23,9 +23,11 @@ describe('ConversationService', () => {
   let script: (input: RunConversationInput) => ScriptedTurn | Promise<ScriptedTurn>;
   let subagents: FakeSubagentRuntime;
   let settings: BreadboardConfig;
+  let proposalStatus: 'open' | 'merged';
 
   beforeEach(async () => {
     f = await createFoundation();
+    proposalStatus = 'open';
     store = new MemorySessionStore(f.team_id);
     events = new FakeEventBus();
     script = () => ({ text: 'ok' });
@@ -49,7 +51,7 @@ describe('ConversationService', () => {
           referenced_by: [],
         };
       },
-      getProposal: async (id: string) => ({ proposal_id: id, branch: 'proposals/x', status: 'open', message: 'Tighten gather', changes: [{ path: `circuits/${CIRC}/prompts/gather.md`, status: 'modified' }], diff: '-old\n+new' }),
+      getProposal: async (id: string) => ({ proposal_id: id, branch: 'proposals/x', status: proposalStatus, message: 'Tighten gather', changes: [{ path: `circuits/${CIRC}/prompts/gather.md`, status: 'modified' }], diff: '-old\n+new' }),
     } as unknown as ConfigService;
     const content = {
       getNode: async (uid: string) => {
@@ -157,6 +159,13 @@ describe('ConversationService', () => {
     expect(pre2).toContain(`[Open proposal] ${proposalId} (open)`);
     expect(pre2).toContain('+new');
     expect(pre2).toContain('ORIGINAL PROMPT'); // no working tree sent this time
+
+    // The proposal id stays in the session context; once merged, its diff is no longer sent.
+    proposalStatus = 'merged';
+    await svc.post({ session_id: s.session_id, text: 'Thanks', by: f.adminPrincipal });
+    const pre3 = textOf(subagents.calls[2]!.messages[0]!);
+    expect(pre3).toContain(`[Proposal] ${proposalId} was merged`);
+    expect(pre3).not.toContain('+new');
   });
 
   it('validates start/post inputs', async () => {
@@ -233,5 +242,16 @@ describe('ConversationService', () => {
     const list = await svc.list({ by: f.memberPrincipal });
     expect(list.map((x) => x.session_id)).toEqual([mine.session_id, designer.session_id, theirs.session_id]);
     expect((await svc.list({ kind: 'conversation', by: f.memberPrincipal })).map((x) => x.session_id)).toEqual([designer.session_id]);
+  });
+
+  it('finds the caller’s designer chats on a definition', async () => {
+    const other = mintUid();
+    const older = await svc.start({ kind: 'conversation', subagent_uid: DESIGNER, context: { definition_uid: CIRC }, by: f.adminPrincipal });
+    const newer = await svc.start({ kind: 'conversation', subagent_uid: DESIGNER, context: { definition_uid: CIRC }, by: f.adminPrincipal });
+    await svc.start({ kind: 'conversation', subagent_uid: DESIGNER, context: { definition_uid: other }, by: f.adminPrincipal });
+    const someoneElse = await svc.start({ kind: 'conversation', subagent_uid: DESIGNER, context: { definition_uid: CIRC }, by: f.memberPrincipal });
+    const ids = async (input: { by: typeof f.adminPrincipal; mine?: boolean }) => (await svc.list({ kind: 'conversation', definition_uid: CIRC, ...input })).map((x) => x.session_id);
+    expect(await ids({ by: f.adminPrincipal, mine: true })).toEqual([newer.session_id, older.session_id]);
+    expect(await ids({ by: f.adminPrincipal })).toEqual([newer.session_id, older.session_id, someoneElse.session_id]);
   });
 });

@@ -1,44 +1,33 @@
 /**
- * Proposal card in the designer chat ([10] §4, [01] §10 propose-review-commit): the proposal's
- * change rendered natively for the editor (flow graphs / code / form diff) with a raw-patch toggle,
- * plus merge / discard / run-evals-on-branch / request-revisions.
+ * Proposal card in the designer chat ([10] §4, [01] §10 propose-review-commit): what the proposal changes, its
+ * validation and tool checks, and the way to its review page, plus merge / discard / run-evals-on-branch /
+ * request-revisions in place.
  */
 import { useState } from 'react';
 import clsx from 'clsx';
-import { GitMerge, Trash2, FlaskConical, Send, GitPullRequest } from 'lucide-react';
+import { ArrowRight, GitMerge, Trash2, FlaskConical, Send, GitPullRequest } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProposalDto } from '@breadboard/shared';
-import { configApi, evalsApi, qk, isRunTerminal, type EvalRunDto } from '../lib/configApi';
+import { configApi, evalsApi, qk, proposalPath } from '../lib/configApi';
 import { useWorkingTree } from '../model/workingTree';
-import { Btn, Pill, Spin, ErrorBox, Modal, notify, errorMessage, TabBar, TextAreaInput } from '../ui';
-import { RawPatch } from '../components/Diff';
+import { Btn, Pill, Spin, ErrorBox, Modal, notify, errorMessage, TextAreaInput, buttonClasses } from '../ui';
 import { ValidationList } from '../components/fields';
 import { AppLink } from '../components/AppLink';
-import { useSnapshot, type DiffRenderer } from '../components/snapshot';
-import { fmtPct, fmtScore, fmtUsd, shortCommit, hrefFor } from '../lib/format';
+import { shortCommit, hrefFor } from '../lib/format';
 import { parseConfigPath } from '@breadboard/shared';
+import { EvalRunSummary, ProposalPills, useToolChecks } from '../proposals/ProposalParts';
 
-const STATUS_TONE = { open: 'info', merged: 'ok', discarded: 'neutral' } as const;
-
-export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, busy }: { proposalId: string; renderDiff: DiffRenderer; canRunEvals?: boolean; onRevise: (text: string, proposalId: string) => void; busy?: boolean }) {
+export function ProposalCard({ proposalId, canRunEvals, onRevise, busy, amended }: { proposalId: string; canRunEvals?: boolean; onRevise: (text: string, proposalId: string) => void; busy?: boolean; amended?: boolean }) {
   const wt = useWorkingTree();
   const qc = useQueryClient();
   const q = useQuery({ queryKey: qk.proposal(proposalId), queryFn: () => configApi.proposal(proposalId), staleTime: 5_000 });
-  const [view, setView] = useState<'native' | 'raw'>('native');
-  const [expanded, setExpanded] = useState(false);
+  const checks = useToolChecks(q.data);
   const [mergeAsk, setMergeAsk] = useState(false);
   const [revision, setRevision] = useState('');
   const [runIds, setRunIds] = useState<string[]>([]);
 
   const p = q.data;
-  const touchesThis = !!p?.changes.some((c) => c.path === wt.state.rootPath || (wt.state.dir && c.path.startsWith(`${wt.state.dir}/`)));
-  const base = useSnapshot(wt.kind, wt.uid, expanded && touchesThis ? p?.base_commit : null, 'base');
-  const head = useSnapshot(wt.kind, wt.uid, expanded && touchesThis ? (p?.head_commit ?? p?.branch) : null, 'proposal');
-
-  const refresh = () => {
-    void qc.invalidateQueries({ queryKey: qk.proposal(proposalId) });
-    void qc.invalidateQueries({ queryKey: ['config'] });
-  };
+  const refresh = () => void qc.invalidateQueries({ queryKey: ['config'] });
   const merge = useMutation({
     mutationFn: async (keepEdits: boolean) => {
       await configApi.merge(proposalId);
@@ -46,7 +35,6 @@ export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, bu
     },
     onSuccess: async (keepEdits) => {
       setMergeAsk(false);
-      setExpanded(false);
       notify('Proposal merged to main', 'ok');
       refresh();
       await wt.reload({ keepEdits });
@@ -56,7 +44,6 @@ export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, bu
   const discard = useMutation({
     mutationFn: () => configApi.discard(proposalId),
     onSuccess: () => {
-      setExpanded(false);
       notify('Proposal discarded', 'info');
       refresh();
     },
@@ -83,16 +70,22 @@ export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, bu
 
   const allRuns = [...new Set([...(p.eval_runs ?? []), ...runIds])];
   const open = p.status === 'open';
+  const failing = (checks.data?.tools ?? []).filter((t) => !t.ok).length;
+  const review = proposalPath(p.proposal_id);
   return (
     <div className={clsx('rounded-lg border bg-raised text-sm shadow-sm', open ? 'border-accent/40' : 'border-line')}>
       <div className="flex items-start gap-2 border-b border-line px-3 py-2">
         <GitPullRequest className="mt-0.5 size-4 shrink-0 text-accent-text" />
         <div className="min-w-0 flex-1">
-          <div className="font-medium break-words">{p.message || 'Proposed change'}</div>
+          <AppLink href={review} className="font-medium break-words text-fg">
+            {p.message || 'Proposed change'}
+          </AppLink>
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-fg-subtle">
-            <Pill tone={STATUS_TONE[p.status] ?? 'neutral'}>{p.status}</Pill>
-            <Pill tone={p.validation?.ok ? 'ok' : 'danger'}>{p.validation?.ok ? 'valid' : `${p.validation?.errors.length ?? 0} error(s)`}</Pill>
-            <span className="font-mono">{p.branch}</span>
+            <ProposalPills p={p} />
+            {open && checks.isLoading && <Pill>checking…</Pill>}
+            {open && checks.data && <Pill tone={failing ? 'danger' : 'ok'}>{failing ? `${failing} tool check${failing === 1 ? '' : 's'} failing` : 'checks pass'}</Pill>}
+            {amended && <Pill tone="info">amended</Pill>}
+            <span className="font-mono">{p.proposal_id}</span>
             <span>
               base <span className="font-mono">{shortCommit(p.base_commit)}</span>
             </span>
@@ -101,19 +94,19 @@ export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, bu
       </div>
 
       <ChangedPaths p={p} />
-      {!p.validation?.ok && (
+      {open && !p.validation?.ok && (
         <div className="px-3 pb-2">
           <ValidationList errors={p.validation?.errors ?? []} warnings={p.validation?.warnings ?? []} max={6} />
         </div>
       )}
 
       <div className="flex flex-wrap items-center gap-1.5 border-t border-line px-3 py-2">
-        <Btn size="sm" onClick={() => setExpanded(true)}>
-          View diff
-        </Btn>
+        <AppLink bare href={review} className={buttonClasses(open ? 'primary' : 'secondary', 'sm', 'gap-1.5')}>
+          {open ? 'Review changes' : 'View changes'} <ArrowRight className="size-3.5" aria-hidden />
+        </AppLink>
         {open && (
           <>
-            <Btn size="sm" variant="primary" icon={<GitMerge className="size-3.5" />} loading={merge.isPending} onClick={() => (wt.state.dirty.size ? setMergeAsk(true) : merge.mutate(false))}>
+            <Btn size="sm" icon={<GitMerge className="size-3.5" />} loading={merge.isPending} disabled={!p.validation?.ok} onClick={() => (wt.state.dirty.size ? setMergeAsk(true) : merge.mutate(false))}>
               Merge
             </Btn>
             <Btn size="sm" variant="ghost" icon={<Trash2 className="size-3.5" />} loading={discard.isPending} onClick={() => discard.mutate()}>
@@ -146,7 +139,7 @@ export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, bu
               placeholder="Request revisions to this proposal..."
               onChange={(e) => setRevision(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && revision.trim()) {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && revision.trim() && !busy) {
                   onRevise(revision.trim(), proposalId);
                   setRevision('');
                 }
@@ -166,47 +159,6 @@ export function ProposalCard({ proposalId, renderDiff, canRunEvals, onRevise, bu
           </div>
         </div>
       )}
-
-      <Modal
-        open={expanded}
-        wide
-        onClose={() => setExpanded(false)}
-        title={<span>Proposal — {p.message}</span>}
-        footer={
-          open ? (
-            <>
-              <Btn variant="ghost" onClick={() => discard.mutate()} loading={discard.isPending}>
-                Discard
-              </Btn>
-              <Btn variant="primary" icon={<GitMerge className="size-4" />} loading={merge.isPending} onClick={() => (wt.state.dirty.size ? setMergeAsk(true) : merge.mutate(false))}>
-                Merge
-              </Btn>
-            </>
-          ) : undefined
-        }
-      >
-        <div className="mb-2 flex justify-end">
-          <TabBar
-            value={touchesThis ? view : 'raw'}
-            onChange={setView}
-            tabs={[
-              ...(touchesThis ? [{ id: 'native' as const, label: 'Native diff' }] : []),
-              { id: 'raw' as const, label: 'Raw patch' },
-            ]}
-          />
-        </div>
-        {touchesThis && view === 'native' ? (
-          base.isLoading || head.isLoading ? (
-            <Spin />
-          ) : base.error || head.error ? (
-            <ErrorBox error={base.error ?? head.error} />
-          ) : base.data && head.data ? (
-            renderDiff(base.data, head.data)
-          ) : null
-        ) : (
-          <RawPatch patch={p.diff || '(empty diff)'} />
-        )}
-      </Modal>
 
       <Modal
         open={mergeAsk}
@@ -258,33 +210,5 @@ function ChangedPaths({ p }: { p: ProposalDto }) {
         );
       })}
     </ul>
-  );
-}
-
-/** Live summary of one eval run, polled until terminal. */
-export function EvalRunSummary({ id }: { id: string }) {
-  const q = useQuery({
-    queryKey: qk.run(id),
-    queryFn: () => evalsApi.run(id),
-    refetchInterval: (query) => (query.state.data && isRunTerminal((query.state.data as EvalRunDto).status) ? false : 3000),
-  });
-  const r = q.data;
-  const done = r && isRunTerminal(r.status);
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <FlaskConical className="size-3.5 text-fg-subtle" />
-      <span className="font-mono text-fg-subtle">{id}</span>
-      {!r ? (
-        <Spin />
-      ) : (
-        <>
-          <Pill tone={r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'danger' : 'info'}>{r.status}</Pill>
-          {!done && <Spin />}
-          <span>aggregate {fmtScore(r.aggregate)}</span>
-          <span>pass {fmtPct(r.pass_rate)}</span>
-          <span className="text-fg-subtle">{fmtUsd(r.cost_usd)}</span>
-        </>
-      )}
-    </div>
   );
 }

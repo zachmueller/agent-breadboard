@@ -9,6 +9,7 @@
  */
 import { BreadboardError, validateAgainst, type JsonSchema } from '@breadboard/shared';
 import type { Queryable } from '../db/index.js';
+import { proposalToolChecks } from './proposal-checks.js';
 import type { Logger } from '../core/logger.js';
 import { canSeeSession, requireScope, type Principal } from '../core/principal.js';
 import type { ChatMessage, ConfigService, ContentService, CredentialBroker, EvalService, KnowledgeService, ModelGateway, Orchestrator, Primitives, SessionStore, TaskService, Toolbox, ToolSpec } from '../core/services.js';
@@ -626,7 +627,8 @@ export class PrimitivesImpl implements Primitives {
       {
         name: 'propose_config_change',
         scope: 'config:propose',
-        description: 'Propose a configuration change for human review: writes a branch and opens (or, with `proposal_id`, amends) a proposal. Nothing reaches main until a human merges it.',
+        description:
+          'Propose a configuration change for human review: writes a branch and opens (or, with `proposal_id`, amends) a proposal. Nothing reaches main until a human merges it. For tool changes the result includes `tool_checks` (manifest, TypeScript/Python syntax) at the proposal head; fix failures with an amendment.',
         input_schema: obj(
           {
             changes: FILE_CHANGES,
@@ -637,8 +639,17 @@ export class PrimitivesImpl implements Primitives {
           ['changes', 'message'],
         ),
         handler: async (a, p, ctx) => {
-          if (a.proposal_id) return d.config.amendProposal(a.proposal_id, a.changes, a.message, p);
-          return d.config.propose({ changes: a.changes, message: a.message, by: p, base: a.base, session_id: ctx.session_id ?? p.session_id ?? null });
+          const dto = a.proposal_id
+            ? await d.config.amendProposal(a.proposal_id, a.changes, a.message, p)
+            : await d.config.propose({ changes: a.changes, message: a.message, by: p, base: a.base, session_id: ctx.session_id ?? p.session_id ?? null });
+          // The patch only repeats the caller's own changes, and every later turn would carry it again.
+          const { diff: _diff, ...rest } = dto;
+          const checks = await proposalToolChecks(d.toolbox(), dto);
+          return {
+            ...rest,
+            ...(checks.tools.length ? { tool_checks: checks.tools } : {}),
+            review: `Not merged. The user reviews it from the proposal card in the chat, or at /proposals/${dto.proposal_id}, then merges or discards it.`,
+          };
         },
       },
     ];

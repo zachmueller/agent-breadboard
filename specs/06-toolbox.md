@@ -122,6 +122,7 @@ Tools hold no credentials directly. All credentialed actions go through a **brok
 
 - By default, **Subagents have read-only access to the code behind each tool extension** — enabling them to deep-dive tooling issues and propose changes/improvements.
 - **AI-proposed changes are written to a branch and surfaced as a reviewable diff; humans merge.** This also allows CI (type-check, tests, manifest validation) and evals to run against proposed tool changes before they land ([04](04-evals.md) §7).
+- **v1 tool CI** is manifest validation plus a syntax check (TypeScript type stripping, Python `ast.parse`) for every tool a proposal touches, at its head commit (`GET /config/proposals/:id/checks`, [11](11-api-mcp.md) §3). The review page and the proposal card show it ([10](10-ui.md) §4), and `propose_config_change` returns it to the designer as `tool_checks` so it can amend before handing over. Type-checking and tests are not run yet.
 
 ## 7. Breadboard primitives
 
@@ -145,6 +146,7 @@ Central onboarding simplifies configuration: each distinct MCP server is onboard
 - **Tool editor:** a browser-based code editor (CodeMirror 6) over the tool's directory — manifest + source, TypeScript and Python. Diff/commit flow against the config repo; version history with revert.
   - **Designer chat panel** — always visible: tool-designer Subagents with tool-editing context, propose-review-commit ([10 — UI](10-ui.md) §4), minimizing manual code editing.
   - Manifest lint surfaces limit/egress/capability changes prominently (they're the security-relevant part of any diff).
+  - An **open-proposals badge** in the header (and on the tool's inventory row) leads to the review page of any proposal changing the tool ([10](10-ui.md) §4).
 
 ## 11. v1 cutline
 

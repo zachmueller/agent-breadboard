@@ -86,11 +86,20 @@ export interface ProposalDto {
   status: 'open' | 'merged' | 'discarded';
   created_by: unknown;
   created_at: string;
+  /** The conversation that opened it (designer chat), if any. */
+  session_id: string | null;
   merged_commit?: string | null;
   changes: Array<{ path: string; status: 'added' | 'modified' | 'deleted' }>;
   diff: string;
   validation: { ok: boolean; errors: string[]; warnings: string[] };
   eval_runs: string[];
+}
+
+/** Static CI for each tool a proposal touches, at its head commit ([06] §6). */
+export interface ProposalChecksDto {
+  proposal_id: string;
+  head_commit: string;
+  tools: Array<{ uid: string; ok: boolean; errors: string[]; warnings: string[] }>;
 }
 
 export interface ReviewQueueItemDto {

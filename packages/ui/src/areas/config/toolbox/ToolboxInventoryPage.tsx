@@ -13,6 +13,7 @@ import { slugify } from '../lib/format';
 import { matchesQuery, uidFromChanges, withUid, SLUG_RE } from '../lib/inventory';
 import { InventoryShell, Table, TableEmpty, LastModified, NewDefinitionDialog } from '../inventory/Inventory';
 import { McpFields } from './McpFields';
+import { OpenProposalsBadge } from '../proposals/OpenProposalsBadge';
 import { egressOf, capabilitiesOf } from './manifestLint';
 
 export function ToolboxInventoryPage() {
@@ -64,6 +65,7 @@ export function ToolboxInventoryPage() {
                       <AppLink href={`/toolbox/${e.uid}`} className="font-medium">
                         {e.slug}
                       </AppLink>
+                      <OpenProposalsBadge uid={e.uid} compact />
                       {d?.builtin && (
                         <Pill className="ml-1.5" title="Shipped with Breadboard; fork to customize">
                           builtin
@@ -100,6 +102,7 @@ export function ToolboxInventoryPage() {
                     <AppLink href={`/toolbox/${e.uid}`} className="font-medium">
                       {e.slug}
                     </AppLink>
+                    <OpenProposalsBadge uid={e.uid} compact />
                   </td>
                   <td className="px-3 py-2">{e.title}</td>
                   <td className="px-3 py-2 text-xs">{d?.transport ?? <Spin className="size-3" />}</td>

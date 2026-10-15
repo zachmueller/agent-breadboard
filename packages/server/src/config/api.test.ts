@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BreadboardError, CONFIG_PATHS, SCHEMA_TAGS, mintUid, toYaml } from '@breadboard/shared';
+import { BreadboardError, CONFIG_PATHS, SCHEMA_TAGS, mintUid, owningDefinition, toYaml } from '@breadboard/shared';
 import { createFoundation, type Foundation } from '../test/harness.js';
 import type { Principal } from '../core/principal.js';
 import { createConfigRepo } from './repo.js';
@@ -38,7 +38,8 @@ beforeAll(async () => {
     if (err instanceof BreadboardError) return reply.status(err.status).send(err.toJSON());
     reply.status(500).send({ error: { code: 'internal', message: String(err?.message) } });
   });
-  await register(app, { config } as any);
+  const toolbox = { ci: async (uid: string, ref: string) => ({ ok: true, errors: [], warnings: [`checked ${uid}@${ref}`] }) };
+  await register(app, { config, toolbox } as any);
   await app.ready();
 });
 afterAll(async () => {
@@ -107,5 +108,24 @@ describe('config routes', () => {
     const d = await app.inject({ method: 'POST', url: `/api/v1/config/proposals/${discard.json().proposal_id}/discard` });
     expect(d.json().status).toBe('discarded');
     expect((await app.inject({ method: 'POST', url: `/api/v1/config/proposals/${discard.json().proposal_id}/merge` })).statusCode).toBe(409);
+  });
+
+  it('filters proposals by conversation and definition, and runs tool checks at the head', async () => {
+    const sid = `ses_${mintUid()}`;
+    const skel = (await app.inject({ method: 'POST', url: '/api/v1/config/new', payload: { kind: 'tool', slug: 'probe', title: 'Probe', language: 'typescript' } })).json();
+    const toolUid = skel.changes.map((c: any) => owningDefinition(c.path)?.uid).find(Boolean);
+    const tool = (await app.inject({ method: 'POST', url: '/api/v1/config/proposals', payload: { changes: skel.changes, message: 'add probe', session_id: sid } })).json();
+    const other = (await app.inject({ method: 'POST', url: '/api/v1/config/proposals', payload: { changes: [{ path: 'tenets.md', content: 'Other.\n' }], message: 'other' } })).json();
+    expect(tool.session_id).toBe(sid);
+    expect(other.session_id).toBeNull();
+    const ids = async (query: string) => (await app.inject({ method: 'GET', url: `/api/v1/config/proposals${query}` })).json().map((p: any) => p.proposal_id);
+    expect(await ids(`?status=open&definition=${toolUid}`)).toEqual([tool.proposal_id]);
+    expect(await ids(`?status=open&definition=${SUB}`)).toEqual([]);
+    expect(await ids(`?session_id=${sid}`)).toEqual([tool.proposal_id]);
+
+    const checks = (await app.inject({ method: 'GET', url: `/api/v1/config/proposals/${tool.proposal_id}/checks` })).json();
+    expect(checks).toEqual({ proposal_id: tool.proposal_id, head_commit: tool.head_commit, tools: [{ uid: toolUid, ok: true, errors: [], warnings: [`checked ${toolUid}@${tool.head_commit}`] }] });
+    expect((await app.inject({ method: 'GET', url: `/api/v1/config/proposals/${other.proposal_id}/checks` })).json().tools).toEqual([]);
+    for (const p of [tool, other]) await app.inject({ method: 'POST', url: `/api/v1/config/proposals/${p.proposal_id}/discard` });
   });
 });

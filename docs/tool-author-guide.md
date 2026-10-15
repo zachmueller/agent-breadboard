@@ -81,4 +81,4 @@ A connector tool adds a `connector:` block to its manifest and defines `list(cur
 
 ## Testing and CI
 
-Edit in the Tool editor (or ask the tool-designer in the chat panel). Proposals run manifest validation plus a syntax check (`node --check` / `py_compile`) before merge. Evals that cover circuits using the tool can run against the proposal branch from the review view.
+Edit in the Tool editor (or ask the tool-designer in the chat panel). Each proposal has a review page, `/proposals/<id>`, reached from the proposal card's **Review changes**, the editor's open-proposals badge, or **Proposals** in the left rail. For every tool the proposal touches it runs manifest validation plus a syntax check (TypeScript type stripping, Python `ast.parse`) at the proposal head, and the designer sees the same result as `tool_checks`. Type-checking and tests do not run yet. Evals of circuits that use the tool can run against the proposal branch with `POST /evals/runs {circuit, proposal_id}`; the review page offers the button only for circuits the proposal itself changes.

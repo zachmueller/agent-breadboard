@@ -6,6 +6,7 @@ import { AppLink } from '../components/AppLink';
 import { useTreeOfKind, useDefinitions, usePresets } from '../lib/configApi';
 import { matchesQuery, withUid } from '../lib/inventory';
 import { InventoryShell, Table, TableEmpty, LastModified, NewDefinitionDialog } from '../inventory/Inventory';
+import { OpenProposalsBadge } from '../proposals/OpenProposalsBadge';
 import { isMcpGrant, isToolGrant } from './model';
 
 export function SubagentsInventoryPage() {
@@ -80,6 +81,7 @@ export function SubagentsInventoryPage() {
                   <AppLink href={`/subagents/${e.uid}`} className="font-medium">
                     {e.slug}
                   </AppLink>
+                  <OpenProposalsBadge uid={e.uid} compact />
                   {m?.invalid && (
                     <Pill tone="danger" className="ml-1">
                       invalid

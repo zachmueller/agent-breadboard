@@ -303,7 +303,9 @@ export class OrchestratorImpl implements Orchestrator {
     const s = asRow(await this.d.sessions.mustGet(sessionId));
     if (s.state === 'completed' || s.state === 'cancelled') throw invalidState(`session ${sessionId} is already ${s.state}`);
     await this.event(sessionId, 'session-cancelled', { reason: reason ?? null, by: by.actor, previous_state: s.state });
-    const out = await this.transition(sessionId, { state: 'cancelled', ended_at: nowIso(), state_detail: { ...preserve(s.state_detail), reason: 'cancelled', cancel_reason: reason ?? null, cancelled_by: by.actor, previous_state: s.state } }, { force: true });
+    // A chat's detail is its record (subagent, context, who started it); a run's is transient step state.
+    const kept = isOrchestrated(s) ? preserve(s.state_detail) : { ...(s.state_detail ?? {}) };
+    const out = await this.transition(sessionId, { state: 'cancelled', ended_at: nowIso(), state_detail: { ...kept, reason: 'cancelled', cancel_reason: reason ?? null, cancelled_by: by.actor, previous_state: s.state } }, { force: true });
     for (const child of await this.d.sessions.children(sessionId)) {
       if (child.state !== 'completed' && child.state !== 'cancelled') {
         await this.cancel(child.session_id, by, reason ?? `parent ${sessionId} cancelled`).catch((e) => this.d.log.warn({ err: e, session_id: child.session_id }, 'cascade cancel failed'));

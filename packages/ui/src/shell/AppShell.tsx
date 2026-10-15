@@ -3,7 +3,7 @@ import { useState, type ReactNode } from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import { AlertTriangle, ChevronDown, ClipboardCheck, Keyboard, LogOut, Search, User } from 'lucide-react';
 import { useAuth } from '../lib/auth';
-import { useGlobalLiveInvalidation, useReviewCount } from '../lib/queries';
+import { useGlobalLiveInvalidation, useOpenProposalCount, useReviewCount } from '../lib/queries';
 import { useLiveConnected } from '../lib/live';
 import { cn } from '../components/cn';
 import { Kbd, modKey } from '../components/Kbd';
@@ -54,6 +54,7 @@ function Rail({ path, isAdmin, teamName }: { path: string; isAdmin: boolean; tea
               >
                 <Icon size={16} aria-hidden className={cn('shrink-0', active ? 'text-accent-text' : 'text-fg-subtle group-hover:text-fg-muted')} />
                 <span className="flex-1 truncate">{a.label}</span>
+                {a.key === 'proposals' && <OpenProposalCount />}
                 <span className="hidden font-mono text-[10.5px] text-fg-subtle group-hover:inline" aria-hidden>
                   g {a.jump}
                 </span>
@@ -63,6 +64,17 @@ function Rail({ path, isAdmin, teamName }: { path: string; isAdmin: boolean; tea
         })}
       </ul>
     </nav>
+  );
+}
+
+/** Open proposals waiting for a merge or discard; hidden at zero. */
+function OpenProposalCount() {
+  const { data } = useOpenProposalCount();
+  if (!data) return null;
+  return (
+    <span className="tabular rounded bg-accent-soft px-1 text-[11px] font-semibold text-accent-text group-hover:hidden" title={`${data} open proposal${data === 1 ? '' : 's'}`}>
+      {data}
+    </span>
   );
 }
 

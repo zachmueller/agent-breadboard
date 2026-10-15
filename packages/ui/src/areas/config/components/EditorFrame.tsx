@@ -10,6 +10,7 @@ import { useWorkingTree } from '../model/workingTree';
 import { Btn, Modal, Confirm, TextAreaInput, Pill, TabBar, ErrorBox, Spin, ToastHost, errorMessage } from '../ui';
 import { ValidationList } from './fields';
 import { shortCommit } from '../lib/format';
+import { OpenProposalsBadge } from '../proposals/OpenProposalsBadge';
 
 export function ValidationStatus() {
   const wt = useWorkingTree();
@@ -143,6 +144,7 @@ export function EditorFrame<T extends string>({ kindLabel, title, subtitle, tabs
         </div>
         <ValidationStatus />
         {dirty > 0 && <Pill tone="warn">{dirty} unsaved</Pill>}
+        <OpenProposalsBadge uid={wt.uid} />
         <span className="font-mono text-[11px] text-fg-subtle" title="Base commit">
           @{shortCommit(wt.state.base_commit)}
         </span>

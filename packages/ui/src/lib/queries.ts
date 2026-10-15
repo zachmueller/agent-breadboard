@@ -18,6 +18,7 @@ import type {
   NodeDto,
   NodeRevision,
   Page,
+  ProposalDto,
   ReviewQueueItemDto,
   SessionEvent,
   SessionSummaryDto,
@@ -454,6 +455,19 @@ export function useConfigIndex() {
     for (const e of data ?? []) if (e.uid) m.set(e.uid, e);
     return m;
   }, [data]);
+}
+
+/**
+ * Config proposals ([10] §4). The keys and response shape match the config area's `useProposals` queries, so the
+ * nav count, editor badges and inventory badges share one fetch of the open list.
+ */
+export function useOpenProposalCount() {
+  return useQuery({ queryKey: ['config', 'proposals', { status: 'open' }], queryFn: () => get<ProposalDto[]>('/config/proposals', { status: 'open' }), staleTime: 15_000, select: (r) => r.length });
+}
+
+/** Proposals a conversation (designer chat) opened, any status. */
+export function useSessionProposals(sessionId: string, enabled = true) {
+  return useQuery({ queryKey: ['config', 'proposals', { session_id: sessionId }], queryFn: () => get<ProposalDto[]>('/config/proposals', { session_id: sessionId }), enabled: enabled && !!sessionId, staleTime: 15_000 });
 }
 
 export function useRoles() {

@@ -3,8 +3,9 @@
  * Response normalizers are deliberately tolerant (array vs `{items}` envelopes, field aliases)
  * so the editors keep working while the server modules converge.
  */
+import { useMemo } from 'react';
 import { useQuery, useQueries } from '@tanstack/react-query';
-import type { ConfigDefinitionDto, ConfigTreeEntry, ProposalDto } from '@breadboard/shared';
+import { owningDefinition, type ConfigDefinitionDto, type ConfigTreeEntry, type ProposalChecksDto, type ProposalDto } from '@breadboard/shared';
 import { api } from '../ui';
 
 export type Validation = { ok: boolean; errors: string[]; warnings: string[] };
@@ -192,7 +193,7 @@ export const configApi = {
     return typeof r === 'string' ? r : (r?.commit ?? r?.head ?? r?.main ?? null);
   },
   revert: (to_commit: string, path?: string) => api.post<{ commit?: string }>('/config/revert', { to_commit, ...(path ? { path } : {}) }),
-  proposals: async (status = 'open') => listOf<ProposalDto>(await api.get(`/config/proposals${q({ status })}`), 'proposals'),
+  proposals: async (filter: ProposalFilter = { status: 'open' }) => listOf<ProposalDto>(await api.get(`/config/proposals${q({ ...filter })}`), 'proposals'),
   proposal: async (id: string): Promise<ProposalDto> => {
     const r: any = await api.get(`/config/proposals/${enc(id)}`);
     return (r?.proposal ?? r) as ProposalDto;
@@ -201,7 +202,20 @@ export const configApi = {
   merge: (id: string) => api.post<unknown>(`/config/proposals/${enc(id)}/merge`, {}),
   discard: (id: string) => api.post<unknown>(`/config/proposals/${enc(id)}/discard`, {}),
   amend: (id: string, changes: FileChange[], message: string) => api.post<ProposalDto>(`/config/proposals/${enc(id)}/amend`, { changes, message }),
+  /** Tool CI (manifest, TS/Python syntax) for each tool the proposal touches, at its head. */
+  proposalChecks: (id: string) => api.get<ProposalChecksDto>(`/config/proposals/${enc(id)}/checks`),
 };
+
+export interface ProposalFilter {
+  status?: 'open' | 'merged' | 'discarded';
+  session_id?: string;
+  /** Definition UID: proposals changing its files. */
+  definition?: string;
+  limit?: number;
+}
+
+
+export { proposalPath } from '../../../lib/paths';
 
 export const evalsApi = {
   launch: async (body: { circuit: string; ref?: string; fixture_tags?: string[]; model_overrides?: Record<string, string>; proposal_id?: string }) => normalizeRun(await api.post('/evals/runs', body)),
@@ -240,13 +254,26 @@ export const miscApi = {
 
 export interface ConversationSnapshot {
   state: string | null;
+  /** Why it stopped, when it is not running (e.g. `budget-exceeded`). */
+  reason: string | null;
+  /** The definition a designer chat was opened on. */
+  definition_uid: string | null;
   turns: ConversationTurn[];
   busy: boolean;
   last_error: string | null;
   proposals: string[];
 }
 
+export interface ConversationSummary {
+  session_id: string;
+  state: string;
+  created_at: string;
+}
+
 export const convApi = {
+  /** The caller's designer chats on a definition, newest first. */
+  forDefinition: async (definition: string, limit = 1): Promise<ConversationSummary[]> =>
+    listOf<any>(await api.get(`/conversations${q({ kind: 'conversation', definition, mine: 1, limit })}`), 'items').map((s) => ({ session_id: String(s.session_id), state: String(s.state), created_at: String(s.created_at) })),
   /** `POST /conversations` returns the session record ([08] §4 / [10] §4 designer chat). */
   start: async (body: { kind: 'conversation'; subagent_uid: string; context: Record<string, unknown>; title: string }): Promise<{ session_id: string }> => {
     const r = await api.post<any>('/conversations', body);
@@ -256,8 +283,11 @@ export const convApi = {
   /** Transcript plus reply progress: `busy` while the server runs a reply, `last_error` when the last one failed. */
   get: async (id: string): Promise<ConversationSnapshot> => {
     const r = await api.get<any>(`/conversations/${enc(id)}`);
+    const detail = r?.session?.state_detail ?? {};
     return {
       state: r?.session?.state ?? null,
+      reason: typeof detail.reason === 'string' ? detail.reason : null,
+      definition_uid: typeof detail.context?.definition_uid === 'string' ? detail.context.definition_uid : null,
       turns: listOf<ConversationTurn>(r?.turns ?? []),
       busy: r?.busy === true,
       last_error: typeof r?.last_error === 'string' && r.last_error ? r.last_error : null,
@@ -280,6 +310,7 @@ export const qk = {
   runs: (circuit: string) => ['evals', 'runs', circuit] as const,
   run: (id: string) => ['evals', 'run', id] as const,
   proposal: (id: string) => ['config', 'proposal', id] as const,
+  proposals: (filter: ProposalFilter) => ['config', 'proposals', filter] as const,
 };
 
 export function useConfigTree(ref?: string) {
@@ -310,6 +341,27 @@ export function useDefinitions(ids: string[]) {
   return useQueries({
     queries: ids.map((id) => ({ queryKey: qk.def(id), queryFn: () => configApi.definition(id), staleTime: 30_000, retry: false })),
   });
+}
+
+export function useProposals(filter: ProposalFilter, opts: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: qk.proposals(filter), queryFn: () => configApi.proposals(filter), staleTime: 15_000, enabled: opts.enabled ?? true });
+}
+
+/** Definition UIDs each proposal changes (a prompt or source file counts for its circuit or tool). */
+export function proposalDefinitions(p: Pick<ProposalDto, 'changes'>): Array<{ kind: 'circuit' | 'tool' | 'subagent' | 'mcp'; uid: string }> {
+  const seen = new Map<string, { kind: 'circuit' | 'tool' | 'subagent' | 'mcp'; uid: string }>();
+  for (const c of p.changes ?? []) {
+    const d = owningDefinition(c.path);
+    if (d && !seen.has(d.uid)) seen.set(d.uid, d);
+  }
+  return [...seen.values()];
+}
+
+/** Open proposals touching a definition. One shared query of all open proposals backs every badge on a page. */
+export function useOpenProposalsFor(uid: string | null | undefined) {
+  const all = useProposals({ status: 'open' }, { enabled: !!uid });
+  const data = useMemo(() => (uid ? (all.data ?? []).filter((p) => proposalDefinitions(p).some((d) => d.uid === uid)) : []), [all.data, uid]);
+  return { ...all, data };
 }
 
 export function useHistory(path: string | null, limit = 50) {

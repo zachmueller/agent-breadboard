@@ -1,12 +1,12 @@
 /** Session explorer (`/s/:id`, [02] §8): header, step path, step drawer, conversation, events, executions. Live-follows via SSE. */
 import { useMemo } from 'react';
 import { Link } from '@tanstack/react-router';
-import { Activity, ArrowRight, Boxes, CornerDownRight, GitCommitHorizontal, MessagesSquare, Radio, ScrollText, Terminal } from 'lucide-react';
+import { Activity, ArrowRight, Boxes, CornerDownRight, GitCommitHorizontal, GitPullRequest, MessagesSquare, Radio, ScrollText, Terminal } from 'lucide-react';
 import { TERMINAL_SESSION_STATES, type SessionSummaryDto } from '@breadboard/shared';
-import { useConfigDefinition, useSession, useSessionEvents, useSessionExecutions, useSessionTurns } from '../../lib/queries';
+import { useConfigDefinition, useSession, useSessionEvents, useSessionExecutions, useSessionProposals, useSessionTurns } from '../../lib/queries';
 import { useUrlSearch } from '../../lib/url';
 import { durationMs, formatCost, formatDuration, formatTokens, humanize, shortCommit, shortId } from '../../lib/format';
-import { nodePath } from '../../lib/paths';
+import { nodePath, proposalPath } from '../../lib/paths';
 import { isApiError } from '../../lib/api';
 import { cn } from '../../components/cn';
 import {
@@ -224,6 +224,8 @@ function Explorer({
           </Callout>
         )}
 
+        {s.kind === 'conversation' && <SessionProposals id={s.session_id} />}
+
         <Tabs items={tabs} value={tabs.some((t) => t.key === tab) ? tab : tabs[0]!.key} onChange={(k) => setSearch({ tab: k })} idBase="session" />
 
         {tab === 'steps' && isRun ? (
@@ -249,6 +251,36 @@ function Explorer({
         onClose={() => setSearch({ step: undefined }, { replace: false })}
       />
     </>
+  );
+}
+
+/** Config proposals the designer opened in this conversation, each linking to its review page. */
+function SessionProposals({ id }: { id: string }) {
+  const q = useSessionProposals(id);
+  const items = q.data ?? [];
+  if (!items.length) return null;
+  const open = items.filter((p) => p.status === 'open').length;
+  return (
+    <Callout icon={<GitPullRequest size={15} />} title={`${pluralize2(items.length, 'configuration proposal')} from this conversation${open ? `, ${open} waiting for review` : ''}`}>
+      <ul className="mt-1.5 flex flex-col gap-1">
+        {items.map((p) => (
+          <li key={p.proposal_id} className="flex flex-wrap items-center gap-2">
+            <Link to={proposalPath(p.proposal_id)} className="font-medium text-accent-text hover:underline">
+              {p.message || 'Proposed change'}
+            </Link>
+            <Badge size="xs" tone={p.status === 'open' ? 'info' : p.status === 'merged' ? 'ok' : 'neutral'}>
+              {p.status}
+            </Badge>
+            <span className="font-mono text-[11.5px] text-fg-subtle">{p.proposal_id}</span>
+            {p.status === 'open' && (
+              <Link to={proposalPath(p.proposal_id)} className={buttonClasses('primary', 'xs')}>
+                Review <ArrowRight size={12} />
+              </Link>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Callout>
   );
 }
 

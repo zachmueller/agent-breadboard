@@ -82,6 +82,15 @@ export function parseConfigPath(path: string): ParsedPath | null {
   return null;
 }
 
+/** The editable definition a repo path belongs to: rubric, fixtures and prompts belong to their circuit, sources to their tool. */
+export function owningDefinition(path: string): { kind: 'circuit' | 'tool' | 'subagent' | 'mcp'; uid: string } | null {
+  const p = parseConfigPath(path);
+  if (!p?.uid) return null;
+  if (p.kind === 'rubric' || p.kind === 'fixtures') return { kind: 'circuit', uid: p.uid };
+  if (p.kind === 'circuit' || p.kind === 'tool' || p.kind === 'subagent' || p.kind === 'mcp') return { kind: p.kind, uid: p.uid };
+  return null;
+}
+
 export function definitionPath(kind: ConfigKind, uid?: string | null): string {
   switch (kind) {
     case 'breadboard':

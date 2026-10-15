@@ -7,6 +7,7 @@ import { useTreeOfKind, useDefinitions, useLatestRun, isRunTerminal } from '../l
 import { fmtScore, fmtPct, fmtRelative } from '../lib/format';
 import { matchesQuery, withUid } from '../lib/inventory';
 import { InventoryShell, Table, TableEmpty, LastModified, NewDefinitionDialog } from '../inventory/Inventory';
+import { OpenProposalsBadge } from '../proposals/OpenProposalsBadge';
 import { statusTone } from './evals/RunsPanel';
 
 export function CircuitsInventoryPage() {
@@ -69,6 +70,7 @@ export function CircuitsInventoryPage() {
                   <AppLink href={`/circuits/${e.uid}`} className="font-medium">
                     {e.slug}
                   </AppLink>
+                  <OpenProposalsBadge uid={e.uid} compact />
                 </td>
                 <td className="px-3 py-2">
                   <div>{e.title}</div>

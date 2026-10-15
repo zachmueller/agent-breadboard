@@ -6,3 +6,5 @@ export { ToolEditorPage } from './toolbox/ToolEditorPage';
 export { SubagentsInventoryPage } from './subagents/SubagentsInventoryPage';
 export { SubagentEditorPage } from './subagents/SubagentEditorPage';
 export { ConfigPicker, ConfigMultiPicker } from './components/ConfigPicker';
+export { ProposalsPage } from './proposals/ProposalsPage';
+export { ProposalReviewPage } from './proposals/ProposalReviewPage';

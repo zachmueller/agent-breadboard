@@ -17,7 +17,7 @@ export const api = {
 };
 export { errorMessage } from '../../lib/api';
 export { useLiveEvents, useLiveConnected, payloadSessionId } from '../../lib/live';
-export { Button as Btn } from '../../components';
+export { Button as Btn, ActorLabel, buttonClasses } from '../../components';
 
 export {
   TextInput,

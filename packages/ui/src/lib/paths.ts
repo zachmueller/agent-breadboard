@@ -3,6 +3,7 @@
 export const nodePath = (uid: string) => `/n/${uid}`;
 export const sessionPath = (id: string, step?: string | null) => (step ? `/s/${id}?step=${encodeURIComponent(step)}` : `/s/${id}`);
 export const configPath = (uid: string) => `/config/${uid}`;
+export const proposalPath = (id: string) => `/proposals/${id}`;
 
 /** Editor route for a config definition by kind (`/config/<uid>` resolves to these). */
 export function configEditorPath(kind: string | null | undefined, uid: string | null | undefined): string | null {

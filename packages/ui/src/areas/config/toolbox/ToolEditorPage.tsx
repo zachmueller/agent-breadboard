@@ -101,7 +101,7 @@ function ToolEditor() {
       commitNotice={wt.state.dirty.has(wt.state.rootPath) && <SecurityDiffBlock base={f.base} next={f.next} />}
       defaultCommitMessage={`Update tool ${t?.slug ?? wt.uid}`}
       history={(close) => <HistorySidebar onClose={close} renderDiff={toolDiffRenderer} />}
-      chat={<DesignerChatPanel kind="tool" renderDiff={toolDiffRenderer} placeholder="Describe a change to this tool…" />}
+      chat={<DesignerChatPanel kind="tool" placeholder="Describe a change to this tool…" />}
     >
       {tab === 'files' && (
         <div className="flex h-full min-h-0 flex-col">
@@ -255,7 +255,7 @@ function McpEditor() {
       onTab={setTab}
       defaultCommitMessage={`Update MCP server ${m?.slug ?? wt.uid}`}
       history={(close) => <HistorySidebar onClose={close} renderDiff={plainDiffRenderer} />}
-      chat={<DesignerChatPanel kind="tool" renderDiff={plainDiffRenderer} placeholder="Describe a change to this MCP onboarding…" />}
+      chat={<DesignerChatPanel kind="tool" placeholder="Describe a change to this MCP onboarding…" />}
     >
       {tab === 'form' &&
         (m ? (

@@ -115,10 +115,14 @@ function build(): PrimitivesImpl {
           ? { uid, commit: 'c', tool: { uid, slug: 'harness', capabilities: [{ name: 'model', scope: 'invoke' }] }, dir: '/tmp' }
           : { uid, commit: 'c', tool: { uid, slug: 'gh', capabilities: [{ name: 'github', scope: 'read' }] }, dir: '/tmp' },
       validateChanges: () => ({ ok: true, errors: [], warnings: [] }),
-      propose: () => ({ proposal_id: 'prop_1' }),
+      propose: (o: any) => ({ proposal_id: 'prop_1', head_commit: 'h1', diff: 'patch', changes: o.changes.map((c: any) => ({ path: c.path, status: 'modified' })) }),
       amendProposal: (id: string) => ({ proposal_id: id }),
     }),
-    toolbox: () => fake('toolbox', calls, { invoke: (inv: any) => ({ output: { echoed: inv.input }, logs: [], execution_key: 'k', replayed: false, cost_units: 0, duration_ms: 1 }) }),
+    toolbox: () =>
+      fake('toolbox', calls, {
+        invoke: (inv: any) => ({ output: { echoed: inv.input }, logs: [], execution_key: 'k', replayed: false, cost_units: 0, duration_ms: 1 }),
+        ci: () => ({ ok: false, errors: ['src/index.ts: Unexpected token'], warnings: [] }),
+      }),
     broker: fake('broker', calls, { fetch: () => ({ status: 200, headers: {}, body: 'ok' }) }),
     gateway: fake('gateway', calls, {
       complete: () => ({ model_id: 'm-1', provider: 'mock', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 2 }, cost_usd: 0.01, latency_ms: 5, fallback_from: null }),
@@ -344,9 +348,20 @@ describe('broker_fetch, run_tool, config', () => {
   it('propose_config_change opens or amends a proposal with the session id', async () => {
     const p = subagentPrincipal(f, grants({ primitives: ['propose_config_change'] }));
     const changes = [{ path: 'config/tenets.md', content: 'be kind' }];
-    expect(await prims.call('propose_config_change', { changes, message: 'tenet' }, p, { session_id: 'sess_parent' })).toEqual({ proposal_id: 'prop_1' });
+    const opened = (await prims.call('propose_config_change', { changes, message: 'tenet' }, p, { session_id: 'sess_parent' })) as any;
+    expect(opened).toMatchObject({ proposal_id: 'prop_1', review: expect.stringContaining('/proposals/prop_1') });
+    expect(opened.diff).toBeUndefined(); // the caller wrote the changes; later turns should not carry the patch
+    expect(opened.tool_checks).toBeUndefined();
     expect(callsTo('config', 'propose')[0]!.args[0]).toMatchObject({ changes, message: 'tenet', session_id: 'sess_parent', by: p });
-    expect(await prims.call('propose_config_change', { changes, message: 'again', proposal_id: 'prop_9' }, p)).toEqual({ proposal_id: 'prop_9' });
+    expect(await prims.call('propose_config_change', { changes, message: 'again', proposal_id: 'prop_9' }, p)).toMatchObject({ proposal_id: 'prop_9' });
     expect(await codeOf(prims.call('propose_config_change', { changes, message: 'x' }, subagentPrincipal(f, grants())))).toBe('grant-denied');
+  });
+
+  it('propose_config_change reports tool CI for the tools it changes', async () => {
+    const p = subagentPrincipal(f, grants({ primitives: ['propose_config_change'] }));
+    const changes = [{ path: `tools/${TOOL}/src/index.ts`, content: 'export const handler = (' }];
+    const r = (await prims.call('propose_config_change', { changes, message: 'fix' }, p, { session_id: 'sess_parent' })) as any;
+    expect(r.tool_checks).toEqual([{ uid: TOOL, ok: false, errors: ['src/index.ts: Unexpected token'], warnings: [] }]);
+    expect(callsTo('toolbox', 'ci').at(-1)!.args).toEqual([TOOL, 'h1']);
   });
 });

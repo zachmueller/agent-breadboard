@@ -92,6 +92,9 @@ const routeTree = rootRoute.addChildren([
     page('/toolbox/$uid', withParams(areaPage(ConfigArea, 'ToolEditorPage', 'Toolbox')), true),
     page('/subagents', withParams(areaPage(ConfigArea, 'SubagentsInventoryPage', 'Subagents')), true),
     page('/subagents/$uid', withParams(areaPage(ConfigArea, 'SubagentEditorPage', 'Subagents')), true),
+    // Proposal review ([10] §4 propose-review-commit)
+    page('/proposals', withParams(areaPage(ConfigArea, 'ProposalsPage', 'Proposals')), true),
+    page('/proposals/$id', withParams(areaPage(ConfigArea, 'ProposalReviewPage', 'Proposals'))),
     // Knowledge ([07] §10)
     page('/knowledge', withParams(areaPage(KnowledgeArea, 'KnowledgeSearchPage', 'Knowledge')), true),
     page('/knowledge/$uid', withParams(areaPage(KnowledgeArea, 'NoteEditorPage', 'Knowledge')), true),

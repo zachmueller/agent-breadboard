@@ -21,6 +21,7 @@ import {
   isUid,
   mintProposalId,
   mintUid,
+  owningDefinition,
   parseConfigPath,
   parseConfigYaml,
   schemaCompileError,
@@ -593,6 +594,8 @@ function cell(s: string): string {
 // Service
 // -----------------------------------------------------------------------------------------------
 
+type RepoDiff = Awaited<ReturnType<ConfigRepo['diff']>>;
+
 interface ProposalRow {
   proposal_id: string;
   team_id: string;
@@ -997,15 +1000,23 @@ export class ConfigServiceImpl implements ConfigService {
     return r.rows[0];
   }
 
-  private async toDto(row: ProposalRow): Promise<ProposalDto> {
-    let diff: { patch: string; files: Array<{ path: string; status: 'added' | 'modified' | 'deleted' | 'renamed' }> } = { patch: '', files: [] };
-    let validation: ValidationReport = { ok: true, errors: [], warnings: [] };
+  private async rowDiff(row: ProposalRow): Promise<RepoDiff | null> {
     try {
-      diff = await this.repo.diff(row.base_commit, row.head_commit);
-      validation = await this.validateTree(row.head_commit, { nonMain: row.status === 'open' });
+      return await this.repo.diff(row.base_commit, row.head_commit);
     } catch (e) {
       // Discarded proposals may have had their commits pruned; the record is still worth returning.
       this.log.debug({ err: e, proposal: row.proposal_id }, 'proposal diff unavailable');
+      return null;
+    }
+  }
+
+  private async toDto(row: ProposalRow, known?: RepoDiff | null): Promise<ProposalDto> {
+    const diff = (known === undefined ? await this.rowDiff(row) : known) ?? { patch: '', files: [] };
+    let validation: ValidationReport = { ok: true, errors: [], warnings: [] };
+    try {
+      validation = await this.validateTree(row.head_commit, { nonMain: row.status === 'open' });
+    } catch (e) {
+      this.log.debug({ err: e, proposal: row.proposal_id }, 'proposal validation unavailable');
     }
     return {
       proposal_id: row.proposal_id,
@@ -1016,6 +1027,7 @@ export class ConfigServiceImpl implements ConfigService {
       status: row.status,
       created_by: row.created_by,
       created_at: toIso(row.created_at),
+      session_id: row.session_id ? String(row.session_id).trim() : null,
       merged_commit: row.merged_commit ?? null,
       changes: diff.files.map((f) => ({ path: f.path, status: f.status === 'renamed' ? 'modified' : f.status })),
       diff: diff.patch,
@@ -1028,16 +1040,29 @@ export class ConfigServiceImpl implements ConfigService {
     return this.toDto(await this.row(id));
   }
 
-  async listProposals(opts: { status?: string; limit?: number } = {}): Promise<ProposalDto[]> {
+  async listProposals(opts: { status?: string; limit?: number; session_id?: string; definition?: string } = {}): Promise<ProposalDto[]> {
     const params: unknown[] = [this.teamId];
     let where = `team_id=$1`;
     if (opts.status) {
       params.push(opts.status);
       where += ` AND status=$${params.length}`;
     }
-    params.push(Math.min(Math.max(opts.limit ?? 50, 1), 500));
+    if (opts.session_id) {
+      params.push(opts.session_id);
+      where += ` AND session_id=$${params.length}`;
+    }
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
+    if (!opts.definition) {
+      params.push(limit);
+      const r = await this.db.query<ProposalRow>(`SELECT * FROM config_proposals WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`, params);
+      return Promise.all(r.rows.map((row) => this.toDto(row)));
+    }
+    // The changed paths live in git, not the row: diff a wider window, keep the proposals touching the definition.
+    params.push(500);
     const r = await this.db.query<ProposalRow>(`SELECT * FROM config_proposals WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`, params);
-    return Promise.all(r.rows.map((row) => this.toDto(row)));
+    const diffs = await Promise.all(r.rows.map((row) => this.rowDiff(row)));
+    const hits = r.rows.flatMap((row, i) => (diffs[i]?.files.some((f) => owningDefinition(f.path)?.uid === opts.definition) ? [{ row, diff: diffs[i] }] : [])).slice(0, limit);
+    return Promise.all(hits.map((h) => this.toDto(h.row, h.diff)));
   }
 
   async amendProposal(id: string, changes: FileChange[], message: string, by: Principal): Promise<ProposalDto> {

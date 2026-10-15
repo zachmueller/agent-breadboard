@@ -113,7 +113,8 @@ export interface ConfigService {
   /** Propose-review-commit: write a branch, open a proposal. */
   propose(opts: { changes: FileChange[]; message: string; by: Principal; base?: string; session_id?: string | null }): Promise<ProposalDto>;
   getProposal(id: string): Promise<ProposalDto>;
-  listProposals(opts?: { status?: string; limit?: number }): Promise<ProposalDto[]>;
+  /** `definition` keeps proposals that change files of that definition (by UID); `session_id` those a conversation opened. */
+  listProposals(opts?: { status?: string; limit?: number; session_id?: string; definition?: string }): Promise<ProposalDto[]>;
   /** Update an open proposal's branch with further changes (designer-chat revisions). */
   amendProposal(id: string, changes: FileChange[], message: string, by: Principal): Promise<ProposalDto>;
   mergeProposal(id: string, by: Principal): Promise<ProposalDto>;
@@ -641,7 +642,8 @@ export interface ConversationService {
   /** Config proposals opened in the session, oldest first. */
   proposals(sessionId: string): Promise<string[]>;
   turns(sessionId: string, by: Principal): Promise<Turn[]>;
-  list(input: { kind?: 'intake' | 'conversation'; by: Principal; limit?: number }): Promise<SessionRecord[]>;
+  /** `definition_uid`: designer chats opened on that definition; `mine`: only the caller's own. */
+  list(input: { kind?: 'intake' | 'conversation'; by: Principal; limit?: number; definition_uid?: string; mine?: boolean }): Promise<SessionRecord[]>;
   /** Draft task panel state for an intake conversation ([08] §7.1). */
   draftTask(sessionId: string): Promise<Record<string, unknown> | null>;
 }

@@ -68,7 +68,7 @@ function SubagentEditor() {
       onTab={setTab}
       defaultCommitMessage={`Update subagent ${s?.slug ?? wt.uid}`}
       history={(close) => <HistorySidebar onClose={close} renderDiff={subagentDiffRenderer} />}
-      chat={<DesignerChatPanel kind="subagent" renderDiff={subagentDiffRenderer} placeholder="Describe a change to this subagent…" />}
+      chat={<DesignerChatPanel kind="subagent" placeholder="Describe a change to this subagent…" />}
     >
       {tab === 'config' && (s ? <ConfigForm /> : <Empty title="The subagent YAML does not parse" hint={wt.parseError ?? 'Fix it in the YAML tab.'} />)}
       {tab === 'yaml' && (

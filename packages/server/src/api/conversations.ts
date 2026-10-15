@@ -50,7 +50,8 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const by = principalOf(req);
     requireScope(by, 'sessions:read');
     const q = req.query as Record<string, unknown>;
-    const items = await services.conversations.list({ kind: kindOf(strParam(q.kind), false), limit: intParam(q.limit, 50), by });
+    const mine = strParam(q.mine);
+    const items = await services.conversations.list({ kind: kindOf(strParam(q.kind), false), limit: intParam(q.limit, 50), by, definition_uid: strParam(q.definition), mine: mine === '1' || mine === 'true' });
     return { items, next_cursor: null };
   });
 

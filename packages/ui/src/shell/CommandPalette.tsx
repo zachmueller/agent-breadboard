@@ -92,6 +92,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       const maybeUid = normalizeUid(dq);
       if (isUid(maybeUid)) out.push({ id: `uid:${maybeUid}`, group: 'Go to', label: `Open node ${maybeUid}`, icon: <ArrowRight size={15} />, to: `/n/${maybeUid}` });
       if (isPrefixedId(dq, 'ses')) out.push({ id: `ses:${dq}`, group: 'Go to', label: `Open session ${dq}`, icon: <ArrowRight size={15} />, to: `/s/${dq}` });
+      if (isPrefixedId(dq, 'prp')) out.push({ id: `prp:${dq}`, group: 'Go to', label: `Review proposal ${dq}`, icon: <ArrowRight size={15} />, to: `/proposals/${dq}` });
     }
     const areas = [...NAV_AREAS.filter((a) => !a.adminOnly || isAdmin).map((a) => ({ label: a.label, to: a.to, jump: a.jump, sub: a.description })), ...EXTRA_JUMPS.map((x) => ({ label: x.label, to: x.to, jump: x.jump, sub: '' }))];
     for (const a of areas) {

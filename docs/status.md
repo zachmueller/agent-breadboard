@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-10.
+**As of:** 2026-10-14.
 **Branch:** `main`; the `cdk-aws-deploy` work was merged on 2026-10-10. The verification pass and its follow-ups start at `467a8b1` (`git log 467a8b1..HEAD`).
 **Read first when resuming:** this file, then the checklist at the end of [verification-plan.md](verification-plan.md).
 
@@ -25,7 +25,7 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 72 files, 546 passed, 4 skipped (the skips are Docker-only); 2026-10-12 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 75 files, 575 passed, 4 skipped (the skips are Docker-only); 2026-10-14 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
 | CDK template | `cd deploy/aws && npm test` | 29 passed |
@@ -73,10 +73,26 @@ Prompted by the signed-cookie edge's 15-minute sessions, which interrupt long co
 3. **Adoption instead of a suffixed duplicate.** `BREADBOARD_OIDC_ADOPT_HANDLES` (`-c oidcAdoptHandles`) lets the first OIDC or load-balancer sign-in with a listed handle become that existing user (id, admin flag, history), provided it has no subject yet and is not deactivated. This is how the trusted-proxy user carries over to the load balancer. A sign-in without a `name` claim no longer resets a user's display name.
 4. **The UI recognises a load balancer's expiry** (a non-JSON 401, or a redirect, with API fetches made with `redirect: 'manual'`) like the signed-cookie gate's HTML 403, and reloads through sign-in.
 
+## Decisions made 2026-10-14
+
+Prompted by a tool-designer chat, on an instance behind a load balancer, whose proposal the user could not find. The only review surface was a card inside the chat panel, and the panel knew its session and proposals only from this tab's `sessionStorage`. So the card was lost in another tab or browser, after "Start a new conversation", and whenever the conversation had stopped (designer chats get a $5 budget, and the tool designer runs on `large`). The proposal stayed open, unreachable from the UI. Recorded in spec [10](../specs/10-ui.md) §4 (items 6 and 7), [06](../specs/06-toolbox.md) §6 and [11](../specs/11-api-mcp.md) §3.
+
+1. **Every proposal has a review page,** `/proposals/<id>`: each changed definition in its native diff, validation, tool checks, run evals, merge / discard, and revision requests that go to the conversation that opened it (the diff refreshes when the designer amends). **Proposals** in the left rail lists them by status, with the open count. Editor headers and inventory rows carry an open-proposals badge, the Session explorer of a conversation lists its proposals, and the command palette opens a pasted `prp_` id.
+2. **The proposal card leads with Review changes.** It is placed after the designer's `propose_config_change` result, found from the transcript. A failed call shows as "No proposal was opened" with the error, so a claimed but missing proposal is visible.
+3. **The designer panel takes its state from the server.** It resumes this tab's session, else a `?chat=` link's, else the user's latest designer chat on the definition (`GET /conversations?definition=&mine=1`). An ended conversation stays readable with its cards; the next message, or a revision request on a card, starts a new conversation that can still amend the open proposal.
+4. **Tool CI runs on proposals.** `GET /config/proposals/:id/checks` runs `Toolbox.ci` (manifest, TypeScript type stripping, Python `ast.parse`) for each touched tool at the head, cached per commit. The review page and the card show it, and `propose_config_change` returns it as `tool_checks`. Type-checking and tests still do not run.
+5. **The designer pays less per turn.** `propose_config_change` no longer echoes the patch (every later turn re-sent it); it returns `review`, saying where the user reviews. The `[Open proposal]` preamble carries the diff only while the proposal is open. The three designer prompts now end a proposing reply with the id and where to review it, and never describe a change as proposed without a returned id.
+6. **Cancelling a conversation keeps its record.** The orchestrator's cancel used to replace a chat's `state_detail` (subagent, context, who started it) with the cancellation, so a cancelled designer chat could not be found or attributed. Runs still keep only their admission keys.
+
+Exercised in headless Chromium against the mock model (local PGlite server): open, amend from the review page, failing checks, a rejected proposal, merge, the list, inventory badges, the Session explorer, a reload, a fresh tab, a `?chat=` link, and an ended chat. Not yet against Bedrock or behind the load balancer.
+
+The seed prompt changes reach only new config repos. Existing instances keep their designer prompts until the three files are updated in their config repos.
+
 ## Next steps (in priority order)
 
 1. **Before inviting anyone to the pilot:** set up OIDC. The pilot's trusted proxy signs every edge user in as one admin, so it must stay single-person; widening the edge's access group first would give everyone that identity. Once the browser pass through the edge is confirmed, the bootstrap admin can go (`-c bootstrapAdmin=false`), at the cost of the SSM tunnel's token sign-in; `bootstrapAdmin=true` is the way back. `publicUrl` now points at the edge hostname. The edge's last steps are manual and outside this repo: its access group, onboarding with the internal identity gate, and the grant. After them comes a real-browser pass through the edge: the session-expiry reload, WebSocket editing, and the SSE Live indicator.
 2. **Close the verification gaps:**
+   - The proposal review flow (decisions of 2026-10-14) on Bedrock behind a load balancer, after updating that instance's three designer prompts to the seed's.
    - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).
    - The egress-relay question for Docker Desktop and for a Linux host running the server outside a container ([deploy/sandbox/README.md](../deploy/sandbox/README.md)).
