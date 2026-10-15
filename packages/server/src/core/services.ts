@@ -124,6 +124,8 @@ export interface ConfigService {
   getProposal(id: string): Promise<ProposalDto>;
   /** `definition` keeps proposals that change files of that definition (by UID); `session_id` those a conversation opened. */
   listProposals(opts?: { status?: string; limit?: number; session_id?: string; definition?: string }): Promise<ProposalDto[]>;
+  /** `listProposals` with `offset` paging and the `total` matching the filters (within the newest 500 when `definition` is set). */
+  pageProposals(opts?: { status?: string; limit?: number; offset?: number; session_id?: string; definition?: string }): Promise<{ total: number; proposals: ProposalDto[] }>;
   /** Update an open proposal's branch with further changes (designer-chat revisions). */
   amendProposal(id: string, changes: FileChange[], message: string, by: Principal): Promise<ProposalDto>;
   mergeProposal(id: string, by: Principal): Promise<ProposalDto>;

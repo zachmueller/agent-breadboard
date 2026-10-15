@@ -102,6 +102,7 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
       state: 'running',
       state_detail: { mcp: true, external: true, client: clientInfo(req.body) },
     });
+    await services.sessions.update(session.session_id, { started_at: new Date().toISOString() }).catch(() => undefined);
     const scoped: Principal = { ...principal, session_id: session.session_id, actor: { ...principal.actor, session_id: session.session_id } };
     const server = createBreadboardMcpServer(services, scoped, { external: true, session_id: session.session_id });
     let conn: McpConnection | null = null;

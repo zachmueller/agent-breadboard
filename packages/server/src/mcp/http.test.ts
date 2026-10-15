@@ -168,6 +168,7 @@ describe('Breadboard MCP over streamable HTTP', () => {
     const s = convo[0]!;
     expect(s.state).toBe('running');
     expect(s.state_detail).toMatchObject({ mcp: true, external: true });
+    expect(s.started_at).toEqual(expect.any(String));
     expect((s as any).created_by).toMatchObject({ kind: 'user', id: f.member.user_id });
     expect(invocations[0].session_id).toBe(s.session_id);
     expect(invocations[0].principal.session_id).toBe(s.session_id);

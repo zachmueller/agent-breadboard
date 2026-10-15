@@ -446,16 +446,23 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'list_proposals',
       scope: 'config:read',
-      description: 'Configuration proposals (propose-review-commit): status, message, author, base and head commits, changed files, validation and attached eval runs, without the patch. Filter by status, the conversation that opened one, or the definition it changes. Read one with `read_proposal`.',
+      description: 'Configuration proposals (propose-review-commit): status, message, author, base and head commits, changed files, validation and attached eval runs, without the patch. Filter by status, the conversation that opened one, or the definition it changes; page with `offset`. Read one with `read_proposal`.',
       input_schema: obj({
         status: { type: 'string', enum: ['open', 'merged', 'discarded'], description: 'Only this status.' },
         session_id: { type: 'string', description: 'Only proposals opened by this conversation.' },
         definition: { type: 'string', description: 'Only proposals changing this definition (UID).' },
         limit: LIMIT(200, 50, 'proposals'),
+        offset: { type: 'integer', minimum: 0, description: 'Skip this many proposals (default 0); continue from `next_offset`.' },
       }),
       handler: async (a) => {
-        const list = await d.config.listProposals({ status: a.status, session_id: a.session_id, definition: a.definition, limit: a.limit ?? 50 });
-        return { total: list.length, proposals: list.map(({ diff: _diff, ...rest }) => rest) };
+        const offset = a.offset ?? 0;
+        const { total, proposals } = await d.config.pageProposals({ status: a.status, session_id: a.session_id, definition: a.definition, limit: a.limit ?? 50, offset });
+        return {
+          total,
+          offset,
+          next_offset: offset + proposals.length < total ? offset + proposals.length : null,
+          proposals: proposals.map(({ diff: _diff, ...rest }) => rest),
+        };
       },
     },
     {

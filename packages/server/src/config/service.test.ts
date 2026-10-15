@@ -470,6 +470,19 @@ describe('ConfigService validation rules', () => {
     err(y, /yaml parse error/);
   });
 
+  it('reports an unparseable definition once, not also as vanished from the tree', async () => {
+    const r = await validate([{ path: CONFIG_PATHS.subagent(SUB_A), content: 'schema: breadboard/subagent@v1\nuid: ' + SUB_A + '\nslug: Bad Slug\ntitle: x\n' }]);
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /would disappear from the tree/.test(e))).toBe(false);
+  });
+
+  it('warns about null-valued schema keys left by an unquoted comma in a YAML flow mapping', async () => {
+    const raw = toolYaml().replace(/^output:[\s\S]*?(?=^settings:)/m, 'output:\n  type: object\n  properties:\n    sql: { type: string, description: The SQL as run (placeholders substituted, LIMIT applied) }\n    n: { type: integer, default: null }\n');
+    const r = await validate([{ path: CONFIG_PATHS.tool(TOOL_A), content: raw }]);
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([`${CONFIG_PATHS.tool(TOOL_A)}: output schema has a key with no value at 'properties.sql.LIMIT applied)'; an unquoted comma inside a YAML { ... } mapping splits the text there, so quote the value`]);
+  });
+
   it('rejects deleting a uid that is still referenced, and a uid vanishing without an explicit delete', async () => {
     const del = await validate([{ path: CONFIG_PATHS.tool(TOOL_A), content: null }]);
     err(del, /cannot delete tool 'check-citations'; still referenced by/);
@@ -500,6 +513,10 @@ describe('ConfigService proposals and commits', () => {
     expect(await repo.branchExists(p.branch)).toBe(true);
     expect(await svc.mainCommit()).toBe(before);
     expect((await svc.listProposals({ status: 'open' })).map((x) => x.proposal_id)).toContain(p.proposal_id);
+    const page = await svc.pageProposals({ limit: 1, offset: 0 });
+    expect(page.proposals).toHaveLength(1);
+    expect(page.total).toBe((await svc.listProposals({ limit: 500 })).length);
+    expect((await svc.pageProposals({ offset: page.total })).proposals).toEqual([]);
     // Branch reads work before merge ([01] §6.3 branch execution).
     expect((await svc.subagent(NEW, p.branch)).slug).toBe('critic');
     await expect(svc.subagent(NEW)).rejects.toMatchObject({ code: 'not-found' });

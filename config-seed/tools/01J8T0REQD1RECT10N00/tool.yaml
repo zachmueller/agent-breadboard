@@ -13,7 +13,7 @@ input:
   type: object
   properties:
     uid: { type: string, description: Node to tag (defaults to the ambient Task) }
-    title: { type: string, description: Short title of the item, quoted in the request }
+    title: { type: string, description: "Short title of the item, quoted in the request" }
     rationale: { type: string, description: Why the AI could not decide }
     role: { type: string, description: Review role to target (defaults to the `default_role` setting) }
     username: { type: string, description: Specific user to target instead of a role }

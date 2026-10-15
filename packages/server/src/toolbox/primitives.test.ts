@@ -610,7 +610,7 @@ describe('inspection primitives', () => {
     const config = fake<PrimitivesDeps['config']>('config', calls, {
       definition: (ref: string) => ({ uid: ref === 'lit-review' ? CIRCUIT : TOOL, kind: ref === 'lit-review' ? 'circuit' : 'subagent', path: ref === 'lit-review' ? `circuits/${CIRCUIT}/circuit.yaml` : `subagents/${TOOL}.yaml`, commit: 'c', slug: ref, title: 't', definition: {}, raw: '', validation: { ok: true, errors: [], warnings: [] }, referenced_by: [] }),
       history: (o: any) => [{ commit: 'c1', author: 'a', date: '', message: `m ${o.path ?? 'all'}` }],
-      listProposals: () => [{ proposal_id: 'prp_1', status: 'open', diff: 'PATCH', changes: [], validation: { ok: true, errors: [], warnings: [] }, eval_runs: [] }],
+      pageProposals: () => ({ total: 3, proposals: [{ proposal_id: 'prp_1', status: 'open', diff: 'PATCH', changes: [], validation: { ok: true, errors: [], warnings: [] }, eval_runs: [] }] }),
       getProposal: (id: string) => ({ proposal_id: id, head_commit: 'h', status: 'open', diff: 'p'.repeat(100), changes: [{ path: `tools/${TOOL}/tool.yaml`, status: 'modified' }], validation: { ok: true, errors: [], warnings: [] }, eval_runs: [] }),
       diff: (base: string, head: string) => ({ patch: `${base}..${head} ${'d'.repeat(100)}`, files: [{ path: 'tenets.md', status: 'modified' }] }),
     });
@@ -624,6 +624,9 @@ describe('inspection primitives', () => {
     const proposals = (await p2.call('list_proposals', { status: 'open' }, f.memberPrincipal)) as any;
     expect(proposals.proposals[0]).toMatchObject({ proposal_id: 'prp_1' });
     expect(proposals.proposals[0].diff).toBeUndefined();
+    expect(proposals).toMatchObject({ total: 3, offset: 0, next_offset: 1 });
+    expect(await p2.call('list_proposals', { offset: 2 }, f.memberPrincipal)).toMatchObject({ total: 3, offset: 2, next_offset: null });
+    expect(callsTo('config', 'pageProposals').at(-1)!.args[0]).toMatchObject({ limit: 50, offset: 2 });
     const one = (await p2.call('read_proposal', { proposal_id: 'prp_1', max_chars: 10 }, f.memberPrincipal)) as any;
     expect(one.diff).toEqual({ truncated: true, total_chars: 100, text: 'pppppppppp' });
     expect(one.tool_checks).toEqual([{ uid: TOOL, ok: false, errors: ['src/index.ts: Unexpected token'], warnings: [] }]);

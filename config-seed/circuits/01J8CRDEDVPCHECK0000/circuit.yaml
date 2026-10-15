@@ -18,7 +18,7 @@ input:
   properties:
     title: { type: string }
     body: { type: string, default: "" }
-    task_uid: { type: [string, "null"], description: Draft Task being shaped, if one exists yet }
+    task_uid: { type: [string, "null"], description: "Draft Task being shaped, if one exists yet" }
 
 exits:
   - name: duplicates-found

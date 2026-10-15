@@ -67,6 +67,26 @@ export function schemaCompileError(schema: JsonSchema): string | null {
   }
 }
 
+/** Keywords whose value is instance data rather than a subschema, so a null there is meaningful. */
+const DATA_KEYWORDS = new Set(['default', 'const', 'enum', 'examples']);
+
+/**
+ * Null-valued keys inside a schema, as dotted paths (`properties.grain.labelled inferred`). The YAML flow mapping
+ * `{ type: string, description: One, two }` parses to a description of "One" plus a stray `two: null` key, and
+ * Ajv (strict: false) compiles that without complaint, so config validation looks for them separately.
+ */
+export function schemaNullKeys(schema: unknown, path: string[] = []): string[] {
+  if (!schema || typeof schema !== 'object') return [];
+  const found: string[] = [];
+  const entries = Array.isArray(schema) ? schema.map((v, i) => [String(i), v] as const) : Object.entries(schema);
+  for (const [key, value] of entries) {
+    if (!Array.isArray(schema) && DATA_KEYWORDS.has(key) && path.at(-1) !== 'properties') continue;
+    if (value === null) found.push([...path, key].join('.'));
+    else found.push(...schemaNullKeys(value, [...path, key]));
+  }
+  return found;
+}
+
 /** Does `candidate` output (statically) satisfy `target`? v1: structural subset check on `required` + property names. */
 export function schemaRequiredSubset(candidate: JsonSchema | undefined, target: JsonSchema | undefined): string[] {
   if (!target || !candidate) return [];

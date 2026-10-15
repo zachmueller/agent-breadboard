@@ -25,6 +25,7 @@ import {
   parseConfigPath,
   parseConfigYaml,
   schemaCompileError,
+  schemaNullKeys,
   templateReferences,
   toYaml,
   zBreadboardConfig,
@@ -274,6 +275,15 @@ class Report {
   }
 }
 
+/** Compile check plus the stray null-valued keys an unquoted comma in a YAML flow mapping leaves behind. */
+function checkSchema(rep: Report, def: DefEntry, label: string, schema: Record<string, any>): void {
+  const err = schemaCompileError(schema);
+  if (err) rep.error(def.path, `${label} does not compile: ${err}`);
+  for (const key of schemaNullKeys(schema)) {
+    rep.warn(def.path, `${label} has a key with no value at '${key}'; an unquoted comma inside a YAML { ... } mapping splits the text there, so quote the value`);
+  }
+}
+
 function dedupe(xs: string[]): string[] {
   return [...new Set(xs)];
 }
@@ -394,13 +404,9 @@ function validateCircuit(model: TreeModel, def: DefEntry, c: Circuit, rep: Repor
   for (const e of c.exits) {
     if (seenExits.has(e.name)) rep.error(def.path, `duplicate declared exit '${e.name}'`);
     seenExits.add(e.name);
-    if (e.output) {
-      const err = schemaCompileError(e.output);
-      if (err) rep.error(def.path, `exit '${e.name}' output schema does not compile: ${err}`);
-    }
+    if (e.output) checkSchema(rep, def, `exit '${e.name}' output schema`, e.output);
   }
-  const inputErr = schemaCompileError(c.input);
-  if (inputErr) rep.error(def.path, `input schema does not compile: ${inputErr}`);
+  checkSchema(rep, def, 'input schema', c.input);
 
   if (!stepIds.has(c.entry)) rep.error(def.path, `entry '${c.entry}' is not a step`);
 
@@ -431,10 +437,7 @@ function validateCircuit(model: TreeModel, def: DefEntry, c: Circuit, rep: Repor
     }
 
     const output = (s as Step & { output?: Record<string, any> }).output;
-    if (output) {
-      const err = schemaCompileError(output);
-      if (err) rep.error(def.path, `step '${s.id}' output schema does not compile: ${err}`);
-    }
+    if (output) checkSchema(rep, def, `step '${s.id}' output schema`, output);
 
     if (s.kind === 'llm') {
       if (!s.prompt && s.prompt_inline === undefined) rep.error(def.path, `llm step '${s.id}' needs 'prompt' (file) or 'prompt_inline'`);
@@ -534,12 +537,8 @@ function validateTool(model: TreeModel, def: DefEntry, t: Tool, rep: Report): vo
     if (t.language === 'typescript' && !['ts', 'js', 'mts', 'mjs'].includes(ext ?? '')) rep.warn(def.path, `entrypoint '${t.entrypoint}' does not look like a TypeScript module`);
     if (t.language === 'python' && ext !== 'py') rep.warn(def.path, `entrypoint '${t.entrypoint}' does not look like a Python module`);
   }
-  const inErr = schemaCompileError(t.input);
-  if (inErr) rep.error(def.path, `input schema does not compile: ${inErr}`);
-  if (t.output) {
-    const outErr = schemaCompileError(t.output);
-    if (outErr) rep.error(def.path, `output schema does not compile: ${outErr}`);
-  }
+  checkSchema(rep, def, 'input schema', t.input);
+  if (t.output) checkSchema(rep, def, 'output schema', t.output);
   for (const [name, s] of Object.entries(t.settings)) {
     if (s.default !== undefined && s.type !== 'array' && s.type !== 'object' && typeof s.default !== s.type) rep.error(def.path, `setting '${name}' default is not of type ${s.type}`);
   }
@@ -1030,6 +1029,8 @@ export class ConfigServiceImpl implements ConfigService {
     const changedPaths = new Map(changes.map((c) => [normalizePath(c.path), c.content] as const));
     for (const [uid, def] of baseModel.byUid) {
       if (model.byUid.has(uid)) continue;
+      // Still at its path but unparseable: the parse errors already say why, and it has not vanished.
+      if (model.byPath.get(def.path)?.parseErrors.length) continue;
       const explicit = changedPaths.has(def.path) && changedPaths.get(def.path) === null;
       if (!explicit) {
         errors.push(`${def.path}: ${KIND_LABEL[def.kind]} '${uid}' would disappear from the tree without an explicit delete ([01] §6.2)`);
@@ -1149,6 +1150,10 @@ export class ConfigServiceImpl implements ConfigService {
   }
 
   async listProposals(opts: { status?: string; limit?: number; session_id?: string; definition?: string } = {}): Promise<ProposalDto[]> {
+    return (await this.pageProposals(opts)).proposals;
+  }
+
+  async pageProposals(opts: { status?: string; limit?: number; offset?: number; session_id?: string; definition?: string } = {}): Promise<{ total: number; proposals: ProposalDto[] }> {
     const params: unknown[] = [this.teamId];
     let where = `team_id=$1`;
     if (opts.status) {
@@ -1160,17 +1165,20 @@ export class ConfigServiceImpl implements ConfigService {
       where += ` AND session_id=$${params.length}`;
     }
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
+    const offset = Math.max(opts.offset ?? 0, 0);
     if (!opts.definition) {
-      params.push(limit);
-      const r = await this.db.query<ProposalRow>(`SELECT * FROM config_proposals WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`, params);
-      return Promise.all(r.rows.map((row) => this.toDto(row)));
+      const [count, r] = await Promise.all([
+        this.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM config_proposals WHERE ${where}`, params),
+        this.db.query<ProposalRow>(`SELECT * FROM config_proposals WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, limit, offset]),
+      ]);
+      return { total: count.rows[0]?.n ?? 0, proposals: await Promise.all(r.rows.map((row) => this.toDto(row))) };
     }
     // The changed paths live in git, not the row: diff a wider window, keep the proposals touching the definition.
     params.push(500);
     const r = await this.db.query<ProposalRow>(`SELECT * FROM config_proposals WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`, params);
     const diffs = await Promise.all(r.rows.map((row) => this.rowDiff(row)));
-    const hits = r.rows.flatMap((row, i) => (diffs[i]?.files.some((f) => owningDefinition(f.path)?.uid === opts.definition) ? [{ row, diff: diffs[i] }] : [])).slice(0, limit);
-    return Promise.all(hits.map((h) => this.toDto(h.row, h.diff)));
+    const hits = r.rows.flatMap((row, i) => (diffs[i]?.files.some((f) => owningDefinition(f.path)?.uid === opts.definition) ? [{ row, diff: diffs[i] }] : []));
+    return { total: hits.length, proposals: await Promise.all(hits.slice(offset, offset + limit).map((h) => this.toDto(h.row, h.diff))) };
   }
 
   async amendProposal(id: string, changes: FileChange[], message: string, by: Principal): Promise<ProposalDto> {
