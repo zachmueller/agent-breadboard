@@ -515,7 +515,7 @@ export class ConversationServiceImpl implements ConversationService {
       lines.push(`--- ${dir}${rel}${f.edited ? ' (working tree)' : ''} ---\n${f.content === null ? '(deleted in working tree)' : cap(f.content, FILE_CAP)}`);
     }
     if (dto.validation && !dto.validation.ok) lines.push(`Validation errors at ${dto.commit.slice(0, 12)}: ${dto.validation.errors.join('; ')}`);
-    if (dto.referenced_by?.length) lines.push(`Referenced by: ${dto.referenced_by.map((r) => `${r.kind} ${r.slug ?? r.uid}`).join(', ')}`);
+    if (dto.referenced_by?.length) lines.push(`Referenced by: ${dto.referenced_by.map((r) => `${r.kind} ${r.slug ?? r.path}${r.uid ? ` (${r.uid})` : ''}`).join(', ')}`);
     return lines.join('\n');
   }
 }

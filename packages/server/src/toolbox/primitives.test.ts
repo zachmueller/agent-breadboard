@@ -108,7 +108,15 @@ function build(): PrimitivesImpl {
     }),
     evals: fake('evals', calls, { recordScore: () => undefined, getFixtureOutput: () => ({ out: 1 }) }),
     config: fake('config', calls, {
-      definition: (ref: string) => ({ uid: ref, kind: ref.startsWith('01J8FQ2ZK7XW9MBT4PV') && ref !== TOOL ? 'circuit' : 'tool', path: `x/${ref}`, commit: 'c', slug: 's', title: 't', definition: {}, raw: 'raw', validation: { ok: true, errors: [], warnings: [] }, referenced_by: [] }),
+      definition: (ref: string, _at?: string, opts?: { lenient?: boolean }) => {
+        const uid = opts?.lenient && ref === 'lit-review' ? CIRCUIT : ref;
+        return { uid, kind: uid.startsWith('01J8FQ2ZK7XW9MBT4PV') && uid !== TOOL ? 'circuit' : 'tool', path: `x/${uid}`, commit: 'c', slug: 's', title: 't', definition: {}, raw: 'raw', validation: { ok: true, errors: [], warnings: [] }, referenced_by: [] };
+      },
+      search: () => [
+        { uid: CIRCUIT, kind: 'circuit', slug: 'lit-review', title: 'Literature review', path: `circuits/${CIRCUIT}/circuit.yaml` },
+        { uid: TOOL, kind: 'tool', slug: 'check-citations', title: 'Citation checker', path: `tools/${TOOL}/tool.yaml` },
+        { uid: null, kind: 'presets', slug: null, title: null, path: 'presets/models.yaml' },
+      ],
       rubric: () => ({ dimensions: [] }),
       tool: (uid: string) =>
         uid === MODEL_TOOL
@@ -162,7 +170,7 @@ describe('primitives catalog', () => {
   });
 
   it('covers the [11] §4 MCP core catalog', () => {
-    const mcpCatalog = ['create_task', 'find_similar_tasks', 'create_artifact', 'update_artifact', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input', 'query_knowledge', 'read_note', 'propose_note_edit', 'run_circuit', 'get_session_summary', 'record_score', 'get_rubric', 'propose_config_change', 'read_config', 'validate_config', 'get_fixture_output'];
+    const mcpCatalog = ['create_task', 'find_similar_tasks', 'create_artifact', 'update_artifact', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input', 'query_knowledge', 'read_note', 'propose_note_edit', 'run_circuit', 'get_session_summary', 'record_score', 'get_rubric', 'propose_config_change', 'read_config', 'search_config', 'validate_config', 'get_fixture_output'];
     for (const n of mcpCatalog) expect(prims.names).toContain(n);
   });
 
@@ -343,6 +351,28 @@ describe('broker_fetch, run_tool, config', () => {
     expect(await codeOf(prims.call('read_config', { ref: CIRCUIT }, p))).toBe('grant-denied');
     expect(await codeOf(prims.call('read_config', { ref: OTHER_CIRCUIT }, p))).toBe('ok');
     expect(await codeOf(prims.call('read_config', { ref: TOOL }, p))).toBe('ok');
+    // Looked up leniently (slugs too); a circuit reached by slug still needs the grant.
+    expect(await codeOf(prims.call('read_config', { ref: 'lit-review' }, p))).toBe('grant-denied');
+    expect(callsTo('config', 'definition').at(-1)!.args).toEqual(['lit-review', undefined, { lenient: true }]);
+    const granted = subagentPrincipal(f, grants({ primitives: ['read_config'], read: [CIRCUIT] }));
+    expect(await prims.call('read_config', { ref: 'lit-review' }, granted)).toMatchObject({ uid: CIRCUIT, kind: 'circuit' });
+  });
+
+  it('search_config: metadata of every kind, filtered and capped, with no circuit grant needed', async () => {
+    const p = subagentPrincipal(f, grants({ primitives: ['search_config'] }));
+    const all = (await prims.call('search_config', {}, p)) as any;
+    expect(all.total).toBe(3);
+    expect(all.entries.map((e: any) => e.uid)).toEqual([CIRCUIT, TOOL, null]);
+    expect(callsTo('config', 'search').at(-1)!.args[0]).toBe('');
+    expect(await prims.call('search_config', { q: 'cit', kind: 'tool', limit: 1 }, p)).toEqual({
+      total: 1,
+      entries: [{ uid: TOOL, kind: 'tool', slug: 'check-citations', title: 'Citation checker', path: `tools/${TOOL}/tool.yaml` }],
+    });
+    expect(callsTo('config', 'search').at(-1)!.args[0]).toBe('cit');
+    expect(((await prims.call('search_config', { limit: 2 }, p)) as any).entries).toHaveLength(2);
+    expect(await codeOf(prims.call('search_config', { kind: 'rubric' }, p))).toBe('validation-failed');
+    expect(await codeOf(prims.call('search_config', { limit: 0 }, p))).toBe('validation-failed');
+    expect(await codeOf(prims.call('search_config', {}, subagentPrincipal(f, grants({ primitives: ['read_config'] }))))).toBe('grant-denied');
   });
 
   it('propose_config_change opens or amends a proposal with the session id', async () => {

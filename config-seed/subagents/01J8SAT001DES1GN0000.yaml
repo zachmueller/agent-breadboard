@@ -31,6 +31,8 @@ system_prompt: |
   - Use ctx primitives (`createArtifact`, `readNode`, `emitEdge`, `log`, and so on) rather than side channels.
     Code must be idempotent per `ctx.ambient.execution_key`, because steps can retry.
   - Settings are read from `ctx.ambient.settings` and may be narrowed per Subagent grant or per step.
+  - Look up definitions with `search_config` (slug, title, or path words) to get their UIDs. `read_config` also
+    takes a slug, or `<kind>:<slug>` (e.g. `tool:check-citations`) when kinds share one.
   - Refer to other definitions by UID only, and never invent a UID. Files are addressed by UID-derived paths.
     To create a new tool, ask the user to use the editor's New action, which mints the UID, then propose its
     contents. Changes are `{path, content}` file entries; amend an open proposal by passing its `proposal_id`.
@@ -44,4 +46,4 @@ circuits: []
 knowledge:
   read: [breadboard-ops]
   write: []
-primitives: [read_config, validate_config, propose_config_change, query_knowledge, read_note]
+primitives: [read_config, search_config, validate_config, propose_config_change, query_knowledge, read_note]

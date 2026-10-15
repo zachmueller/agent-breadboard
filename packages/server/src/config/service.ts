@@ -45,7 +45,7 @@ import {
 import type { Db } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import type { Principal } from '../core/principal.js';
-import type { CommitInfo, ConfigRepo, ConfigService, EventBus, FileChange, GitAuthor, LoadedCircuit, LoadedTool, ValidationReport } from '../core/services.js';
+import type { CommitInfo, ConfigRepo, ConfigService, DefinitionLookupOptions, EventBus, FileChange, GitAuthor, LoadedCircuit, LoadedTool, ValidationReport } from '../core/services.js';
 import { DEFAULT_BRANCH, normalizePath } from './repo.js';
 
 const MAIN_TTL_MS = 5_000;
@@ -591,6 +591,125 @@ function cell(s: string): string {
 }
 
 // -----------------------------------------------------------------------------------------------
+// Listing and lookup
+// -----------------------------------------------------------------------------------------------
+
+type UidKind = 'circuit' | 'subagent' | 'tool' | 'mcp';
+const TREE_ORDER: ConfigKind[] = ['breadboard', 'tenets', 'presets', 'circuit', 'subagent', 'tool', 'mcp'];
+const KIND_OF_DIR: Record<string, UidKind> = { circuits: 'circuit', subagents: 'subagent', tools: 'tool', mcp: 'mcp' };
+const MAX_CANDIDATES = 10;
+const MAX_SUGGESTIONS = 5;
+
+function entryOf(def: DefEntry): ConfigTreeEntry {
+  return { uid: UID_KINDS.includes(def.kind) ? def.uid : null, kind: def.kind, slug: def.slug, title: def.title, path: def.path };
+}
+
+function treeEntries(model: TreeModel): ConfigTreeEntry[] {
+  return model.defs
+    .filter((d) => TREE_ORDER.includes(d.kind))
+    .sort((a, b) => TREE_ORDER.indexOf(a.kind) - TREE_ORDER.indexOf(b.kind) || (a.slug ?? '').localeCompare(b.slug ?? '') || a.path.localeCompare(b.path))
+    .map(entryOf);
+}
+
+/** Rank of `e` for a lowercase `needle`: 0 exact slug or UID … 4 path or kind; -1 when it does not match. */
+function searchScore(e: ConfigTreeEntry, needle: string): number {
+  const slug = (e.slug ?? '').toLowerCase();
+  const title = (e.title ?? '').toLowerCase();
+  if (slug === needle || e.uid === needle.toUpperCase()) return 0;
+  if (slug.startsWith(needle)) return 1;
+  if (title.startsWith(needle)) return 2;
+  if (slug.includes(needle) || title.includes(needle)) return 3;
+  if (e.path.toLowerCase().includes(needle) || e.kind.includes(needle)) return 4;
+  return -1;
+}
+
+/** The forms every caller may use: a UID, a singleton name, or a repo path (a sub-file resolves to its definition). */
+function strictLookup(model: TreeModel, key: string): DefEntry | undefined {
+  if (isUid(key)) return model.byUid.get(key) ?? model.defs.find((d) => d.uid === key && UID_KINDS.includes(d.kind));
+  if (SINGLETONS.includes(key as ConfigKind)) return model.byPath.get(definitionPath(key as ConfigKind));
+  const p = normalizePath(key);
+  let def = model.byPath.get(p);
+  if (!def) {
+    const parsedPath = parseConfigPath(p);
+    if (parsedPath?.uid) def = model.byPath.get(definitionPath(parsedPath.kind, parsedPath.uid));
+  }
+  if (!def) {
+    // A definition's directory or extensionless name (`tools/<UID>`, `subagents/<UID>`), as agents often write it.
+    const m = /^(tools|circuits|subagents|mcp)\/([0-9A-HJKMNP-TV-Z]{20})(?:\.yaml)?\/?$/.exec(p);
+    const kind = m && KIND_OF_DIR[m[1]!];
+    if (m && kind) def = model.byPath.get(definitionPath(kind, m[2]!));
+  }
+  return def;
+}
+
+/** A slug as agents write it: bare, `<kind>:<slug>`, or in place of the UID in a definition path (any file under it). */
+function slugRef(p: string): { kind: UidKind | null; slug: string } | null {
+  const qualified = /^(circuit|subagent|tool|mcp):(.+)$/i.exec(p);
+  if (qualified) return { kind: qualified[1]!.toLowerCase() as UidKind, slug: qualified[2]!.trim() };
+  const inPath = /^(circuits?|subagents?|tools?|mcp)\/([^/]+?)(?:\.ya?ml)?(?:\/.*)?$/i.exec(p);
+  if (inPath) return { kind: inPath[1]!.toLowerCase().replace(/s$/, '') as UidKind, slug: inPath[2]! };
+  return /^[a-z0-9][a-z0-9-]*$/i.test(p) ? { kind: null, slug: p } : null;
+}
+
+/** Entries resembling `needle` (whole, or any word of 3+ characters), best first; another kind ranks one tier lower. */
+function nearMatches(entries: ConfigTreeEntry[], needle: string, kind: ConfigKind | null): ConfigTreeEntry[] {
+  const whole = needle.trim().toLowerCase();
+  const words = whole.split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && w !== whole);
+  return entries
+    .map((e) => {
+      // A single word matching only a path or kind would list every definition of that kind.
+      const scores = [searchScore(e, whole), ...words.map((w) => searchScore(e, w)).filter((s) => s < 4)].filter((s) => s >= 0);
+      return { e, s: scores.length ? Math.min(...scores) + (kind && e.kind !== kind ? 1 : 0) : -1 };
+    })
+    .filter((x) => x.s >= 0)
+    .sort((a, b) => a.s - b.s)
+    .map((x) => x.e);
+}
+
+function entryLabel(e: ConfigTreeEntry): string {
+  return `${e.kind} ${e.slug ?? e.path}${e.uid ? ` (${e.uid})` : ''}`;
+}
+
+function clip(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/**
+ * `read_config`'s lookup after the strict forms miss: a leading `config/` (the specs draw the repo root that way,
+ * [01] §6.1), then a slug. Throws `validation-failed` when a slug names several definitions and `not-found` with the
+ * closest definitions otherwise; the message carries everything, since a model sees only code and message.
+ */
+function lenientLookup(model: TreeModel, key: string, commit: string): DefEntry {
+  let p = normalizePath(key);
+  if (/^config\//i.test(p)) {
+    p = p.slice('config/'.length);
+    const def = strictLookup(model, p);
+    if (def) return def;
+  }
+  const ref = slugRef(p);
+  if (ref && isUid(ref.slug)) {
+    const def = model.byUid.get(ref.slug);
+    if (def && (!ref.kind || def.kind === ref.kind)) return def;
+  } else if (ref) {
+    const slug = ref.slug.toLowerCase();
+    const hits = [...model.byUid.values()].filter((d) => d.slug?.toLowerCase() === slug && (!ref.kind || d.kind === ref.kind));
+    if (hits.length === 1) return hits[0]!;
+    if (hits.length > 1) {
+      const candidates = hits.map(entryOf);
+      const qualify = new Set(hits.map((d) => d.kind)).size > 1 ? `, or <kind>:<slug> (e.g. ${hits[0]!.kind}:${hits[0]!.slug})` : '';
+      throw new BreadboardError(
+        'validation-failed',
+        `'${clip(key, 200)}' matches more than one definition: ${candidates.slice(0, MAX_CANDIDATES).map(entryLabel).join(', ')}. Pass the UID${qualify}.`,
+        { candidates },
+      );
+    }
+  }
+  const suggestions = nearMatches(treeEntries(model), ref?.slug ?? p, ref?.kind ?? null).slice(0, MAX_SUGGESTIONS);
+  const near = suggestions.length ? `Closest: ${suggestions.map((e) => `${entryLabel(e)}${e.title ? ` "${clip(e.title, 60)}"` : ''}`).join('; ')}.` : 'Nothing similar.';
+  throw new BreadboardError('not-found', `no definition '${clip(key, 200)}' at ${commit.slice(0, 12)}. ${near} Find definitions with search_config.`, { suggestions });
+}
+
+// -----------------------------------------------------------------------------------------------
 // Service
 // -----------------------------------------------------------------------------------------------
 
@@ -781,35 +900,16 @@ export class ConfigServiceImpl implements ConfigService {
 
   // --- listing ----------------------------------------------------------------------------------
 
-  private entryOf(def: DefEntry): ConfigTreeEntry {
-    return { uid: UID_KINDS.includes(def.kind) ? def.uid : null, kind: def.kind, slug: def.slug, title: def.title, path: def.path };
-  }
-
   async tree(ref?: string): Promise<ConfigTreeEntry[]> {
-    const model = await this.model(await this.resolveRef(ref));
-    const order: ConfigKind[] = ['breadboard', 'tenets', 'presets', 'circuit', 'subagent', 'tool', 'mcp'];
-    return model.defs
-      .filter((d) => order.includes(d.kind))
-      .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || (a.slug ?? '').localeCompare(b.slug ?? '') || a.path.localeCompare(b.path))
-      .map((d) => this.entryOf(d));
+    return treeEntries(await this.model(await this.resolveRef(ref)));
   }
 
   async search(q: string, ref?: string): Promise<ConfigTreeEntry[]> {
     const needle = q.trim().toLowerCase();
     const all = await this.tree(ref);
     if (!needle) return all;
-    const score = (e: ConfigTreeEntry): number => {
-      const slug = (e.slug ?? '').toLowerCase();
-      const title = (e.title ?? '').toLowerCase();
-      if (slug === needle || e.uid === needle.toUpperCase()) return 0;
-      if (slug.startsWith(needle)) return 1;
-      if (title.toLowerCase().startsWith(needle)) return 2;
-      if (slug.includes(needle) || title.includes(needle)) return 3;
-      if (e.path.toLowerCase().includes(needle) || e.kind.includes(needle)) return 4;
-      return -1;
-    };
     return all
-      .map((e) => ({ e, s: score(e) }))
+      .map((e) => ({ e, s: searchScore(e, needle) }))
       .filter((x) => x.s >= 0)
       .sort((a, b) => a.s - b.s)
       .map((x) => x.e);
@@ -824,32 +924,17 @@ export class ConfigServiceImpl implements ConfigService {
       // A circuit's own rubric/fixtures name it by construction; that is not a backlink.
       if ((r.from.kind === 'rubric' || r.from.kind === 'fixtures') && r.from.uid === uid) continue;
       seen.add(r.from.path);
-      out.push(this.entryOf(r.from));
+      out.push(entryOf(r.from));
     }
     return out;
   }
 
-  async definition(uidOrPath: string, ref?: string): Promise<ConfigDefinitionDto> {
+  async definition(uidOrPath: string, ref?: string, opts: DefinitionLookupOptions = {}): Promise<ConfigDefinitionDto> {
     const commit = await this.resolveRef(ref);
     const model = await this.model(commit);
-    let def: DefEntry | undefined;
     const key = uidOrPath.trim();
-    if (isUid(key)) def = model.byUid.get(key) ?? model.defs.find((d) => d.uid === key && UID_KINDS.includes(d.kind));
-    else if (SINGLETONS.includes(key as ConfigKind)) def = model.byPath.get(definitionPath(key as ConfigKind));
-    else {
-      const p = normalizePath(key);
-      def = model.byPath.get(p);
-      if (!def) {
-        const parsedPath = parseConfigPath(p);
-        if (parsedPath?.uid) def = model.byPath.get(definitionPath(parsedPath.kind, parsedPath.uid));
-      }
-      if (!def) {
-        // A definition's directory or extensionless name (`tools/<UID>`, `subagents/<UID>`), as agents often write it.
-        const m = /^(tools|circuits|subagents|mcp)\/([0-9A-HJKMNP-TV-Z]{20})(?:\.yaml)?\/?$/.exec(p);
-        const kind = m && ({ tools: 'tool', circuits: 'circuit', subagents: 'subagent', mcp: 'mcp' } as const)[m[1] as 'tools'];
-        if (m && kind) def = model.byPath.get(definitionPath(kind, m[2]!));
-      }
-    }
+    let def = strictLookup(model, key);
+    if (!def && opts.lenient) def = lenientLookup(model, key, commit);
     if (!def) throw new BreadboardError('not-found', `no definition '${uidOrPath}' at ${commit.slice(0, 12)}`);
 
     let files: Record<string, string> | undefined;

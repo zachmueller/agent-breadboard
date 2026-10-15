@@ -43,7 +43,7 @@ const PRIMITIVES = new Set([
   'create_artifact', 'update_artifact', 'read_node', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input',
   'query_knowledge', 'read_note', 'propose_note_edit', 'create_task', 'find_similar_tasks', 'run_circuit',
   'get_session_summary', 'run_tool', 'broker_fetch', 'record_score', 'get_rubric', 'get_fixture_output', 'read_config',
-  'validate_config', 'propose_config_change',
+  'search_config', 'validate_config', 'propose_config_change',
 ]);
 const AMBIENT_KEYS = new Set(['task', 'session_id', 'budget', 'artifacts']); // [03] §4: closed ambient channel
 const BUILTIN_ASSERTIONS = new Set(['assert-output-schema', 'assert-citations-exist', 'assert-exit']);

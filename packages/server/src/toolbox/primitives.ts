@@ -79,7 +79,7 @@ const STRING_ARRAY = (description: string) => ({ type: 'array', items: { type: '
 const FILE_CHANGES = {
   type: 'array',
   minItems: 1,
-  description: 'File changes relative to the config repo root. `content: null` deletes the file. Paths are UID-derived (e.g. `circuits/<UID>/circuit.yaml`).',
+  description: 'File changes relative to the config repo root (no `config/` prefix). `content: null` deletes the file. Paths are UID-derived (e.g. `circuits/<UID>/circuit.yaml`).',
   items: {
     type: 'object',
     properties: {
@@ -606,15 +606,42 @@ export class PrimitivesImpl implements Primitives {
       {
         name: 'read_config',
         scope: 'config:read',
-        description: 'Read a configuration-plane definition (circuit, subagent, tool incl. source files, MCP onboarding, presets, tenets) by UID or repo path at the current main commit. Returns the raw file text and the parsed definition. Circuits require a read or execute grant.',
-        input_schema: obj({ ref: { type: 'string', minLength: 1, description: 'Definition UID, or repo-relative path (e.g. `config/presets/models.yaml`).' } }, ['ref']),
+        description:
+          'Read a configuration-plane definition (circuit, subagent, tool incl. source files, MCP onboarding, presets, tenets) at the current main commit. Returns the raw file text and the parsed definition. A miss lists the closest definitions; find UIDs with `search_config`. Circuits require a read or execute grant.',
+        input_schema: obj(
+          {
+            ref: {
+              type: 'string',
+              minLength: 1,
+              description:
+                'A definition UID; a slug (`check-citations`, or `tool:check-citations` when kinds share a slug); `presets`, `tenets` or `breadboard`; or a repo-relative path (`presets/models.yaml`, `tools/<UID>/src/index.ts`).',
+            },
+          },
+          ['ref'],
+        ),
         handler: async (a, p) => {
-          const def = await d.config.definition(a.ref);
+          const def = await d.config.definition(a.ref, undefined, { lenient: true });
           if (def.kind === 'circuit' && p.grants && p.actor.kind === 'subagent') {
             const uid = def.uid ?? '';
             if (!p.grants.circuits.read.has(uid) && !p.grants.circuits.execute.has(uid)) throw new BreadboardError('grant-denied', `no read grant for circuit ${uid}`);
           }
           return def;
+        },
+      },
+      {
+        name: 'search_config',
+        scope: 'config:read',
+        description:
+          'Find configuration-plane definitions at the current main commit by slug, title, UID, or path words, best match first; an empty `q` lists them all. Returns metadata only (uid, kind, slug, title, path): use it to get the UID that references need, then `read_config` for the content.',
+        input_schema: obj({
+          q: { type: 'string', description: 'Search text (default: everything).' },
+          kind: { type: 'string', enum: ['circuit', 'subagent', 'tool', 'mcp', 'presets', 'tenets', 'breadboard'], description: 'Only definitions of this kind.' },
+          limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Max entries (default 25).' },
+        }),
+        handler: async (a) => {
+          const all = await d.config.search(a.q ?? '');
+          const hits = a.kind ? all.filter((e) => e.kind === a.kind) : all;
+          return { total: hits.length, entries: hits.slice(0, a.limit ?? 25).map(({ uid, kind, slug, title, path }) => ({ uid, kind, slug, title, path })) };
         },
       },
       {

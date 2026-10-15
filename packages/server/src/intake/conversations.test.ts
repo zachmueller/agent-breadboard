@@ -48,7 +48,10 @@ describe('ConversationService', () => {
           raw: 'title: Research\nsteps: [gather]\n',
           files: { 'prompts/gather.md': 'ORIGINAL PROMPT', 'prompts/write.md': 'WRITE PROMPT' },
           validation: { ok: true, errors: [], warnings: [] },
-          referenced_by: [],
+          referenced_by: [
+            { uid: SHAPER, kind: 'subagent', slug: 'shaper', title: 'Shaper', path: `subagents/${SHAPER}.yaml` },
+            { uid: null, kind: 'breadboard', slug: null, title: null, path: 'breadboard.yaml' },
+          ],
         };
       },
       getProposal: async (id: string) => ({ proposal_id: id, branch: 'proposals/x', status: proposalStatus, message: 'Tighten gather', changes: [{ path: `circuits/${CIRC}/prompts/gather.md`, status: 'modified' }], diff: '-old\n+new' }),
@@ -142,6 +145,7 @@ describe('ConversationService', () => {
     expect([...(subagents.calls[0]!.principal.grants!.circuits.read as Set<string>)].sort()).toEqual([CIRC, SUB_CIRC].sort());
     const pre = textOf(subagents.calls[0]!.messages[0]!);
     expect(pre).toContain(`[Open definition] circuit Research (uid ${CIRC}`);
+    expect(pre).toContain(`Referenced by: subagent shaper (${SHAPER}), breadboard breadboard.yaml`);
     expect(pre).toContain('title: Research\nsteps: [gather]');
     expect(pre).toContain('EDITED PROMPT (unsaved)');
     expect(pre).not.toContain('ORIGINAL PROMPT');

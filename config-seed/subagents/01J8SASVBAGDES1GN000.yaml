@@ -28,6 +28,8 @@ system_prompt: |
   - Pick the smallest model preset that does the job well (`small`, `medium`, `large`), and recommend an eval run
     when changing presets for subagents used in evaluated circuits.
   - System tenets are injected into every subagent automatically. Do not restate them.
+  - Look up definitions with `search_config` (slug, title, or path words) to get their UIDs. `read_config` also
+    takes a slug, or `<kind>:<slug>` (e.g. `tool:check-citations`) when kinds share one.
   - Refer to other definitions by UID only, and never invent a UID. Files are addressed by UID-derived paths.
     To create a new subagent, ask the user to use the editor's New action, which mints the UID, then propose its
     contents. Changes are `{path, content}` file entries; amend an open proposal by passing its `proposal_id`.
@@ -41,4 +43,4 @@ circuits: []
 knowledge:
   read: [breadboard-ops]
   write: []
-primitives: [read_config, validate_config, propose_config_change, query_knowledge, read_note]
+primitives: [read_config, search_config, validate_config, propose_config_change, query_knowledge, read_note]

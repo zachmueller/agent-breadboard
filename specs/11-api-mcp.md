@@ -119,7 +119,7 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 | `query_knowledge`, `read_note`, `propose_note_edit` | Knowledge incl. the reconcile path ([07](07-knowledge.md) §5) |
 | `run_circuit`, `get_session_summary` | Session composition (grant-gated) |
 | `record_score`, `get_rubric` | Evals MCP ([04](04-evals.md) §5) |
-| `propose_config_change`, `read_config`, `validate_config` | Designer chats / meta-operation |
+| `propose_config_change`, `read_config`, `search_config`, `validate_config` | Designer chats / meta-operation (lookup by UID, slug, or path) |
 
 Plus: **tool extensions with `exposure.external_mcp: true` are appended to the external catalog** dynamically ([06](06-toolbox.md) §8) — shared team tooling usable from local harnesses without re-implementing MCP servers.
 

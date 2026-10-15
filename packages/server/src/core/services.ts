@@ -68,6 +68,15 @@ export interface ValidationReport {
   warnings: string[];
 }
 
+export interface DefinitionLookupOptions {
+  /**
+   * Also resolve what agents type: a slug (`check-citations`), `<kind>:<slug>`, a slug in place of the UID in a path
+   * (`tools/check-citations.yaml`), and paths with a leading `config/`; a miss lists the closest definitions. For
+   * `read_config` only: REST and the UI address definitions by UID or path ([01] §6.2).
+   */
+  lenient?: boolean;
+}
+
 export interface LoadedCircuit {
   uid: string;
   commit: string;
@@ -101,7 +110,7 @@ export interface ConfigService {
   /** All definitions in the tree. */
   tree(ref?: string): Promise<ConfigTreeEntry[]>;
   search(q: string, ref?: string): Promise<ConfigTreeEntry[]>;
-  definition(uidOrPath: string, ref?: string): Promise<ConfigDefinitionDto>;
+  definition(uidOrPath: string, ref?: string, opts?: DefinitionLookupOptions): Promise<ConfigDefinitionDto>;
   /** Definitions that reference `uid` (config-plane backlinks, [03] §8.2). */
   referencedBy(uid: string, ref?: string): Promise<ConfigTreeEntry[]>;
   /** Full-tree validation at a commit (schema, UID/path match, dangling refs, circuit graph rules, tenets cap…). */

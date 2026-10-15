@@ -61,6 +61,8 @@ describe('config routes', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/config/definitions/${CONFIG_PATHS.subagent(SUB)}?ref=main` })).json().uid).toBe(SUB);
     expect((await app.inject({ method: 'GET', url: '/api/v1/config/definitions/tenets' })).json().raw).toBe('Be precise.\n');
     expect((await app.inject({ method: 'GET', url: `/api/v1/config/definitions/${mintUid()}` })).statusCode).toBe(404);
+    // Slugs resolve only through read_config: the UI builds file paths from the id it routes on.
+    expect((await app.inject({ method: 'GET', url: '/api/v1/config/definitions/scout' })).statusCode).toBe(404);
     const hist = await app.inject({ method: 'GET', url: '/api/v1/config/history?limit=5' });
     expect(hist.json()).toHaveLength(1);
   });

@@ -25,7 +25,7 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 75 files, 575 passed, 4 skipped (the skips are Docker-only); 2026-10-14 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 75 files, 577 passed, 4 skipped (the skips are Docker-only); 2026-10-14 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 38 files, 298 passed (at `a2e9538`, 2026-10-01; not re-run since) |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
 | CDK template | `cd deploy/aws && npm test` | 29 passed |
@@ -87,6 +87,15 @@ Prompted by a tool-designer chat, on an instance behind a load balancer, whose p
 Exercised in headless Chromium against the mock model (local PGlite server): open, amend from the review page, failing checks, a rejected proposal, merge, the list, inventory badges, the Session explorer, a reload, a fresh tab, a `?chat=` link, and an ended chat. Not yet against Bedrock or behind the load balancer.
 
 The seed prompt changes reach only new config repos. Existing instances keep their designer prompts until the three files are updated in their config repos.
+
+## Decisions made 2026-10-14 (lookup by name)
+
+Prompted by a subagent-designer chat in which every `read_config` by name failed: the tool's slug, the slug in place of the UID in its path, and the `config/presets/models.yaml` example from `read_config`'s own description. The designer had no way to list definitions, so it stopped until the user pasted the UID. The preamble's "Referenced by" line also listed slugs without UIDs, which invited the guess. Recorded in spec [01](../specs/01-data-model.md) §6.1–6.2, [06](../specs/06-toolbox.md) §3 and [11](../specs/11-api-mcp.md) §4.
+
+1. **`read_config` resolves what agents type.** Besides a UID, a singleton name or a repo path, it takes a slug (case-insensitive), `<kind>:<slug>`, a slug in place of the UID in a definition path (`tools/<slug>.yaml`, any file under it), and a leading `config/`, the way the specs draw the repo root. A slug that names several definitions is `validation-failed`, listing each with its UID and the `<kind>:<slug>` form. A miss lists the closest definitions. Everything is in the message, because a model sees only code and message. This is `ConfigService.definition(…, { lenient: true })`: references stored in config stay UID-only, and REST `/config/definitions/*` and the UI stay strict, since the UI builds file paths from the id it routes on.
+2. **`search_config`** finds definitions by slug, title, UID or path words, best match first (the scoring of `GET /config/search`), optionally by kind, and returns metadata only, so it is not grant-gated (as `read_config`'s `referenced_by` already was not). The three designers get it, and their prompts say to look UIDs up with it. The designer preamble's "Referenced by" line now carries UIDs.
+
+The designer changes reach only new config repos. On existing instances, the three designer files need the new primitive and the lookup bullet in their config repos, after the server is upgraded (an older server silently drops a primitive it does not know).
 
 ## Next steps (in priority order)
 

@@ -42,7 +42,7 @@ Any MCP client that supports Streamable HTTP will work. Point it at the endpoint
 | Knowledge | `query_knowledge`, `read_note`, `propose_note_edit` |
 | Sessions | `run_circuit`, `get_session_summary` |
 | Evals | `record_score`, `get_rubric`, `get_fixture_output` |
-| Config | `read_config`, `validate_config`, `propose_config_change` |
+| Config | `read_config` (by UID, slug, or path), `search_config`, `validate_config`, `propose_config_change` |
 
 Tool code alone can call `run_tool` and `broker_fetch`, so the MCP server never exposes them.
 

@@ -193,6 +193,8 @@ config/
     <uid>.yaml               # onboarded MCP server config (endpoint, auth capability ref, tool allowlist)
 ```
 
+`config/` stands for the repository root: repo paths are relative to it (`presets/models.yaml`, not `config/presets/models.yaml`).
+
 File and directory names for definitions are the definition's **UID** (§6.2), so the repo layout is a pure function of identity. Human readability inside the raw repo comes from `INDEX.md` and from each file's `slug`/`title` metadata; users normally see resolved display names in the UI, never raw paths.
 
 ### 6.2 Config UIDs & cross-references
@@ -202,7 +204,7 @@ Every config definition (subagent, circuit, tool, MCP onboarding, model preset) 
 - step → sub-circuit, step → subagent, subagent grants → tools/circuits/knowledge domains, `breadboard.yaml` → triage circuit, MCP onboarding → credential capabilities;
 - content-plane references to config (a Task's `target_circuit`, Session rows' circuit/subagent identifiers) likewise store the UID.
 
-Because file paths are UID-derived (§6.1), **a reference resolves by direct path construction** — `subagents/<uid>.yaml`, `circuits/<uid>/circuit.yaml`, etc. — with no lookup index to maintain. The `slug` is **display metadata only**, stored inside the YAML: renaming a definition is a metadata edit that never moves files and never breaks references. Commit validation rejects a change that would delete a UID from the tree (outside an explicit delete operation), introduce a file whose name doesn't match its `uid:` field, or duplicate a UID; duplicate slugs are rejected as a display collision.
+Because file paths are UID-derived (§6.1), **a reference resolves by direct path construction** — `subagents/<uid>.yaml`, `circuits/<uid>/circuit.yaml`, etc. — with no lookup index to maintain. The `slug` is **display metadata only**, stored inside the YAML: renaming a definition is a metadata edit that never moves files and never breaks references. Commit validation rejects a change that would delete a UID from the tree (outside an explicit delete operation), introduce a file whose name doesn't match its `uid:` field, or duplicate a UID; duplicate slugs are rejected as a display collision. For convenience, agent reads through `read_config` also resolve a slug or `<kind>:<slug>` at read time ([06](06-toolbox.md) §3); references stored in config never do, and the REST definitions endpoint and the UI address definitions by UID or path.
 
 ### 6.3 Versioning & provenance rules
 

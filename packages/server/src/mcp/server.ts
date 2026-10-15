@@ -95,7 +95,7 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
   mcp.registerResource(
     'config',
     new ResourceTemplate('breadboard://config/{uid}', { list: undefined }),
-    { title: 'Breadboard config definition', description: 'A configuration-plane definition (circuit, subagent, tool, MCP onboarding) by UID at main.', mimeType: 'application/json' },
+    { title: 'Breadboard config definition', description: 'A configuration-plane definition (circuit, subagent, tool, MCP onboarding) by UID or slug at main.', mimeType: 'application/json' },
     async (uri, vars) => {
       const def = await services.primitives.call('read_config', { ref: String(vars.uid) }, principal, { session_id: opts.session_id });
       return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(def) }] };

@@ -100,7 +100,8 @@ export interface BreadboardContext {
   getRubric(circuit_uid: string): Promise<unknown>;
 
   // Config
-  readConfig(uid_or_path: string): Promise<unknown>;
+  /** `ref`: a UID, a slug (or `<kind>:<slug>`), `presets` / `tenets` / `breadboard`, or a repo-relative path. */
+  readConfig(ref: string): Promise<unknown>;
 }
 
 export interface ToolHandler<I = any, O = any> {

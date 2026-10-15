@@ -106,8 +106,8 @@ function subagentYaml(uid: string, slug: string, extra: Record<string, unknown> 
   return toYaml({ schema: SCHEMA_TAGS.subagent, uid, slug, title: slug, model_preset: 'medium', system_prompt: `You are ${slug}.`, ...extra });
 }
 
-function toolYaml(uid = TOOL_A): string {
-  return toYaml({ schema: SCHEMA_TAGS.tool, uid, slug: 'check-citations', title: 'Citation checker', language: 'typescript', entrypoint: 'src/index.ts', input: { type: 'object' }, output: { type: 'object', properties: { ok: { type: 'boolean' } } }, settings: { strict: { type: 'boolean', default: false, hidden: true } } });
+function toolYaml(uid = TOOL_A, slug = 'check-citations'): string {
+  return toYaml({ schema: SCHEMA_TAGS.tool, uid, slug, title: 'Citation checker', language: 'typescript', entrypoint: 'src/index.ts', input: { type: 'object' }, output: { type: 'object', properties: { ok: { type: 'boolean' } } }, settings: { strict: { type: 'boolean', default: false, hidden: true } } });
 }
 
 function fixtureFiles(): Record<string, string> {
@@ -243,6 +243,97 @@ describe('ConfigService loaders', () => {
     expect((await svc.referencedBy(SUB_B)).map((e) => e.path).sort()).toEqual([CONFIG_PATHS.circuit(CHILD), CONFIG_PATHS.circuit(CIRC), CONFIG_PATHS.rubric(CIRC)].sort());
     expect(await svc.referencedBy(MCP_A)).toHaveLength(1);
     await expect(svc.definition(mintUid())).rejects.toMatchObject({ code: 'not-found' });
+  });
+
+  it('resolves slugs, <kind>:<slug>, slug paths and a config/ prefix only when lenient; misses list near matches', async () => {
+    const L = { lenient: true };
+    const uid = async (ref: string) => (await svc.definition(ref, undefined, L)).uid;
+    const miss = async (ref: string, branch?: string) => {
+      const err = await svc.definition(ref, branch, L).then(
+        () => null,
+        (e) => e,
+      );
+      expect(err).toMatchObject({ code: 'not-found' });
+      return err as { message: string; detail: { suggestions: Array<{ uid: string | null }> } };
+    };
+
+    // Strict lookups (REST, UI) are unchanged.
+    const c12 = (await svc.mainCommit()).slice(0, 12);
+    await expect(svc.definition('lit-review')).rejects.toMatchObject({ code: 'not-found', message: `no definition 'lit-review' at ${c12}` });
+    await expect(svc.definition('config/presets/models.yaml')).rejects.toMatchObject({ code: 'not-found' });
+
+    expect(await uid('lit-review')).toBe(CIRC);
+    expect(await uid('Check-Citations')).toBe(TOOL_A);
+    expect(await uid('tool:check-citations')).toBe(TOOL_A);
+    expect(await uid(`tool:${TOOL_A}`)).toBe(TOOL_A);
+    expect(await uid('mcp:web-search')).toBe(MCP_A);
+    expect(await uid('subagent:research-writer')).toBe(SUB_B);
+    for (const ref of ['tools/check-citations', 'tools/check-citations.yaml', 'tools/check-citations/tool.yaml', 'tool/check-citations']) expect(await uid(ref)).toBe(TOOL_A);
+    const src = await svc.definition('tools/check-citations/src/index.ts', undefined, L);
+    expect([src.uid, Object.keys(src.files!)]).toEqual([TOOL_A, ['src/index.ts']]);
+    expect(await uid('circuits/polish/circuit.yaml')).toBe(CHILD);
+    expect(await uid('circuits/lit-review/prompts/gather.md')).toBe(CIRC);
+    expect(await uid('subagents/research-scout')).toBe(SUB_A);
+    expect(await uid('subagents/research-scout.yaml')).toBe(SUB_A);
+    expect(await uid('mcp/web-search.yaml')).toBe(MCP_A);
+
+    expect((await svc.definition('config/presets/models.yaml', undefined, L)).kind).toBe('presets');
+    expect((await svc.definition('config/tenets.md', undefined, L)).kind).toBe('tenets');
+    expect(await uid(`config/tools/${TOOL_A}/src/index.ts`)).toBe(TOOL_A);
+    expect(await uid('config/tools/check-citations')).toBe(TOOL_A);
+    expect(await uid(CIRC)).toBe(CIRC);
+    expect((await svc.definition('tenets', undefined, L)).kind).toBe('tenets');
+
+    expect((await miss(`circuits/${TOOL_A}`)).message).toContain(`tool check-citations (${TOOL_A})`);
+    const planner = await miss('research-planner');
+    expect(planner.message).toMatch(new RegExp(`^no definition 'research-planner' at ${c12}\\. Closest: `));
+    expect(planner.message).toContain(`subagent research-scout (${SUB_A}) "research-scout"`);
+    expect(planner.message).toContain('Find definitions with search_config.');
+    expect(planner.detail.suggestions.map((e) => e.uid)).toEqual([SUB_A, SUB_B]);
+    expect((await miss('circuit:check-citations')).detail.suggestions[0]!.uid).toBe(TOOL_A);
+    const nothing = await miss('zzz-nothing');
+    expect(nothing.message).toContain('Nothing similar.');
+    expect(nothing.message.length).toBeLessThan(1500);
+
+    // Collisions a valid tree can hold (a slug shared across kinds) and ones only a broken tree can (within a kind).
+    const branch = 'scratch/slug-lookup';
+    const TOOL_P = mintUid();
+    const TOOL_PRESETS = mintUid();
+    const SUB_DUP = mintUid();
+    await repo.commit({
+      branch,
+      base: await svc.mainCommit(),
+      message: 'slug collisions',
+      author: { name: 'Test', email: 'test@breadboard.local' },
+      changes: [
+        { path: CONFIG_PATHS.tool(TOOL_P), content: toolYaml(TOOL_P, 'polish') },
+        { path: CONFIG_PATHS.tool(TOOL_PRESETS), content: toolYaml(TOOL_PRESETS, 'presets') },
+        { path: CONFIG_PATHS.subagent(SUB_DUP), content: subagentYaml(SUB_DUP, 'research-scout') },
+      ],
+    });
+    try {
+      const at = async (ref: string) => (await svc.definition(ref, branch, L)).uid;
+      const ambiguous = await svc.definition('polish', branch, L).then(
+        () => null,
+        (e) => e,
+      );
+      expect(ambiguous).toMatchObject({ code: 'validation-failed' });
+      expect(ambiguous.message).toContain(`circuit polish (${CHILD}), tool polish (${TOOL_P})`);
+      expect(ambiguous.message).toContain('Pass the UID, or <kind>:<slug> (e.g. circuit:polish).');
+      expect(ambiguous.detail.candidates.map((e: { uid: string }) => e.uid)).toEqual([CHILD, TOOL_P]);
+      expect(await at('circuit:polish')).toBe(CHILD);
+      expect(await at('tool:polish')).toBe(TOOL_P);
+      expect(await at('tools/polish.yaml')).toBe(TOOL_P);
+      for (const ref of ['research-scout', 'subagent:research-scout']) {
+        await expect(svc.definition(ref, branch, L)).rejects.toMatchObject({ code: 'validation-failed', message: expect.stringMatching(/Pass the UID\.$/) });
+      }
+      expect((await svc.definition('presets', branch, L)).kind).toBe('presets');
+      expect(await at('tool:presets')).toBe(TOOL_PRESETS);
+      expect((await miss('polis', branch)).detail.suggestions[0]!.uid).toBe(CHILD);
+      expect((await miss('tool:polis', branch)).detail.suggestions[0]!.uid).toBe(TOOL_P);
+    } finally {
+      await repo.deleteBranch(branch);
+    }
   });
 
   it('renders INDEX.md with one table per kind', async () => {

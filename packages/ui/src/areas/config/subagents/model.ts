@@ -25,7 +25,8 @@ export const PRIMITIVES: PrimitiveInfo[] = [
   { name: 'record_score', group: 'Evals', description: "Record a rubric dimension's score (evaluator Subagents)." },
   { name: 'get_rubric', group: 'Evals', description: "Read a circuit's eval rubric." },
   { name: 'get_fixture_output', group: 'Evals', description: 'Read the output produced for a fixture in an eval run.' },
-  { name: 'read_config', group: 'Configuration', description: 'Read a configuration-plane definition by UID or path.' },
+  { name: 'read_config', group: 'Configuration', description: 'Read a configuration-plane definition by UID, slug, or path.' },
+  { name: 'search_config', group: 'Configuration', description: 'Find definitions by slug, title, UID, or path (metadata only).' },
   { name: 'validate_config', group: 'Configuration', description: 'Validate a prospective change set without committing.' },
   { name: 'propose_config_change', group: 'Configuration', description: 'Open or amend a config proposal for human review.' },
 ];
