@@ -33,7 +33,7 @@ export interface ServiceTokenRecord {
   last_used_at: string | null;
 }
 
-export const SERVICE_SCOPES = ['tasks:read', 'tasks:write', 'nodes:read', 'nodes:write', 'sessions:read', 'sessions:write', 'config:read', 'config:propose', 'config:merge', 'knowledge:read', 'knowledge:write', 'evals:read', 'evals:write', 'mcp:call', 'events:read', 'admin'] as const;
+export const SERVICE_SCOPES = ['tasks:read', 'tasks:write', 'nodes:read', 'nodes:write', 'sessions:read', 'sessions:write', 'config:read', 'config:propose', 'config:merge', 'knowledge:read', 'knowledge:write', 'evals:read', 'evals:write', 'mcp:call', 'tools:execute', 'events:read', 'admin'] as const;
 export type ServiceScope = (typeof SERVICE_SCOPES)[number];
 
 /** A member's personal access token ([12] §3): `scopes` null = the user's full access. */

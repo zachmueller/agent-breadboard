@@ -1,6 +1,7 @@
 /**
- * The Breadboard MCP server ([11] §4): the primitive catalog (filtered by the principal's grants) plus,
- * for external connections, every tool extension that opts into `exposure.external_mcp` ([06] §8).
+ * The Breadboard MCP server ([11] §4): the primitive catalog (filtered by the principal's grants and its
+ * token's scopes) plus, for external connections, every tool extension that opts into
+ * `exposure.external_mcp` ([06] §8) when the token holds `tools:execute`.
  *
  * Tools are served through low-level `tools/list` / `tools/call` handlers because primitive and tool
  * input schemas are plain JSON Schema (the high-level `registerTool` API expects zod shapes), and the
@@ -10,7 +11,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { BreadboardError, type Tool } from '@breadboard/shared';
 import type { Services } from '../core/services.js';
-import type { Principal } from '../core/principal.js';
+import { hasScope, requireScope, type Principal } from '../core/principal.js';
 
 export interface BreadboardMcpServerOptions {
   /** External connection (a user's local harness): appends `external_mcp` tool extensions. */
@@ -24,6 +25,8 @@ export interface BreadboardMcpServerOptions {
 type McpServices = Pick<Services, 'primitives' | 'toolbox' | 'sessions' | 'log'>;
 
 const MAX_LOGGED_OUTPUT_BYTES = 64 * 1024;
+/** Scope a token needs to list and call team tool extensions: a tool may write through its broker capabilities. */
+export const TOOL_EXECUTE_SCOPE = 'tools:execute';
 
 /** Sent in the `initialize` result; harnesses such as Claude Code show it to the model. */
 export const INSTRUCTIONS = [
@@ -56,7 +59,7 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
 
   mcp.server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools: Array<{ name: string; description: string; inputSchema: any }> = services.primitives.specsFor(principal).map((s) => ({ name: s.name, description: s.description, inputSchema: s.input_schema }));
-    for (const [name, tool] of await externalTools()) {
+    for (const [name, tool] of hasScope(principal, TOOL_EXECUTE_SCOPE) ? await externalTools() : []) {
       tools.push({ name, description: `${tool.title}${tool.description ? ` — ${tool.description}` : ''} (team tool extension ${tool.uid})`, inputSchema: { type: 'object', ...(tool.input as object) } });
     }
     return { tools };
@@ -73,6 +76,7 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
       if (services.primitives.names.includes(name)) {
         result = await services.primitives.call(name, args, principal, { session_id: opts.session_id, call_index: idx, depth: 0 });
       } else {
+        requireScope(principal, TOOL_EXECUTE_SCOPE);
         const tool = (await externalTools()).get(name);
         if (!tool) throw new BreadboardError('not-found', `unknown tool '${name}'`);
         const r = await services.toolbox.invoke({

@@ -8,6 +8,7 @@ import type { Principal } from '../core/principal.js';
 import type { Services } from '../core/services.js';
 import { createPrimitives } from '../toolbox/primitives.js';
 import { register, MCP_PATH } from './http.js';
+import { READ_ONLY_SCOPES } from '../identity/identity.js';
 
 const ECHO_TOOL = '01J8FQ2ZK7XW9MBT4PVE';
 
@@ -188,6 +189,28 @@ describe('Breadboard MCP over streamable HTTP', () => {
     expect(JSON.parse((who.content as any)[0].text)).toMatchObject({ user: { handle: 'member' }, token_kind: 'user' });
     await transport.terminateSession();
     await client.close();
+  });
+
+  it('a read-only token lists no write primitives and no team tools, and cannot call them', async () => {
+    const before = principal;
+    principal = { ...f.memberPrincipal, token_kind: 'personal', scopes: [...READ_ONLY_SCOPES] };
+    try {
+      const { client, transport } = await connect();
+      const names = (await client.listTools()).tools.map((t) => t.name);
+      for (const n of ['whoami', 'read_node', 'search_config', 'list_sessions']) expect(names).toContain(n);
+      for (const n of ['create_task', 'add_comment', 'propose_config_change', 'echo']) expect(names).not.toContain(n);
+      const invoked = invocations.length;
+      const echo = await client.callTool({ name: 'echo', arguments: { msg: 'hi' } });
+      expect(echo.isError).toBe(true);
+      expect(JSON.parse((echo.content as any)[0].text)).toMatchObject({ code: 'forbidden', message: "token lacks scope 'tools:execute'" });
+      expect(invocations).toHaveLength(invoked);
+      const write = await client.callTool({ name: 'create_task', arguments: { title: 'x' } });
+      expect(JSON.parse((write.content as any)[0].text)).toMatchObject({ code: 'forbidden' });
+      await transport.terminateSession();
+      await client.close();
+    } finally {
+      principal = before;
+    }
   });
 
   it('refuses edge identity: an MCP connection needs an explicit bearer token', async () => {

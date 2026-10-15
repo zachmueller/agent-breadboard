@@ -10,7 +10,7 @@ Every Breadboard runs a built-in MCP server ([11 — API & MCP](../specs/11-api-
 
 Open **Account & tokens** from the user menu (top right; also `g` `u`, or the command palette) and create a personal access token.
 
-- **Read-only** (the default) can read everything you can see and changes nothing. Use it for investigating.
+- **Read-only** (the default) can read everything you can see and changes nothing. Use it for investigating. The server lists only the tools a token's scopes allow, so a read-only connection sees no working tools and no team tool extensions.
 - **Full access** acts exactly as you, including review verdicts and configuration merges. Create one only when Claude Code should do work in your Breadboard.
 - Tokens expire (90 days by default, a year at most) and can be revoked on the same page, which takes effect at once. The secret (`bbu_…`) is shown once, together with the ready-to-paste command below.
 
@@ -104,12 +104,12 @@ Any MCP client that supports Streamable HTTP will work. Point it at the endpoint
 | Sessions | `list_sessions`, `get_session_summary`, `read_session_transcript`, `read_session_events`, `list_session_executions` |
 | Content | `search_nodes`, `inspect_node`, `read_node`, `get_review_queue`, `find_similar_tasks` |
 | Knowledge | `list_knowledge_domains`, `query_knowledge`, `read_note` |
-| Configuration | `search_config`, `read_config` (by UID, slug or path; at main or at any `commit`), `get_config_history`, `diff_config`, `list_proposals`, `read_proposal`, `validate_config` |
+| Configuration | `search_config` (by slug, title, path or description; several words rank by how many match; pages with `offset`), `read_config` (by UID, slug or path; at main or at any `commit`), `get_config_history`, `diff_config`, `list_proposals`, `read_proposal`, `validate_config` |
 | Evals | `list_eval_runs`, `read_eval_run`, `get_eval_analysis`, `get_rubric`, `get_fixture_output` |
 
 **Working tools** (a full-access token): `create_task`, `create_artifact`, `update_artifact`, `add_comment`, `emit_edge`, `tag_need_input`, `resolve_need_input`, `propose_note_edit`, `run_circuit`, `record_score`, `propose_config_change`. Tool code alone can call `run_tool`, `broker_fetch` and `model_converse`, so the MCP server never exposes them.
 
-The server also lists **team tool extensions** that opt in with `exposure.external_mcp: true` in their manifest ([06](../specs/06-toolbox.md) §8). Each one is named by its slug. If a slug matches a primitive name, the tool is listed as `tool_<slug>` instead. These tools run in the same sandbox with the same limits as they do inside Breadboard, under your user permissions. The server re-reads the list on every `tools/list`, so a newly merged tool shows up when the client next lists tools.
+The server also lists **team tool extensions** that opt in with `exposure.external_mcp: true` in their manifest ([06](../specs/06-toolbox.md) §8). Each one is named by its slug. If a slug matches a primitive name, the tool is listed as `tool_<slug>` instead. These tools run in the same sandbox with the same limits as they do inside Breadboard, under your user permissions. A tool can write through its broker capabilities, so they need a full-access token (the `tools:execute` scope): a read-only connection neither lists nor calls them. The server re-reads the list on every `tools/list`, so a newly merged tool shows up when the client next lists tools.
 
 **Resources.**
 - `breadboard://nodes/{uid}` is the head of a content node (the same data `read_node` returns).

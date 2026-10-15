@@ -53,13 +53,16 @@ export function requireAdmin(p: Principal): void {
   if (!hasAdmin(p)) throw new BreadboardError('forbidden', p.is_admin ? 'admin actions need an unscoped credential' : 'admin role required');
 }
 
-export function requireScope(p: Principal, scope: string): void {
-  if (p.scopes === null) return;
-  if (p.scopes.includes('admin') || p.scopes.includes(scope)) return;
+export function hasScope(p: Principal, scope: string): boolean {
+  if (p.scopes === null) return true;
+  if (p.scopes.includes('admin') || p.scopes.includes(scope)) return true;
   // read scopes are implied by write scopes
   const [res, verb] = scope.split(':');
-  if (verb === 'read' && p.scopes.includes(`${res}:write`)) return;
-  throw new BreadboardError('forbidden', `token lacks scope '${scope}'`);
+  return verb === 'read' && p.scopes.includes(`${res}:write`);
+}
+
+export function requireScope(p: Principal, scope: string): void {
+  if (!hasScope(p, scope)) throw new BreadboardError('forbidden', `token lacks scope '${scope}'`);
 }
 
 export function servicePrincipal(teamId: string, component: string): Principal {

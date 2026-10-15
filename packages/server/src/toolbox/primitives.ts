@@ -9,7 +9,7 @@
  */
 import { BreadboardError, validateAgainst, type JsonSchema } from '@breadboard/shared';
 import { proposalToolChecks } from './proposal-checks.js';
-import { requireScope, type Principal } from '../core/principal.js';
+import { hasScope, requireScope, type Principal } from '../core/principal.js';
 import type { ChatMessage, Primitives, SessionStore, ToolSpec } from '../core/services.js';
 import { obj, sessionVisible, STRING_ARRAY, UID, type PrimitiveCallCtx, type PrimitiveDef, type PrimitivesDeps } from './primitive-defs.js';
 import { inspectionCatalog } from './inspection.js';
@@ -79,8 +79,14 @@ export class PrimitivesImpl implements Primitives {
     return { name: d.name, description: d.description, input_schema: d.input_schema };
   }
 
+  /** What `principal` may call: allowed for its kind and grants, and within its token's scopes (a read-only token lists no writes). */
   specsFor(principal: Principal): ToolSpec[] {
-    return this.names.filter((n) => this.allowed(n, principal)).map((n) => this.spec(n));
+    return this.names
+      .filter((n) => {
+        const scope = this.defs.get(n)?.scope;
+        return this.allowed(n, principal) && (!scope || hasScope(principal, scope));
+      })
+      .map((n) => this.spec(n));
   }
 
   async call(name: string, args: unknown, principal: Principal, ctx: PrimitiveCallCtx = {}): Promise<unknown> {
@@ -600,17 +606,25 @@ export class PrimitivesImpl implements Primitives {
         name: 'search_config',
         scope: 'config:read',
         description:
-          'Find configuration-plane definitions at main (or at `commit`) by slug, title, UID, or path words, best match first; an empty `q` lists them all. Returns metadata only (uid, kind, slug, title, path): use it to get the UID that references need, then `read_config` for the content.',
+          'Find configuration-plane definitions at main (or at `commit`) by slug, title, UID, path or description, best match first: the whole query first, then definitions matching the most of its words. An empty `q` lists them all. Returns metadata only (uid, kind, slug, title, path): use it to get the UID that references need, then `read_config` for the content. Page with `offset`.',
         input_schema: obj({
-          q: { type: 'string', description: 'Search text (default: everything).' },
+          q: { type: 'string', description: 'Search text: a slug, a title, or a few words (default: everything).' },
           kind: { type: 'string', enum: ['circuit', 'subagent', 'tool', 'mcp', 'presets', 'tenets', 'breadboard'], description: 'Only definitions of this kind.' },
           limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Max entries (default 25).' },
+          offset: { type: 'integer', minimum: 0, description: 'Skip this many entries (default 0); continue from `next_offset`.' },
           commit: { type: 'string', minLength: 1, description: 'Search at this commit hash or branch instead of main.' },
         }),
         handler: async (a) => {
           const all = await d.config.search(a.q ?? '', a.commit);
           const hits = a.kind ? all.filter((e) => e.kind === a.kind) : all;
-          return { total: hits.length, entries: hits.slice(0, a.limit ?? 25).map(({ uid, kind, slug, title, path }) => ({ uid, kind, slug, title, path })) };
+          const offset = a.offset ?? 0;
+          const page = hits.slice(offset, offset + (a.limit ?? 25));
+          return {
+            total: hits.length,
+            offset,
+            next_offset: offset + page.length < hits.length ? offset + page.length : null,
+            entries: page.map(({ uid, kind, slug, title, path }) => ({ uid, kind, slug, title, path })),
+          };
         },
       },
       {

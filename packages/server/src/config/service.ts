@@ -91,6 +91,8 @@ interface DefEntry {
   parseErrors: string[];
   slug: string | null;
   title: string | null;
+  /** The definition's `description`, searched by `search` only. */
+  description: string | null;
 }
 
 interface Reference {
@@ -171,7 +173,7 @@ async function buildModel(vt: VirtualTree): Promise<TreeModel> {
     const kind = isDefinitionFile(path);
     if (!kind) continue;
     const raw = (await vt.read(path)) ?? '';
-    const entry: DefEntry = { path, kind, uid: parsedPath.uid, raw, parsed: null, parseErrors: [], slug: null, title: null };
+    const entry: DefEntry = { path, kind, uid: parsedPath.uid, raw, parsed: null, parseErrors: [], slug: null, title: null, description: null };
     if (kind === 'tenets') {
       model.tenets = raw;
       entry.parsed = raw;
@@ -182,6 +184,7 @@ async function buildModel(vt: VirtualTree): Promise<TreeModel> {
         const v = res.value as any;
         entry.slug = typeof v.slug === 'string' ? v.slug : null;
         entry.title = typeof v.title === 'string' ? v.title : null;
+        entry.description = typeof v.description === 'string' && v.description.trim() ? v.description : null;
         if (kind === 'breadboard') model.settings = v as BreadboardConfig;
         if (kind === 'presets') model.presets = v as Presets;
       } else {
@@ -604,15 +607,18 @@ function entryOf(def: DefEntry): ConfigTreeEntry {
   return { uid: UID_KINDS.includes(def.kind) ? def.uid : null, kind: def.kind, slug: def.slug, title: def.title, path: def.path };
 }
 
-function treeEntries(model: TreeModel): ConfigTreeEntry[] {
+function treeDefs(model: TreeModel): DefEntry[] {
   return model.defs
     .filter((d) => TREE_ORDER.includes(d.kind))
-    .sort((a, b) => TREE_ORDER.indexOf(a.kind) - TREE_ORDER.indexOf(b.kind) || (a.slug ?? '').localeCompare(b.slug ?? '') || a.path.localeCompare(b.path))
-    .map(entryOf);
+    .sort((a, b) => TREE_ORDER.indexOf(a.kind) - TREE_ORDER.indexOf(b.kind) || (a.slug ?? '').localeCompare(b.slug ?? '') || a.path.localeCompare(b.path));
 }
 
-/** Rank of `e` for a lowercase `needle`: 0 exact slug or UID … 4 path or kind; -1 when it does not match. */
-function searchScore(e: ConfigTreeEntry, needle: string): number {
+function treeEntries(model: TreeModel): ConfigTreeEntry[] {
+  return treeDefs(model).map(entryOf);
+}
+
+/** Rank of `e` for a lowercase `needle`: 0 exact slug or UID … 4 path or kind, 5 description (when given); -1 when it does not match. */
+function searchScore(e: ConfigTreeEntry, needle: string, description?: string | null): number {
   const slug = (e.slug ?? '').toLowerCase();
   const title = (e.title ?? '').toLowerCase();
   if (slug === needle || e.uid === needle.toUpperCase()) return 0;
@@ -620,7 +626,23 @@ function searchScore(e: ConfigTreeEntry, needle: string): number {
   if (title.startsWith(needle)) return 2;
   if (slug.includes(needle) || title.includes(needle)) return 3;
   if (e.path.toLowerCase().includes(needle) || e.kind.includes(needle)) return 4;
+  if (description?.toLowerCase().includes(needle)) return 5;
   return -1;
+}
+
+const SEARCH_STOPWORDS = new Set(['and', 'for', 'the', 'that', 'this', 'with', 'from', 'into', 'any', 'all']);
+
+/**
+ * `search`'s ranking: a whole-query match ranks by its tier; otherwise the query's words (3+ characters, no stopwords)
+ * rank by how many match, then by the best tier. A word matching only a path or kind does not count (it would list
+ * every definition of that kind). Returns null when nothing matches.
+ */
+function searchRank(def: DefEntry, needle: string, words: string[]): [number, number, number] | null {
+  const e = entryOf(def);
+  const whole = searchScore(e, needle, def.description);
+  if (whole >= 0) return [0, 0, whole];
+  const scores = words.map((w) => searchScore(e, w, def.description)).filter((s) => s >= 0 && s !== 4);
+  return scores.length ? [1, -scores.length, Math.min(...scores)] : null;
 }
 
 /** The forms every caller may use: a UID, a singleton name, or a repo path (a sub-file resolves to its definition). */
@@ -906,13 +928,14 @@ export class ConfigServiceImpl implements ConfigService {
 
   async search(q: string, ref?: string): Promise<ConfigTreeEntry[]> {
     const needle = q.trim().toLowerCase();
-    const all = await this.tree(ref);
-    if (!needle) return all;
-    return all
-      .map((e) => ({ e, s: searchScore(e, needle) }))
-      .filter((x) => x.s >= 0)
-      .sort((a, b) => a.s - b.s)
-      .map((x) => x.e);
+    const defs = treeDefs(await this.model(await this.resolveRef(ref)));
+    if (!needle) return defs.map(entryOf);
+    const words = [...new Set(needle.split(/[^a-z0-9]+/))].filter((w) => w.length >= 3 && !SEARCH_STOPWORDS.has(w));
+    return defs
+      .map((d) => ({ d, r: searchRank(d, needle, words) }))
+      .filter((x): x is { d: DefEntry; r: [number, number, number] } => x.r !== null)
+      .sort((a, b) => a.r[0] - b.r[0] || a.r[1] - b.r[1] || a.r[2] - b.r[2])
+      .map((x) => entryOf(x.d));
   }
 
   async referencedBy(uid: string, ref?: string): Promise<ConfigTreeEntry[]> {

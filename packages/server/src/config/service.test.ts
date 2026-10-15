@@ -117,7 +117,7 @@ function fixtureFiles(): Record<string, string> {
     'presets/models.yaml': toYaml({ schema: SCHEMA_TAGS.presets, presets: { small: [{ provider: 'mock', model_id: 'mock-small' }], medium: [{ provider: 'mock', model_id: 'mock-medium' }, { provider: 'bedrock', model_id: 'anthropic.claude-sonnet-5' }] } }),
     [CONFIG_PATHS.subagent(SUB_A)]: subagentYaml(SUB_A, 'research-scout', { tools: [{ tool: TOOL_A }, { mcp: MCP_A, allow: ['search'] }], knowledge: { read: ['research'], write: [] } }),
     [CONFIG_PATHS.subagent(SUB_B)]: subagentYaml(SUB_B, 'research-writer', { circuits: [{ circuit: CHILD, access: 'execute' }] }),
-    [CONFIG_PATHS.circuit(CIRC)]: circuitYaml(),
+    [CONFIG_PATHS.circuit(CIRC)]: circuitYaml({ description: 'Gathers papers on a question and writes a summary.' }),
     [CONFIG_PATHS.circuitPrompt(CIRC, 'gather')]: 'Find sources for {{input.question}}. Task {{ambient.task.uid}}.\n',
     [CONFIG_PATHS.rubric(CIRC)]: toYaml({ schema: SCHEMA_TAGS.rubric, circuit: CIRC, judge: { subagent: SUB_B, model_id: 'mock-medium', provider: 'mock' }, dimensions: [{ key: 'coverage', type: 'numeric', scale: { min: 0, max: 10 }, prompt: 'Coverage?' }, { key: 'grounded', type: 'boolean', prompt: 'Grounded?' }], aggregate: { weights: { coverage: 3, grounded: 1 } } }),
     [CONFIG_PATHS.fixtures(CIRC)]: toYaml({ schema: SCHEMA_TAGS.fixtures, circuit: CIRC, fixtures: [{ fixture_id: 'f1', title: 'basic', input: { question: 'why?' }, tags: ['smoke'] }] }),
@@ -218,6 +218,11 @@ describe('ConfigService loaders', () => {
     expect(tree.find((e) => e.slug === 'lit-review')!.uid).toBe(CIRC);
     expect((await svc.search('research')).map((e) => e.slug)).toEqual(['research-scout', 'research-writer']);
     expect((await svc.search('Citation')).map((e) => e.uid)).toEqual([TOOL_A]);
+    // Words when the whole query misses: most words matched first; descriptions count, a bare kind or path word does not.
+    expect((await svc.search('research papers summary')).map((e) => e.slug)).toEqual(['lit-review', 'research-scout', 'research-writer']);
+    expect((await svc.search('papers')).map((e) => e.slug)).toEqual(['lit-review']);
+    expect((await svc.search('web citation checker')).map((e) => e.slug)).toEqual(['check-citations', 'web-search']);
+    expect(await svc.search('tool for the lake')).toEqual([]);
 
     const def = await svc.definition(CIRC);
     expect(def.kind).toBe('circuit');

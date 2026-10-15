@@ -399,10 +399,15 @@ describe('broker_fetch, run_tool, config', () => {
     expect(callsTo('config', 'search').at(-1)!.args[0]).toBe('');
     expect(await prims.call('search_config', { q: 'cit', kind: 'tool', limit: 1 }, p)).toEqual({
       total: 1,
+      offset: 0,
+      next_offset: null,
       entries: [{ uid: TOOL, kind: 'tool', slug: 'check-citations', title: 'Citation checker', path: `tools/${TOOL}/tool.yaml` }],
     });
     expect(callsTo('config', 'search').at(-1)!.args[0]).toBe('cit');
-    expect(((await prims.call('search_config', { limit: 2 }, p)) as any).entries).toHaveLength(2);
+    // Pages with `offset` / `next_offset`, like the other list tools.
+    expect(await prims.call('search_config', { limit: 2 }, p)).toMatchObject({ total: 3, offset: 0, next_offset: 2, entries: [{ uid: CIRCUIT }, { uid: TOOL }] });
+    expect(await prims.call('search_config', { limit: 2, offset: 2 }, p)).toMatchObject({ total: 3, offset: 2, next_offset: null, entries: [{ uid: null }] });
+    expect(await prims.call('search_config', { offset: 5 }, p)).toMatchObject({ total: 3, next_offset: null, entries: [] });
     expect(await codeOf(prims.call('search_config', { kind: 'rubric' }, p))).toBe('validation-failed');
     expect(await codeOf(prims.call('search_config', { limit: 0 }, p))).toBe('validation-failed');
     expect(await codeOf(prims.call('search_config', {}, subagentPrincipal(f, grants({ primitives: ['read_config'] }))))).toBe('grant-denied');
@@ -436,6 +441,18 @@ describe('inspection primitives', () => {
     expect(await prims.call('whoami', {}, f.memberPrincipal)).toMatchObject({ user: { handle: 'member' }, roles: ['scientist'], is_admin: false, token_kind: 'user', scopes: null, read_only: false });
     expect(await prims.call('whoami', {}, readOnly())).toMatchObject({ token_kind: 'personal', read_only: true });
     expect(await prims.call('whoami', {}, { ...f.servicePrincipal, scopes: ['tasks:write'] })).toMatchObject({ user: null, read_only: false });
+  });
+
+  it('a scoped token lists only the primitives its scopes allow', async () => {
+    const listed = (p: Principal) => prims.specsFor(p).map((s) => s.name);
+    const ro = listed(readOnly());
+    expect(ro).toEqual(expect.arrayContaining(['whoami', 'search_config', 'read_config', 'read_node', 'list_sessions']));
+    for (const write of ['create_task', 'add_comment', 'create_artifact', 'propose_config_change', 'run_circuit']) expect(ro).not.toContain(write);
+    // An unscoped principal sees the writes; a write scope implies its read.
+    expect(listed(f.memberPrincipal)).toEqual(expect.arrayContaining(['create_task', 'add_comment']));
+    const writer = listed({ ...f.servicePrincipal, scopes: ['tasks:write'] });
+    expect(writer).toEqual(expect.arrayContaining(['create_task']));
+    expect(writer).not.toContain('add_comment');
   });
 
   it('list_users hides deactivated users unless asked, and carries roles', async () => {
