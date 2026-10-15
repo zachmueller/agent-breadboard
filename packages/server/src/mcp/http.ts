@@ -38,6 +38,7 @@ export interface McpHttpOptions {
 export async function register(app: FastifyInstance, services: HttpServices, opts: McpHttpOptions = {}): Promise<void> {
   const idleMs = opts.idle_timeout_ms ?? MCP_IDLE_TIMEOUT_MS;
   const connections = new Map<string, McpConnection>();
+  await closeOrphans(services);
 
   async function close(mcpSessionId: string, reason: string): Promise<void> {
     const c = connections.get(mcpSessionId);
@@ -130,6 +131,31 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
 }
 
 /** Hand the raw Node request/response to the SDK transport; Fastify has already parsed the JSON body. */
+/**
+ * Connections live in this process only, so an MCP conversation the database still shows `running` when the
+ * endpoint registers was left by an earlier process (a restart that skipped the graceful shutdown, a crash):
+ * nothing would ever close it. Other conversations (designer and intake chats) outlive restarts and are untouched.
+ */
+async function closeOrphans(services: HttpServices): Promise<void> {
+  const before = new Date().toISOString();
+  let closed = 0;
+  try {
+    let cursor: string | null = null;
+    do {
+      const page = await services.sessions.list({ kind: ['conversation'], state: ['running'], created_before: before, cursor, limit: 200 });
+      for (const s of page.items) {
+        if (s.state_detail?.mcp !== true) continue;
+        await services.sessions.update(s.session_id, { state: 'completed', ended_at: before, state_detail: { ...s.state_detail, closed_reason: 'server-restart' } });
+        closed++;
+      }
+      cursor = page.next_cursor;
+    } while (cursor);
+  } catch (err) {
+    services.log.warn({ err }, 'failed to close MCP conversations left by an earlier process');
+  }
+  if (closed) services.log.info({ closed }, 'closed MCP conversations left by an earlier process');
+}
+
 async function delegate(req: FastifyRequest, reply: FastifyReply, transport: StreamableHTTPServerTransport): Promise<void> {
   reply.hijack();
   // Carry headers set by earlier hooks (CORS) onto the raw response.

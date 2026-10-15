@@ -9,6 +9,7 @@ import type { Services } from '../core/services.js';
 import { createPrimitives } from '../toolbox/primitives.js';
 import { register, MCP_PATH } from './http.js';
 import { READ_ONLY_SCOPES } from '../identity/identity.js';
+import { createSessionStore } from '../orchestrator/session-store.js';
 
 const ECHO_TOOL = '01J8FQ2ZK7XW9MBT4PVE';
 
@@ -28,6 +29,9 @@ function memorySessions(teamId: string) {
     },
     async get(id: string) {
       return rows.get(id) ?? null;
+    },
+    async list() {
+      return { items: [], next_cursor: null };
     },
     async update(id: string, patch: any) {
       const r = { ...rows.get(id)!, ...patch };
@@ -52,6 +56,7 @@ let url: URL;
 let sessions: ReturnType<typeof memorySessions>;
 const invocations: any[] = [];
 let principal: Principal;
+let services: Services;
 
 beforeAll(async () => {
   f = await createFoundation();
@@ -95,7 +100,7 @@ beforeAll(async () => {
     connectors: () => proxy as any,
     instance: { name: 'agent-breadboard', version: 'test', db: 'pglite', sandbox: 'process', public_url: 'http://localhost:4000' },
   });
-  const services = { primitives, toolbox, sessions, log: f.log } as unknown as Services;
+  services = { primitives, toolbox, sessions, log: f.log } as unknown as Services;
 
   app = Fastify();
   app.decorateRequest('principal', null);
@@ -251,5 +256,26 @@ describe('Breadboard MCP over streamable HTTP', () => {
       principal = before;
     }
     await client.close();
+  });
+});
+
+describe('MCP conversations left by an earlier process', () => {
+  it('are closed when the endpoint registers; chats and closed sessions are untouched', async () => {
+    const store = createSessionStore({ db: f.db, team_id: f.team_id });
+    const base = { kind: 'conversation' as const, budget: { max_cost_usd: 0, max_tokens: 0, spent_usd: 0, spent_tokens: 0 }, created_by: f.memberPrincipal.actor };
+    const orphan = await store.create({ ...base, state: 'running', state_detail: { mcp: true, external: true, client: { name: 'claude-code' } } });
+    const designer = await store.create({ ...base, state: 'running', state_detail: { title: 'Designer: lit-review' } });
+    const idle = await store.create({ ...base, state: 'completed', state_detail: { mcp: true, external: true, closed_reason: 'idle' } });
+    const restarted = Fastify();
+    try {
+      await register(restarted, { ...services, sessions: store } as Services);
+      const closed = (await store.get(orphan.session_id))!;
+      expect(closed).toMatchObject({ state: 'completed', state_detail: { mcp: true, external: true, client: { name: 'claude-code' }, closed_reason: 'server-restart' } });
+      expect(closed.ended_at).not.toBeNull();
+      expect(await store.get(designer.session_id)).toMatchObject({ state: 'running', state_detail: { title: 'Designer: lit-review' } });
+      expect((await store.get(idle.session_id))!.state_detail).toMatchObject({ closed_reason: 'idle' });
+    } finally {
+      await restarted.close();
+    }
   });
 });

@@ -308,6 +308,9 @@ describe('BreadboardStack', () => {
     expect(text).toContain('/opt/aws/bin/cfn-init');
     const apply = initFiles(t)['/usr/local/bin/breadboard-apply']!;
     for (const line of ['pull "$SERVER_IMAGE"', 'docker network connect breadboard-sandbox breadboard', '--user root', '--env-file /etc/breadboard.env']) expect(apply).toContain(line);
+    // A graceful stop before the container is replaced, so the server's shutdown closes open MCP conversations.
+    expect(apply.indexOf('docker stop -t 30 breadboard')).toBeGreaterThan(-1);
+    expect(apply.indexOf('docker stop -t 30 breadboard')).toBeLessThan(apply.indexOf('docker rm -f breadboard'));
     expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(
       `SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\nPUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\nALB_AUTH_ARN=\nALB_AUTH_ISSUER=\nALB_AUTH_CLIENT_ID=\nOIDC_ADOPT_HANDLES=\n`,
     );

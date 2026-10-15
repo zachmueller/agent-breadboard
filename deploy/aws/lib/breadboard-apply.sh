@@ -51,6 +51,9 @@ if [[ "$want" == "$have" ]]; then
   echo "breadboard already runs deployment $want"
   exit 0
 fi
+# Stop first so the server shuts down gracefully (SIGTERM: it closes open MCP conversations and stops its sandboxes);
+# `rm -f` alone kills it outright.
+docker stop -t 30 breadboard 2>/dev/null || true
 docker rm -f breadboard 2>/dev/null || true
 # Root in the container: it holds the Docker socket (root-equivalent anyway) and writes the root-owned
 # /var/breadboard bind mount. Tool code runs in unprivileged sibling containers.
