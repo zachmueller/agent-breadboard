@@ -406,7 +406,7 @@ describe('broker_fetch, run_tool, config', () => {
     // The definition file itself (and a bare UID) still returns the whole definition.
     expect(await prims.call('read_config', { ref: `tools/${TOOL}/tool.yaml` }, p)).toMatchObject({ uid: TOOL, raw: 'raw', files: { 'src/index.ts': expect.any(String) } });
     expect(await prims.call('read_config', { ref: `circuits/${OTHER_CIRCUIT}/prompts/draft.md` }, p)).toMatchObject({ path: `circuits/${OTHER_CIRCUIT}/prompts/draft.md`, text: 'Draft {{input.q}}' });
-    const miss = await prims.call('read_config', { ref: `tools/${TOOL}/src/main.ts` }, p).catch((e) => e);
+    const miss = (await prims.call('read_config', { ref: `tools/${TOOL}/src/main.ts` }, p).catch((e: Error) => e)) as Error;
     expect(miss).toMatchObject({ code: 'not-found' });
     expect(miss.message).toMatch(/no file 'src\/main\.ts' in tool s at c0ffee123456; its files: src\/index\.ts, tool\.yaml/);
     // A circuit's files need the same grant as the circuit.
