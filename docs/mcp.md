@@ -4,7 +4,7 @@ Every Breadboard runs a built-in MCP server ([11 — API & MCP](../specs/11-api-
 
 - **Endpoint:** `http(s)://<breadboard-host>/api/v1/mcp`
 - **Transport:** MCP Streamable HTTP (`POST` / `GET` / `DELETE` on that one URL). There is no stdio transport; local harnesses connect over HTTP.
-- **Auth:** `Authorization: Bearer <token>` with a **personal access token** (§1). Connections are user connections: a service token is refused, and so is the identity an authenticating proxy or load balancer adds to browser requests, because an MCP client has no browser cookies.
+- **Auth:** `Authorization: Bearer <token>` with a **personal access token** (§1). Connections are user connections: a service token is refused. The identity an authenticating proxy or load balancer adds to requests is never enough on its own, because a connection must name the Breadboard credential (and so the scopes) it acts with. How to get through such an edge depends on who owns it (§3).
 
 ## 1. Get a token
 
@@ -25,13 +25,62 @@ claude mcp add --transport http breadboard https://<breadboard-host>/api/v1/mcp 
 
 `claude mcp list` shows the connection. The tools appear as `mcp__breadboard__<name>`. The server also sends short instructions with the connection (ids, where to start, how to page and read clipped values), which Claude Code shows the model.
 
-### Behind an authenticating edge
+## 3. Reaching the endpoint
 
-When the browser reaches your Breadboard through a sign-in gate (a CloudFront signed-cookie function, an Application Load Balancer that authenticates with OIDC), the gate has to let `/api/v1/mcp` through to the server without a browser sign-in; the server authenticates the bearer token itself. On a load balancer that is a listener rule for the path `/api/v1/mcp*` that forwards without the `authenticate-oidc` action; on CloudFront, a behavior for that path without the gate function. The server refuses edge identity on this path, so the pass-through can never hand out the trusted-proxy identity. Until such a rule exists, a tunnel to the host works (for the AWS reference deployment, `http://localhost:14000/api/v1/mcp` over SSM, see [status.md](status.md)).
+How a harness reaches `/api/v1/mcp` depends on what stands in front of the server and who decides its rules. In every case the server does the same thing: a personal token in `Authorization` always wins over any identity an edge adds, and edge identity alone is refused on this path, so a request that carries no valid token never opens a connection.
 
-## 3. Other harnesses
+### Self-hosted, Breadboard does the sign-in
 
-Any MCP client that supports Streamable HTTP will work. Point it at the endpoint and send the bearer header with every request. A generic JSON configuration looks like this:
+The server is reachable over HTTPS directly, or through a reverse proxy or load balancer that only terminates TLS, and Breadboard's own sign-in (OIDC or static users, [self-hosting.md](self-hosting.md)) is the authentication. Personal tokens are Breadboard's own credential for this case. Point the client at the endpoint with the bearer header, as in §2, and nothing else is needed.
+
+### Self-hosted, behind a sign-in gate you control
+
+A gate in front of the server signs browser users in: a load balancer that authenticates with OIDC, a CDN function that checks a signed cookie, an access proxy. If your own rules allow one path to be authenticated by Breadboard alone, let `/api/v1/mcp` through the gate without a browser sign-in:
+
+- **AWS Application Load Balancer:** a listener rule, ahead of the authenticating rules, for the path `/api/v1/mcp` that forwards without the `authenticate-oidc` action. Narrow it with an `http-header` condition on `Authorization` with the value `Bearer bbu_*`, so only requests carrying a personal token skip the gate.
+- **CloudFront:** a cache behavior for that path without the gate function, with caching disabled and every header forwarded.
+
+The trade-off is plain: anyone who can reach the gate can reach the MCP endpoint, which is then protected by Breadboard's tokens alone. The server never accepts the gate's identity on this path, so the pass-through cannot hand out a trusted-proxy user. **Upgrade the server before opening the path:** servers older than personal tokens accept the trusted-proxy identity there.
+
+### Enterprise or internal deployments: the gate stays closed
+
+Where an organization's single sign-on at the edge is the security boundary, its policy usually requires every path to authenticate at the gate: a declared network-access intent, a security review, a perimeter scan that expects the sign-in redirect everywhere. Do not open a path. The harness carries two credentials instead:
+
+- the **gate's session**, which proves the person to the edge, the same way their browser does;
+- the **personal token**, which tells Breadboard which user and which scopes the connection acts with.
+
+Claude Code takes both from a **headers helper**: a command it runs when it connects, and again before retrying once when the server rejects the credential. Its stdout must be a JSON object of header names to string values, and nothing else:
+
+```json
+{
+  "mcpServers": {
+    "breadboard": {
+      "type": "http",
+      "url": "https://<breadboard-host>/api/v1/mcp",
+      "headersHelper": "/absolute/path/to/breadboard-mcp-headers"
+    }
+  }
+}
+```
+
+```json
+{ "Authorization": "Bearer bbu_…", "Cookie": "AWSELBAuthSessionCookie-0=…; AWSELBAuthSessionCookie-1=…" }
+```
+
+Register the server entry, without the `mcpServers` wrapper, at user scope (`claude mcp add-json breadboard '{"type":"http","url":"…","headersHelper":"…"}' --scope user`) and check with `claude mcp list`. The helper is deployment-specific and belongs with your deployment configuration, not in this repo. It should:
+
+- **obtain the gate's session without a browser**, using the organization's single sign-on tooling to follow the gate's sign-in redirects. Start on a page path such as `/`: when API paths answer 401 instead of redirecting, the sign-in can only begin on a page. For an AWS Application Load Balancer, the session is the `AWSELBAuthSessionCookie-*` cookies, valid for the listener's session timeout. A request to `/api/v1/health` with only the cookie tells whether it is still valid;
+- **cache the session** in a file only the user can read, and sign in again before it expires;
+- **keep the personal token in the operating system's secret store**, never in the MCP configuration or a repository;
+- **print the JSON only**, with every message on stderr, and never log a token or cookie value. Call the helper by absolute path, not through a package manager that prints its own banner to stdout.
+
+### Operators with access to the host
+
+Whoever can open a tunnel to the host can skip the edge: an IAM-authenticated SSM port forward to the server port (for the AWS reference deployment, see [deploy/aws/README.md](../deploy/aws/README.md)), then `http://localhost:<port>/api/v1/mcp` with the bearer header as in §2. It suits operators of the hosting account, not a team.
+
+## 4. Other harnesses
+
+Any MCP client that supports Streamable HTTP will work. Point it at the endpoint and send the bearer header with every request (and, behind a closed gate, the gate's session as in §3). A generic JSON configuration looks like this:
 
 ```json
 {
@@ -45,7 +94,7 @@ Any MCP client that supports Streamable HTTP will work. Point it at the endpoint
 }
 ```
 
-## 4. What you get
+## 5. What you get
 
 **Inspection tools** (read-only; the core of a deep dive):
 
@@ -68,7 +117,7 @@ The server also lists **team tool extensions** that opt in with `exposure.extern
 
 **Results, errors and size.** A successful call returns one text content block containing the result as JSON. A failed call returns `isError: true` with a JSON body `{code, message, detail?}`. The `code` values are the stable Breadboard error codes, for example `validation-failed`, `grant-denied`, `forbidden` (the token lacks the scope), `not-found`, `anchor-ambiguous`, and `base-revision-too-old`. Models can use them to correct themselves. For example, after `base-revision-too-old`, call `read_note` again and retry. Long values are clipped by default: a clipped value is an object with `truncated: true`, its `total_chars`, and the kept prefix. Every tool that can return long values takes `max_chars` (0 = no clipping), and `read_session_transcript` reads one turn in full with `turn_id`. Lists page with `cursor`, `offset` or `after_seq`.
 
-## 5. Investigating a run
+## 6. Investigating a run
 
 1. `get_breadboard_overview`: what is running, queued, gated or failing, spend this hour, open proposals, what is waiting on you.
 2. `list_sessions {state: ["suspended-error"], kind: ["circuit-run"]}` (or by `circuit`, `task`, `created_by: "me"`, `created_after`) to find the session.
@@ -78,7 +127,7 @@ The server also lists **team tool extensions** that opt in with `exposure.extern
 6. `inspect_node` on the artifacts it produced (`search_nodes {session_id}` finds its scratch), `read_node` for a body.
 7. Fix the cause where it lives: the circuit, the subagent, the tool or the note. A full-access token can `propose_config_change`; a read-only one leaves that to the browser.
 
-## 6. Logging and attribution
+## 7. Logging and attribution
 
 Each MCP connection is recorded as a Breadboard Session of `kind: conversation`. The session is created when the client initializes and is marked completed when the client sends `DELETE` or the connection has been idle for 30 minutes. Each tool call adds `tool-call` and `tool-result` events to that session. Writes are attributed to **you**, through the `user` actor with the session id. Connections never write as a `service` actor. To review what a connection did, open the session in the Sessions view, or ask over MCP: `list_sessions {kind: ["conversation"], created_by: "me"}`.
 

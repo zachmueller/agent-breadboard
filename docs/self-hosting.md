@@ -75,4 +75,8 @@ Validate the runbook on a staging instance after any schema migration.
 
 ## 6. Connecting external harnesses (MCP)
 
-See [mcp.md](mcp.md): the Breadboard MCP server lives at `/api/v1/mcp` (Streamable HTTP). Members connect with a personal access token minted on their Account page (read-only by default); service tokens and edge identity are refused there. If an authenticating proxy or load balancer fronts the server, it must pass `/api/v1/mcp*` through without a browser sign-in (an ALB listener rule without `authenticate-oidc`, a CloudFront behavior without the gate function); the server authenticates the bearer token itself. No new environment variables are involved.
+See [mcp.md](mcp.md): the Breadboard MCP server lives at `/api/v1/mcp` (Streamable HTTP). Members connect with a personal access token minted on their Account page (read-only by default); service tokens are refused there, and so is an edge's identity on its own. No environment variables are involved. What to do at the edge depends on who owns it ([mcp.md](mcp.md) §3):
+
+- **Breadboard does the sign-in** (direct HTTPS, or a proxy that only terminates TLS): nothing to configure.
+- **A sign-in gate you control:** you may let `/api/v1/mcp` through without a browser sign-in (an ALB listener rule without `authenticate-oidc`, ideally only for `Authorization: Bearer bbu_*`; a CloudFront behavior without the gate function). The endpoint is then protected by Breadboard's tokens alone. Upgrade the server first: older servers accept the trusted-proxy identity on that path.
+- **An organization's gate that must stay closed** (enterprise or internal deployments): open nothing. Each member's harness sends the gate's session alongside the token, through a headers helper that lives with your deployment configuration.
