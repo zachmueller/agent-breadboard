@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-15.
+**As of:** 2026-10-16.
 **Branch:** `main`; the `cdk-aws-deploy` work was merged on 2026-10-10. The verification pass and its follow-ups start at `467a8b1` (`git log 467a8b1..HEAD`).
 **Read first when resuming:** this file, then the checklist at the end of [verification-plan.md](verification-plan.md).
 
@@ -135,6 +135,15 @@ Prompted by the question whether to integrate [Strands Harness](https://strandsa
 Exercised: unit tests (gateway mapping, pricing, runtime, conversations, store, inspection, shared turns), the root suite, and live Bedrock calls through the provider: Sonnet 5 (cache writes then ~6.5K-token reads per turn; reasoning summaries with signatures replayed in a tool loop and after a JSON round-trip, no validation errors), Haiku 4.5 (caching, no reasoning requested), and Nova Pro (caching; it rejects a cache point in a message holding tool results, so the provider leaves that one out for Nova). The Python adapter checks (`packages/server/test/spawn_harness_adapters.py`, run by `seed-tools.test.ts` when `PYTHON_BIN` has `strands-agents` and `strands-harness`) drive both adapters against a fake `ctx`. Not yet: `spawn-harness` with `strands-harness` in the Docker sandbox against Bedrock, the UI changes in a browser, and an eval comparing the two adapters.
 
 Deployed to the instance behind a load balancer the same night: server `1060930` (migration 0007 applied), and a Python sandbox image built with `--build-arg PIP_PACKAGES="strands-agents>=1.61 strands-harness==0.3.1"` (both adapters' checks pass inside it with a read-only root, no network and uid 10001). Its config repo had the seed's `spawn-harness` unchanged, so two proposals bring it up to date: the tool (which also deletes a `.pyc` the original seed committed; `.dockerignore` now keeps bytecode out of images) and the subagent and circuit designers' prompts, which now describe `effort`.
+
+## Fixed 2026-10-16: empty "running" MCP sessions
+
+The dashboard's Running tile ("Actively stepping") showed sessions with no events after a quiet night. They were MCP connections: Claude Code connects at startup (initialize and `tools/list`, about three connections per start) and often never calls a tool, and each connection was logged as a `running` conversation session at `initialize`, which stayed open until the 30-minute idle sweep. Two fixes (`448001a`):
+
+1. The MCP transport opens a connection's conversation session on its first tool call or resource read. Concurrent first calls share one session, and a connection that is closing never opens one.
+2. The Running tile counts only `circuit-run` and `eval-run` sessions (`countByState(state, kinds?)`). Open designer and intake chats inflated it too. The tile links to the Sessions list with a new "Runs (circuit + eval)" kind filter.
+
+Exercised: new transport tests (no session without a call, a shared session for concurrent first calls), store and dashboard tests on PGlite, and the root suite. Deployed as server `448001a` to the instance behind a load balancer. After the restart, the reconnecting connections that made no call left no session, and the overview showed `running: 0` while an MCP session was open.
 
 ## Next steps (in priority order)
 
