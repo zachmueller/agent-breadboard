@@ -32,16 +32,15 @@ docker run -i --rm --read-only --tmpfs /work --network none \
   -v "$PWD/my-tool:/tool:ro" breadboard-sandbox-ts:local < request.json
 ```
 
-Python tools that need third-party packages can either vendor them in the tool directory or use a derived image referenced from `sandbox.images.python`. The base image has no pip, so restore it for the install and remove it again:
+Python tools that need third-party packages can vendor them in the tool directory, or have them baked into the image with the `PIP_PACKAGES` build argument, which installs them before pip is removed. The seeded `spawn-harness` needs Strands:
 
-```dockerfile
-FROM breadboard-sandbox-py:local
-USER root
-RUN python3 -m ensurepip \
- && python3 -m pip install --no-cache-dir "strands-agents>=1.61" strands-harness==0.3.1 \
- && python3 -m pip uninstall -y pip
-USER 10001:10001
+```sh
+docker build -f deploy/sandbox/Dockerfile.py \
+  --build-arg PIP_PACKAGES="strands-agents>=1.61 strands-harness==0.3.1" \
+  -t breadboard-sandbox-py:local .
 ```
+
+A separate image works too: build it with another tag and point `sandbox.images.python` at it (or, on AWS, pass it as `sandboxImagePy`).
 
 ## Runner modes
 

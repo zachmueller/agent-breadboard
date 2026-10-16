@@ -9,8 +9,11 @@
 #   python3 -u /runtime/breadboard_runtime.py /tool
 # with the RunnerRequest on stdin. The runtime is stdlib-only. Tools that need third-party packages should
 # ship them vendored inside the tool directory, or use a derived image built FROM this one (and point
-# `sandbox.images.python` at it).
+# `sandbox.images.python` at it), or be baked in at build time through PIP_PACKAGES; spawn-harness needs
+#   --build-arg PIP_PACKAGES="strands-agents>=1.61 strands-harness==0.3.1"
 FROM python:3.12-alpine
+
+ARG PIP_PACKAGES=""
 
 LABEL org.opencontainers.image.title="breadboard-sandbox-py" \
       org.opencontainers.image.description="Agent Breadboard tool sandbox (Python)"
@@ -22,6 +25,7 @@ RUN addgroup -S -g 10001 sandbox \
  && chmod 0755 /tool /runtime \
  && chmod 1777 /work \
  && rm -rf /sbin/apk /etc/apk /lib/apk /usr/share/apk /var/cache/apk \
+ && if [ -n "$PIP_PACKAGES" ]; then python3 -m pip install --no-cache-dir $PIP_PACKAGES; fi \
  && { python3 -m pip uninstall -y pip setuptools wheel >/dev/null 2>&1 || true; }
 
 COPY packages/sandbox-runtime/python/ /runtime/
