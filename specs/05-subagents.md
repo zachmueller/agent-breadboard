@@ -32,6 +32,7 @@ system_prompt: |
   {{knowledge:01J8FQ2ZK7XW9MBT4PVN}}    # dynamic live Knowledge Note injection
 
 model_preset: medium                     # tier name; resolved via config/presets/models.yaml
+effort: high                             # optional reasoning effort: low | medium | high | xhigh | max
 
 tools:                                   # Toolbox access (default: none — explicit allow)
   - tool: 01J8TOOL0SCHOLARLY00           # tool extension UID (search-scholarly)
@@ -77,7 +78,7 @@ When a circuit LLM step (or an Intake conversation, or a designer chat panel) ru
 
 1. Resolve the Subagent config at the Session's config commit.
 2. Assemble the system prompt: **system tenets (§5) + Subagent system prompt with `{{knowledge:…}}` resolved + step context**.
-3. Resolve `model_preset` → concrete model ID via the preset's ordered fallback list (§4); record the resolved ID on every turn.
+3. Resolve `model_preset` → concrete model ID via the preset's ordered fallback list (§4); record the resolved ID on every turn. The reasoning effort is the step's `effort` ([03](03-circuits.md) §3.1), else the Subagent's, else unset (the model's own default); models that do not reason ignore it ([12](12-security-deployment.md) §7).
 4. Materialize the tool surface: granted tool extensions + granted MCP tools, with per-grant settings applied; step-level `tools_override` may narrow further ([03](03-circuits.md) §3.1).
 5. Run the conversation through the model gateway with the standard tool loop.
 
@@ -130,7 +131,7 @@ Like all configuration, Subagents can be edited by AI (e.g., a meta-operating su
 
 **In:** the `subagent@v1` schema; dynamic Knowledge Note injection; per-grant tool settings (incl. hidden enforcement); read/execute circuit grants; team-level presets with ordered fallback; tenets with size cap; inventory + editor with designer chat.
 
-**Out (future):** per-Subagent temperature/sampling profiles (v1: gateway defaults); Subagent inheritance/composition ("extends"); auto-tuning prompts from eval results; per-Subagent budget multipliers.
+**Out (future):** per-Subagent temperature/sampling profiles (v1: gateway defaults; reasoning `effort` is the one per-Subagent model setting, §2); Subagent inheritance/composition ("extends"); auto-tuning prompts from eval results; per-Subagent budget multipliers.
 
 ## 9. Resolved questions
 

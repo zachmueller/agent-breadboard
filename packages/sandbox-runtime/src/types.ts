@@ -10,11 +10,15 @@ export interface StepResult<O = unknown> {
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
-/** Chat content blocks, as the Breadboard model gateway uses them. */
+/**
+ * Chat content blocks, as the Breadboard model gateway uses them. `reasoning` blocks come back from models that think;
+ * pass them back unchanged on the next turn (their signatures are bound to the model and the conversation).
+ */
 export type ChatBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+  | { type: 'reasoning'; text: string; signature?: string; redacted?: string; model_id: string; prefix_fp?: string };
 
 export interface ConverseRequest {
   system?: string;
@@ -25,12 +29,17 @@ export interface ConverseRequest {
   model_id?: string;
   max_tokens?: number;
   temperature?: number;
+  /** Reasoning effort; ignored by models that do not reason. */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Make the model call this tool (forced where the model allows it, an instruction otherwise). */
+  force_tool?: string;
 }
 
 export interface ConverseResponse {
   message: { role: 'assistant'; content: ChatBlock[] };
   stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | 'other';
-  usage: { input_tokens: number; output_tokens: number };
+  /** `input_tokens` is the uncached input; cache counts appear when the prompt cache was used. */
+  usage: { input_tokens: number; output_tokens: number; cache_read_tokens?: number; cache_write_tokens?: number };
   model_id: string;
   cost_usd: number;
 }

@@ -137,7 +137,7 @@ function Explorer({
             { label: 'Kind', value: <Badge size="xs">{s.kind}</Badge> },
             s.circuit_uid ? { label: 'Circuit', value: <ConfigLink uid={s.circuit_uid} slug={s.circuit_slug} kind="circuit" /> } : null,
             s.task_uid ? { label: 'Task', value: <NodeChip uid={s.task_uid} type="task" maxWidth="max-w-[18rem]" /> } : null,
-            { label: 'Cost', value: <CostInline usd={s.cost_usd} includingChildren={s.cost_usd_including_children} tokensIn={s.tokens_in} tokensOut={s.tokens_out} /> },
+            { label: 'Cost', value: <CostInline usd={s.cost_usd} includingChildren={s.cost_usd_including_children} tokensIn={s.tokens_in} tokensOut={s.tokens_out} tokensCacheRead={s.tokens_cache_read} tokensCacheWrite={s.tokens_cache_write} /> },
             b && (b.max_cost_usd || b.max_tokens)
               ? { label: 'Budget', value: <BudgetMeter spent={b.spent_usd} max={b.max_cost_usd} tokens={b.spent_tokens} maxTokens={b.max_tokens} /> }
               : null,

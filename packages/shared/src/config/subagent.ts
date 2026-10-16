@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { zUid, zSlug, SCHEMA_TAGS } from './common.js';
+import { zUid, zSlug, zEffort, SCHEMA_TAGS } from './common.js';
 
 export const zToolGrant = z.object({
   tool: zUid,
@@ -26,6 +26,8 @@ export const zSubagent = z.object({
   description: z.string().default(''),
   system_prompt: z.string().default(''),
   model_preset: z.string().min(1),
+  /** Reasoning effort (low…max); unset = the model's default. A circuit LLM step's `effort` overrides it. */
+  effort: zEffort.optional(),
   tools: z.array(zSubagentToolEntry).default([]),
   circuits: z.array(zCircuitGrant).default([]),
   knowledge: z

@@ -52,7 +52,7 @@ beforeAll(async () => {
   await sessions.appendEvent(runId, 'step-started', { attempt: 1 }, 'gather');
   const base = { session_id: runId, step_id: 'gather', username: null, model_id: null, tokens_in: null, tokens_out: null, cost_usd: null };
   await sessions.recordTurn({ ...base, role: 'user', username: 'member', content: 'Find papers on CRDTs' });
-  await sessions.recordTurn({ ...base, role: 'assistant', content: [{ type: 'text', text: 'Searching. ' + 'x'.repeat(5000) }, { type: 'tool_use', id: 'tu1', name: 'search-scholarly', input: { q: 'crdt text editors' } }], model_id: 'us.anthropic.claude-sonnet-5', tokens_in: 120, tokens_out: 40, cost_usd: 0.0012, latency_ms: 850 });
+  await sessions.recordTurn({ ...base, role: 'assistant', content: [{ type: 'reasoning', text: 'Search first.', signature: 'opaque-sig', model_id: 'us.anthropic.claude-sonnet-5' }, { type: 'text', text: 'Searching. ' + 'x'.repeat(5000) }, { type: 'tool_use', id: 'tu1', name: 'search-scholarly', input: { q: 'crdt text editors' } }], model_id: 'us.anthropic.claude-sonnet-5', tokens_in: 120, tokens_out: 40, tokens_cache_read: 900, cost_usd: 0.0012, latency_ms: 850 });
   await sessions.recordTurn({ ...base, role: 'tool', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: JSON.stringify({ hits: 3 }), is_error: false }] });
   await sessions.appendEvent(runId, 'step-exited', { exit: 'found', attempt: 1 }, 'gather');
   await sessions.update(runId, { state: 'completed', ended_at: new Date().toISOString() });
@@ -72,13 +72,14 @@ describe('inspection over a real session store', () => {
     expect(r.total_turns).toBe(3);
     expect(r.turns.map((t: any) => t.role)).toEqual(['user', 'assistant', 'tool']);
     expect(r.turns[0]).toMatchObject({ step_id: 'gather', attempt: 1, username: 'member', blocks: [{ type: 'text', text: 'Find papers on CRDTs' }] });
-    expect(r.turns[1]).toMatchObject({ model_id: 'us.anthropic.claude-sonnet-5', tokens_in: 120, tokens_out: 40, cost_usd: 0.0012, latency_ms: 850 });
-    expect(r.turns[1].blocks[0]).toMatchObject({ type: 'text', truncated: true, total_chars: 5011 });
-    expect(r.turns[1].blocks[1]).toEqual({ type: 'tool_use', id: 'tu1', name: 'search-scholarly', input: { q: 'crdt text editors' } });
+    expect(r.turns[1]).toMatchObject({ model_id: 'us.anthropic.claude-sonnet-5', tokens_in: 120, tokens_out: 40, tokens_cache_read: 900, cost_usd: 0.0012, latency_ms: 850 });
+    expect(r.turns[1].blocks[0]).toEqual({ type: 'reasoning', text: 'Search first.' }); // the signature stays out
+    expect(r.turns[1].blocks[1]).toMatchObject({ type: 'text', truncated: true, total_chars: 5011 });
+    expect(r.turns[1].blocks[2]).toEqual({ type: 'tool_use', id: 'tu1', name: 'search-scholarly', input: { q: 'crdt text editors' } });
     expect(r.turns[2].blocks[0]).toEqual({ type: 'tool_result', tool_use_id: 'tu1', is_error: false, content: '{"hits":3}' });
     const full = (await prims.call('read_session_transcript', { session_id: runId, turn_id: r.turns[1].turn_id }, f.memberPrincipal)) as any;
     expect(full.turns).toHaveLength(1);
-    expect(full.turns[0].blocks[0].text).toHaveLength(5011);
+    expect(full.turns[0].blocks[1].text).toHaveLength(5011);
     expect(((await prims.call('read_session_transcript', { session_id: runId, step: 'gather#2' }, f.memberPrincipal)) as any).total_turns).toBe(0);
   });
 

@@ -43,6 +43,7 @@ import type {
   ToolSpec,
 } from '../core/services.js';
 import type { Logger } from '../core/logger.js';
+import { usageColumns } from '../gateway/pricing.js';
 import { servicePrincipal, type Principal } from '../core/principal.js';
 import type { NodeStore } from '../content/nodes.js';
 import type { EdgeStore } from '../content/edges.js';
@@ -691,8 +692,7 @@ export class OrchestratorImpl implements Orchestrator {
           username: t.username ?? null,
           content: t.content,
           model_id: t.model_id ?? null,
-          tokens_in: t.usage?.input_tokens ?? null,
-          tokens_out: t.usage?.output_tokens ?? null,
+          ...usageColumns(t.usage),
           cost_usd: t.cost_usd ?? null,
           latency_ms: t.latency_ms ?? null,
           fallback_from: t.fallback_from ?? null,
@@ -716,6 +716,7 @@ export class OrchestratorImpl implements Orchestrator {
     await record('user', rendered);
     let messages: ChatMessage[] = [{ role: 'user', content: [{ type: 'text', text: rendered }] }];
     let reasks = 0;
+    let callIndex = 0;
     for (;;) {
       const res = await this.d.subagents.runConversation({
         subagent: resolved,
@@ -730,7 +731,10 @@ export class OrchestratorImpl implements Orchestrator {
         attempt,
         hooks,
         tools_override: step.tools_override ?? null,
+        ...(step.effort ? { effort: step.effort } : {}),
+        call_index_start: callIndex,
       });
+      callIndex = res.tool_calls;
       let problem: string;
       let errors: string[] = [];
       if (!res.terminal_call) {
@@ -953,17 +957,19 @@ export class OrchestratorImpl implements Orchestrator {
 
   private async finishStep(ctx: RunCtx, step: Step, attempt: number, visit: number, exit: string, to: string, output: unknown): Promise<void> {
     const id = ctx.session.session_id;
-    let cost = { cost_usd: 0, tokens_in: 0, tokens_out: 0 };
+    let cost = { cost_usd: 0, tokens_in: 0, tokens_out: 0, tokens_cache_read: 0, tokens_cache_write: 0 };
     for (const t of await this.d.sessions.turns(id, step.id, attempt)) {
       cost.cost_usd += Number(t.cost_usd ?? 0);
       cost.tokens_in += Number(t.tokens_in ?? 0);
       cost.tokens_out += Number(t.tokens_out ?? 0);
+      cost.tokens_cache_read += Number(t.tokens_cache_read ?? 0);
+      cost.tokens_cache_write += Number(t.tokens_cache_write ?? 0);
     }
     if (step.kind === 'circuit') {
       const cp = (await this.d.sessions.checkpoints(id)).find((c) => c.step_id === step.id && Number(c.attempt) === attempt);
       if (cp?.child_session_id) {
         const tc = await this.treeCost(cp.child_session_id);
-        cost = { cost_usd: tc.cost_usd, tokens_in: 0, tokens_out: tc.tokens };
+        cost = { cost_usd: tc.cost_usd, tokens_in: 0, tokens_out: tc.tokens, tokens_cache_read: 0, tokens_cache_write: 0 };
       }
     }
     ctx.steps[step.id] = { output, exit };
@@ -971,7 +977,7 @@ export class OrchestratorImpl implements Orchestrator {
     ctx.budget = await this.remaining(ctx.session);
     await this.event(id, 'step-exited', { step_id: step.id, attempt, visit, exit, to, cost_usd: cost.cost_usd }, step.id);
     await this.event(id, 'checkpoint', { step_id: step.id, attempt, visit, status: 'exited', exit, output }, step.id);
-    await this.d.sessions.upsertCheckpoint({ session_id: id, step_id: step.id, attempt, status: 'exited', exit_name: exit, output, ambient: this.ambient(ctx), cost_usd: cost.cost_usd, tokens_in: cost.tokens_in, tokens_out: cost.tokens_out, visit, kind: step.kind, ended: true });
+    await this.d.sessions.upsertCheckpoint({ session_id: id, step_id: step.id, attempt, status: 'exited', exit_name: exit, output, ambient: this.ambient(ctx), cost_usd: cost.cost_usd, tokens_in: cost.tokens_in, tokens_out: cost.tokens_out, tokens_cache_read: cost.tokens_cache_read, tokens_cache_write: cost.tokens_cache_write, visit, kind: step.kind, ended: true });
   }
 
   /** Output refs must name real nodes; artifacts referenced without a step-completion revision get one ([01] §5). */
@@ -1090,7 +1096,7 @@ export class OrchestratorImpl implements Orchestrator {
     const store = this.d.sessions as SessionStore & { treeCost?: (id: string) => Promise<{ cost_usd: number; tokens: number }> };
     if (typeof store.treeCost === 'function') return store.treeCost(id);
     const own = await this.d.sessions.cost(id);
-    let acc = { cost_usd: own.cost_usd, tokens: own.tokens_in + own.tokens_out };
+    let acc = { cost_usd: own.cost_usd, tokens: own.tokens_in + own.tokens_out + own.tokens_cache_read + own.tokens_cache_write };
     for (const c of await this.d.sessions.children(id)) {
       const sub = await this.treeCost(c.session_id);
       acc = { cost_usd: acc.cost_usd + sub.cost_usd, tokens: acc.tokens + sub.tokens };

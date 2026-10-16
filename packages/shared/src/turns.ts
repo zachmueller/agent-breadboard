@@ -2,10 +2,12 @@
  * Normalised view of a turn's `content` ([02] §3): text, tool calls and tool results. Tolerates
  * Anthropic-style (`tool_use` / `tool_result`) and Bedrock Converse-style (`toolUse` / `toolResult`)
  * blocks, plain strings and `{text}`. Shared by the UI's turn renderer and the MCP transcript tool,
- * so both agree on what a turn contains.
+ * so both agree on what a turn contains. Reasoning blocks keep only their readable summary (signatures and redacted
+ * payloads are opaque replay data).
  */
 export type TurnBlock =
   | { kind: 'text'; text: string }
+  | { kind: 'reasoning'; text: string; redacted?: boolean }
   | { kind: 'tool_use'; id?: string; name: string; input: unknown }
   | { kind: 'tool_result'; id?: string; content: unknown; is_error?: boolean }
   | { kind: 'other'; value: unknown };
@@ -16,6 +18,11 @@ export function toBlocks(content: unknown): TurnBlock[] {
   if (Array.isArray(content)) return content.flatMap(toBlocks);
   if (typeof content !== 'object') return [{ kind: 'text', text: String(content) }];
   const o = content as Record<string, unknown>;
+  if (o.type === 'reasoning') return [{ kind: 'reasoning', text: String(o.text ?? ''), ...(o.redacted ? { redacted: true } : {}) }];
+  if (o.reasoningContent && typeof o.reasoningContent === 'object') {
+    const r = o.reasoningContent as { reasoningText?: { text?: unknown }; redactedContent?: unknown };
+    return [{ kind: 'reasoning', text: String(r.reasoningText?.text ?? ''), ...(r.redactedContent ? { redacted: true } : {}) }];
+  }
   if (o.type === 'text' || (typeof o.text === 'string' && Object.keys(o).length <= 2)) return [{ kind: 'text', text: String(o.text ?? '') }];
   if (o.type === 'tool_use' || o.type === 'tool-call' || o.type === 'tool_call') return [{ kind: 'tool_use', id: o.id as string, name: String(o.name ?? 'tool'), input: o.input ?? o.arguments }];
   if (o.toolUse && typeof o.toolUse === 'object') {

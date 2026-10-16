@@ -69,7 +69,7 @@ def handler(input, ctx):
 
 Declare hosts in `egress.allow`; everything else is blocked by the proxy and logged. For authenticated APIs declare a `capability` and call `ctx.fetch('<capability>', { url, method, headers, body })`; an admin binds the capability to a credential and scope (hosts, methods, path prefixes) in the broker. The credential never enters the container.
 
-To call a model, do not add a provider endpoint to `egress.allow` or ship provider credentials: declare `capabilities: [{ name: model, scope: invoke }]` and call `ctx.converse({ messages, system?, tools?, preset?, model_id?, max_tokens?, temperature? })` (Python: `ctx.converse(messages, system=..., preset=...)`). Messages and the reply use the gateway's chat format (`text`, `tool_use`, `tool_result` blocks). The turn resolves the preset (default `medium`) with fallback, counts against the Session's budget, and shows up in the Session's cost; the seeded `spawn-harness` is the worked example.
+To call a model, do not add a provider endpoint to `egress.allow` or ship provider credentials: declare `capabilities: [{ name: model, scope: invoke }]` and call `ctx.converse({ messages, system?, tools?, preset?, model_id?, max_tokens?, temperature?, effort?, force_tool? })` (Python: `ctx.converse(messages, system=..., preset=...)`). Messages and the reply use the gateway's chat format (`text`, `tool_use`, `tool_result` and `reasoning` blocks); append the reply's content to your history unchanged, `reasoning` blocks included, so the next turn replays them and hits the prompt cache. The turn resolves the preset (default `medium`) with fallback, counts against the Session's budget, and shows up in the Session's cost; the seeded `spawn-harness` is the worked example.
 
 ## Idempotency
 

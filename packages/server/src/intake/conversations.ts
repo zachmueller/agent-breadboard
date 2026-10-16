@@ -19,6 +19,7 @@ import type { Db } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import { canSeeSession, requireUser, servicePrincipal, type Principal } from '../core/principal.js';
 import type { ChatContent, ChatMessage, ConfigService, ContentService, ConversationService, EventBus, ResolvedSubagent, SessionStore, SubagentRuntime, TaskService } from '../core/services.js';
+import { totalTokens, usageColumns } from '../gateway/pricing.js';
 
 export const CONVERSATION_STEP_ID = 'conversation';
 const CONVERSATION_KINDS = ['intake', 'conversation'] as const;
@@ -188,6 +189,33 @@ export class ConversationServiceImpl implements ConversationService {
 
     const prior = await this.d.sessions.turns(session_id, CONVERSATION_STEP_ID);
     const turnIndex = prior.filter((t) => t.role === 'user').length + 1;
+    const newTurns: Turn[] = [];
+
+    // The context preamble is recorded as a turn whenever it changes, ahead of the message it applies to, so the
+    // history the model sees only ever grows (prompt-cache prefix and replayed reasoning stay valid).
+    const preamble = await this.preamble(session, context);
+    if (preamble) {
+      const previous = [...prior].reverse().find(isPreambleTurn);
+      if (!previous || preambleText(previous).replace(PREAMBLE_UPDATE_PREFIX, '') !== preamble) {
+        const body = previous ? `${PREAMBLE_UPDATE_HEADING}\n${preamble}` : preamble;
+        newTurns.push(
+          await this.recordTurn({
+            session_id,
+            step_id: CONVERSATION_STEP_ID,
+            attempt: turnIndex,
+            role: 'system',
+            username: null,
+            content: { kind: PREAMBLE_KIND, text: body },
+            model_id: null,
+            tokens_in: null,
+            tokens_out: null,
+            cost_usd: null,
+          }),
+        );
+        await this.event(session_id, 'turn', { kind: PREAMBLE_KIND, attempt: turnIndex, text: cap(body, PREAMBLE_CAP) }, CONVERSATION_STEP_ID);
+      }
+    }
+
     const userContent: ChatContent[] = [{ type: 'text', text }];
     const userTurn = await this.recordTurn({
       session_id,
@@ -201,7 +229,7 @@ export class ConversationServiceImpl implements ConversationService {
       tokens_out: null,
       cost_usd: null,
     });
-    const newTurns: Turn[] = [userTurn];
+    newTurns.push(userTurn);
 
     // Re-resolve each post so config edits apply to the next turn.
     const commit = await this.d.config.mainCommit();
@@ -211,14 +239,7 @@ export class ConversationServiceImpl implements ConversationService {
     }
     detail.resolved_commit = commit;
 
-    const messages = historyMessages([...prior, userTurn]);
-    const preamble = await this.preamble(session, context);
-    if (preamble) {
-      const first = messages.find((m) => m.role === 'user');
-      if (first) first.content = [{ type: 'text', text: preamble }, ...first.content];
-      else messages.unshift({ role: 'user', content: [{ type: 'text', text: preamble }] });
-      await this.event(session_id, 'turn', { kind: 'context-preamble', attempt: turnIndex, text: cap(preamble, PREAMBLE_CAP) }, CONVERSATION_STEP_ID);
-    }
+    const messages = historyMessages([...prior, ...newTurns]);
     const inputSigs = new Set(messages.map((m) => JSON.stringify(m.content)));
 
     const proposalsBefore = new Set(await this.proposalIds(session_id));
@@ -242,7 +263,7 @@ export class ConversationServiceImpl implements ConversationService {
             const isToolResult = content.some((c) => c.type === 'tool_result');
             if (t.role === 'user' && !isToolResult && inputSigs.has(JSON.stringify(content))) return; // echo of an input message
             const role: Turn['role'] = t.role === 'user' && isToolResult ? 'tool' : t.role;
-            const tokens = (t.usage?.input_tokens ?? 0) + (t.usage?.output_tokens ?? 0);
+            const tokens = t.usage ? totalTokens(t.usage) : 0;
             spentUsd += t.cost_usd ?? 0;
             spentTokens += tokens;
             if (role === 'assistant') recordedAssistant++;
@@ -255,8 +276,7 @@ export class ConversationServiceImpl implements ConversationService {
                 username: null,
                 content,
                 model_id: t.model_id ?? null,
-                tokens_in: t.usage?.input_tokens ?? null,
-                tokens_out: t.usage?.output_tokens ?? null,
+                ...usageColumns(t.usage),
                 cost_usd: t.cost_usd ?? null,
                 latency_ms: t.latency_ms ?? null,
                 fallback_from: t.fallback_from ?? null,
@@ -287,7 +307,7 @@ export class ConversationServiceImpl implements ConversationService {
     }
 
     // Prefer the loop's totals (authoritative) when hooks under-reported.
-    const resultTokens = (result.usage?.input_tokens ?? 0) + (result.usage?.output_tokens ?? 0);
+    const resultTokens = result.usage ? totalTokens(result.usage) : 0;
     budget.spent_usd = round(Math.max(spentUsd, session.budget.spent_usd + (result.cost_usd ?? 0)));
     budget.spent_tokens = Math.max(spentTokens, session.budget.spent_tokens + resultTokens);
 
@@ -307,8 +327,7 @@ export class ConversationServiceImpl implements ConversationService {
           content: [{ type: 'text', text: finalText }],
           model_id: result.model_ids?.[result.model_ids.length - 1] ?? null,
           // When no per-turn hook fired, carry the exchange's cost on the reply so turn-sum cost stays right.
-          tokens_in: unreported ? (result.usage?.input_tokens ?? null) : null,
-          tokens_out: unreported ? (result.usage?.output_tokens ?? null) : null,
+          ...usageColumns(unreported ? result.usage : null),
           cost_usd: unreported ? (result.cost_usd ?? null) : null,
         }),
       );
@@ -548,10 +567,29 @@ export function normalizeContent(c: unknown): ChatContent[] {
   return [];
 }
 
-/** Rebuild the model-facing history from recorded turns; user turns carry the username ([02] §2). */
+const PREAMBLE_KIND = 'context-preamble';
+const PREAMBLE_UPDATE_HEADING = '[Context update] This replaces the context given earlier in the conversation.';
+const PREAMBLE_UPDATE_PREFIX = `${PREAMBLE_UPDATE_HEADING}\n`;
+
+function isPreambleTurn(t: Turn): boolean {
+  return t.role === 'system' && !!t.content && typeof t.content === 'object' && (t.content as { kind?: unknown }).kind === PREAMBLE_KIND;
+}
+
+function preambleText(t: Turn): string {
+  return String((t.content as { text?: unknown }).text ?? '');
+}
+
+/**
+ * Rebuild the model-facing history from recorded turns; user turns carry the username ([02] §2). Recorded context
+ * preambles become user messages in place; other system turns (injections, nudges) are bookkeeping and skipped.
+ */
 export function historyMessages(turns: Turn[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (const t of turns) {
+    if (isPreambleTurn(t)) {
+      out.push({ role: 'user', content: [{ type: 'text', text: preambleText(t) }] });
+      continue;
+    }
     if (t.role === 'system') continue;
     let content = normalizeContent(t.content);
     if (content.length === 0) continue;

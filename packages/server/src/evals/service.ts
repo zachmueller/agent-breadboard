@@ -26,6 +26,7 @@ import type { Db } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import { servicePrincipal, type Principal } from '../core/principal.js';
 import type { ChatMessage, ConfigService, ContentService, EvalService, EventBus, Orchestrator, SessionStore, SubagentRuntime, ToolSpec, Toolbox } from '../core/services.js';
+import { usageColumns } from '../gateway/pricing.js';
 import { buildAggregate, mean, overridesKey, round, validateDimValue, type AggregateValue, type DimValue, type ProgrammaticValue } from './scoring.js';
 import { buildAnalysis, buildDashboard, loadRunStats, type AnalysisOptions, type AnalysisView } from './analysis.js';
 
@@ -444,8 +445,7 @@ export class EvalServiceImpl implements EvalService {
               username: null,
               content: t.content,
               model_id: t.model_id ?? null,
-              tokens_in: t.usage?.input_tokens ?? null,
-              tokens_out: t.usage?.output_tokens ?? null,
+              ...usageColumns(t.usage),
               cost_usd: t.cost_usd ?? null,
               latency_ms: t.latency_ms ?? null,
               fallback_from: t.fallback_from ?? null,

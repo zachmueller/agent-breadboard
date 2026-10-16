@@ -138,7 +138,7 @@ Normative rules:
 
 ### 3.1 LLM steps
 
-An LLM conversation with: a specified **Subagent** (system prompt, tool access, knowledge access, model preset — [05](05-subagents.md)), an optional per-step `tools_override` (narrowing only, never widening), a **prompt template** (Markdown with `{{ }}` interpolation over the step input and ambient context), and a required **output schema**.
+An LLM conversation with: a specified **Subagent** (system prompt, tool access, knowledge access, model preset — [05](05-subagents.md)), an optional per-step `tools_override` (narrowing only, never widening), an optional `effort` (reasoning effort, overriding the Subagent's — [05](05-subagents.md) §3), a **prompt template** (Markdown with `{{ }}` interpolation over the step input and ambient context), and a required **output schema**.
 
 The conversation runs the standard tool loop until the model produces a final structured output containing (a) the output payload and (b) the chosen exit as an **enum field over the step's declared exit names**. Schema-invalid finals are retried within the attempt (bounded re-ask), then fail the attempt.
 

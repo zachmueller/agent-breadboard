@@ -9,7 +9,14 @@ export const zPresetEntry = z.object({
   model_id: z.string().min(1),
   requires: z.array(z.enum(MODEL_CAPABILITIES)).optional(),
   /** Optional per-model price override (USD per 1M tokens). Gateway defaults apply otherwise. */
-  pricing: z.object({ input_per_m: z.number().nonnegative(), output_per_m: z.number().nonnegative() }).optional(),
+  pricing: z
+    .object({
+      input_per_m: z.number().nonnegative(),
+      output_per_m: z.number().nonnegative(),
+      cache_read_per_m: z.number().nonnegative().optional(),
+      cache_write_per_m: z.number().nonnegative().optional(),
+    })
+    .optional(),
 });
 export type PresetEntry = z.infer<typeof zPresetEntry>;
 

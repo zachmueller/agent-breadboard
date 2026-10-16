@@ -229,7 +229,9 @@ describe('end-to-end against the shipped seed', () => {
       return snap.busy === false && snap.turns.some((t: any) => t.role === 'assistant');
     });
     expect(snap.last_error).toBeNull();
-    expect(snap.turns[0]).toMatchObject({ role: 'user', username: 'admin' });
+    // The open definition is recorded as a context turn ahead of the message it applies to.
+    expect(snap.turns[0]).toMatchObject({ role: 'system', content: { kind: 'context-preamble' } });
+    expect(snap.turns[1]).toMatchObject({ role: 'user', username: 'admin' });
     expect(Array.isArray(snap.proposals)).toBe(true);
   }, 60_000);
 });

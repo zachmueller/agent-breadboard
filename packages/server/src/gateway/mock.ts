@@ -79,7 +79,7 @@ export class MockProvider implements ModelProvider {
   }
 
   capabilities(modelId: string): ModelCapabilities {
-    const base: ModelCapabilities = { 'tool-use': true, 'structured-output': true, streaming: true, embeddings: true, vision: true, context_tokens: 200_000 };
+    const base: ModelCapabilities = { 'tool-use': true, 'structured-output': true, streaming: true, embeddings: true, vision: true, 'prompt-caching': false, reasoning: false, context_tokens: 200_000 };
     const o = typeof this.opts.capabilities === 'function' ? this.opts.capabilities(modelId) : this.opts.capabilities;
     return { ...base, ...(o ?? {}) };
   }

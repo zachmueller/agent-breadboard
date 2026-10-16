@@ -287,4 +287,36 @@ describe('SubagentRuntime.runConversation', () => {
     h.mock.enqueue({ tool_calls: [{ name: 'read_node', input: {} }] });
     await expect(h.runtime.runConversation({ subagent: r, principal, messages: [user('go')], extra_tools: [finishTool], terminal_tools: ['breadboard_finish'], session_id: 'S1', step_id: 's', attempt: 1, hooks: { checkBudget: budget } })).rejects.toMatchObject({ code: 'budget-exceeded' });
   });
+
+  it('passes effort (run over subagent), sums cache usage, and continues tool-call indexes across a re-ask', async () => {
+    const h = harness(subagentDef({ system_prompt: 'plain', effort: 'low' }));
+    const r = await h.runtime.resolve(SA, COMMIT);
+    const principal = h.runtime.principalFor(r, 'S1', 's', []);
+    h.mock.enqueue(
+      { tool_calls: [{ name: 'read_node', input: { uid: 'X' } }], usage: { input_tokens: 10, output_tokens: 5, cache_write_tokens: 900 } },
+      { tool_calls: [{ name: 'breadboard_finish', input: { exit: 'done' } }], usage: { input_tokens: 3, output_tokens: 5, cache_read_tokens: 900 } },
+    );
+    const base = { subagent: r, principal, extra_tools: [finishTool], terminal_tools: ['breadboard_finish'], session_id: 'S1', step_id: 's', attempt: 1 };
+    const first = await h.runtime.runConversation({ ...base, messages: [user('go')] });
+    expect(h.mock.calls[0]!.effort).toBe('low');
+    expect(first.usage).toEqual({ input_tokens: 13, output_tokens: 10, cache_read_tokens: 900, cache_write_tokens: 900 });
+    expect(first.tool_calls).toBe(1);
+    // The orchestrator's re-ask continues the same attempt: the next tool call must not reuse journal index 0.
+    h.mock.enqueue({ tool_calls: [{ name: 'read_node', input: { uid: 'Y' } }] });
+    const again = await h.runtime.runConversation({ ...base, messages: [...first.messages, user('fix it')], effort: 'max', call_index_start: first.tool_calls });
+    expect(h.mock.calls[2]!.effort).toBe('max');
+    expect(h.primitiveCalls.map((c: any) => c.ctx.call_index)).toEqual([0, 1]);
+    expect(again.tool_calls).toBe(2);
+  });
+
+  it('does not re-inject knowledge already in the history, and lists MCP tools in name order', async () => {
+    const h = harness(subagentDef({ system_prompt: 'plain', tools: [{ mcp: MCP1, allow: ['post', 'fetch'] }] }));
+    const r = await h.runtime.resolve(SA, COMMIT);
+    const principal = h.runtime.principalFor(r, 'S1', 's', []);
+    const first = await h.runtime.runConversation({ subagent: r, principal, messages: [user('mind the style')], session_id: 'S1', step_id: 's', attempt: 1 });
+    expect(first.messages.filter((m) => m.content.some((c) => c.type === 'text' && c.text.startsWith('[Injected knowledge')))).toHaveLength(1);
+    const second = await h.runtime.runConversation({ subagent: r, principal, messages: [...first.messages, user('style again')], session_id: 'S1', step_id: 's', attempt: 1 });
+    expect(second.messages.filter((m) => m.content.some((c) => c.type === 'text' && c.text.startsWith('[Injected knowledge')))).toHaveLength(1);
+    expect(h.mock.calls[0]!.tools!.map((t) => t.name).filter((n) => n.startsWith('mcp__'))).toEqual(['mcp__web__fetch', 'mcp__web__post']);
+  });
 });

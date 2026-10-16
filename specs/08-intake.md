@@ -59,6 +59,7 @@ The team engages in "idea shaping" discussion with **Intake Subagents** in the b
   - **Grounded in code:** cross-references the idea against existing team code bases (via Toolbox tools, e.g. repo search or `spawn-harness`) to ground critiques in the actual starting point of the code.
   - **Contradiction check:** the `knowledge-checker` pattern ([07](07-knowledge.md) §7) against relevant Knowledge Domains.
 - **Conversations are Sessions** (`kind: intake`, [02](02-sessions-orchestrator.md) §2) — full observability/debugging benefits: every turn logged with the username, helper invocations navigable as child Sessions.
+- **Append-only history.** The context the model gets about the conversation's state (the draft task; for designer chats, the open definition and proposal) is recorded as a system turn ahead of the message it applies to, and again only when it changes, marked as replacing the earlier context. Earlier turns are never rewritten, so the prompt cache and replayed reasoning stay valid across messages ([12](12-security-deployment.md) §7).
 - **Primary outcome:** the shaper's goal is creating well-formed Tasks into the queue via the `create_task` primitive. The resulting Task is persisted as a content node with `produces` lineage from the shaping Session — a Task's full origin story is always navigable.
 
 ## 5. Direct injection (API + MCP)

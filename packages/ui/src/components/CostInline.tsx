@@ -7,6 +7,9 @@ export interface CostInlineProps {
   usd: number | string | null | undefined;
   tokensIn?: number | null;
   tokensOut?: number | null;
+  /** Prompt-cache tokens (read from / written to the cache), shown in the tooltip when non-zero. */
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
   /** Total including descendant sessions (shown in the tooltip, and as the value when `preferTotal`). */
   includingChildren?: number | null;
   preferTotal?: boolean;
@@ -15,7 +18,7 @@ export interface CostInlineProps {
 }
 
 /** `$0.0123` with a tokens breakdown tooltip ([10] §5 cost visibility). */
-export function CostInline({ usd, tokensIn, tokensOut, includingChildren, preferTotal, icon, className }: CostInlineProps) {
+export function CostInline({ usd, tokensIn, tokensOut, tokensCacheRead, tokensCacheWrite, includingChildren, preferTotal, icon, className }: CostInlineProps) {
   const own = typeof usd === 'string' ? Number(usd) : usd;
   const shown = preferTotal && includingChildren !== null && includingChildren !== undefined ? includingChildren : own;
   const hasChildren = includingChildren !== null && includingChildren !== undefined && own !== null && own !== undefined && Math.abs(includingChildren - own) > 1e-9;
@@ -25,6 +28,11 @@ export function CostInline({ usd, tokensIn, tokensOut, includingChildren, prefer
         {(tokensIn !== undefined || tokensOut !== undefined) && (
           <span>
             {formatTokens(tokensIn ?? 0)} in · {formatTokens(tokensOut ?? 0)} out
+          </span>
+        )}
+        {(tokensCacheRead || tokensCacheWrite) && (
+          <span>
+            {formatTokens(tokensCacheRead ?? 0)} cached · {formatTokens(tokensCacheWrite ?? 0)} to cache
           </span>
         )}
         {hasChildren && (

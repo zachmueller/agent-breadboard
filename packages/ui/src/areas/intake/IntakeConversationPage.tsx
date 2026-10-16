@@ -36,6 +36,7 @@ import {
   TimeAgo,
 } from '../../components';
 import { intakeListKey } from './IntakeConversationsPage';
+import { Reasoning } from '../sessions/TurnView';
 import { canAccept, canEditDraft, chatItems, conversationTitle, isEmptyDraft, normalizeDraft, shouldSend, type ChatBlock, type ChatItem, type DraftView } from './lib';
 
 interface ConversationDto {
@@ -100,7 +101,7 @@ export function IntakeConversationPage({ id }: { id: string }) {
         <h1 className="min-w-0 truncate text-[15px] font-semibold text-fg">{conversationTitle(session)}</h1>
         <StateBadge state={session.state} size="xs" />
         <div className="flex-1" />
-        {summary.data && <CostInline usd={summary.data.cost_usd} tokensIn={summary.data.tokens_in} tokensOut={summary.data.tokens_out} includingChildren={summary.data.cost_usd_including_children} className="text-[12.5px] text-fg-muted" />}
+        {summary.data && <CostInline usd={summary.data.cost_usd} tokensIn={summary.data.tokens_in} tokensOut={summary.data.tokens_out} tokensCacheRead={summary.data.tokens_cache_read} tokensCacheWrite={summary.data.tokens_cache_write} includingChildren={summary.data.cost_usd_including_children} className="text-[12.5px] text-fg-muted" />}
         <Link to="/s/$id" params={{ id }} className={buttonClasses('ghost', 'xs')}>
           <ScrollText size={13} aria-hidden /> Session log
         </Link>
@@ -305,6 +306,7 @@ function ChatBubble({ item, me, pending }: { item: ChatItem; me: string; pending
           {isUser && item.username && mine && <span className="text-fg-subtle">@{item.username}</span>}
           {!pending && <TimeAgo at={item.created_at} className="text-fg-subtle" />}
         </div>
+        {item.extras.map((b, i) => (b.kind === 'reasoning' && b.text.trim() ? <div key={`r${i}`} className="mb-1.5"><Reasoning block={b} /></div> : null))}
         {item.text ? (
           isUser ? (
             <p className="text-[14px] whitespace-pre-wrap text-fg">{item.text}</p>
@@ -312,11 +314,9 @@ function ChatBubble({ item, me, pending }: { item: ChatItem; me: string; pending
             <Markdown source={item.text} size="sm" />
           )
         ) : null}
-        {item.extras.length > 0 && (
+        {item.extras.some((b) => b.kind !== 'reasoning') && (
           <div className="mt-1.5 flex flex-col gap-1.5">
-            {item.extras.map((b, i) => (
-              <ExtraBlock key={i} block={b} />
-            ))}
+            {item.extras.map((b, i) => (b.kind === 'reasoning' ? null : <ExtraBlock key={i} block={b} />))}
           </div>
         )}
       </div>
@@ -416,7 +416,7 @@ function ChildSessionCard({ child }: { child: SessionSummaryDto['children'][numb
                 <span>
                   Started <TimeAgo at={detail.data.started_at ?? detail.data.created_at} />
                 </span>
-                <CostInline usd={detail.data.cost_usd} tokensIn={detail.data.tokens_in} tokensOut={detail.data.tokens_out} includingChildren={detail.data.cost_usd_including_children} />
+                <CostInline usd={detail.data.cost_usd} tokensIn={detail.data.tokens_in} tokensOut={detail.data.tokens_out} tokensCacheRead={detail.data.tokens_cache_read} tokensCacheWrite={detail.data.tokens_cache_write} includingChildren={detail.data.cost_usd_including_children} />
                 <span>{detail.data.steps.length} step{detail.data.steps.length === 1 ? '' : 's'}</span>
               </div>
               {detail.data.steps.length > 0 && (

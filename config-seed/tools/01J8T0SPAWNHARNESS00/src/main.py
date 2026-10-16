@@ -1,9 +1,13 @@
-"""spawn-harness — Strands Agents adapter ([06] §3).
+"""spawn-harness — Strands adapters ([06] §3).
 
 Breadboard is the harness's *user*: we build a Strands agent, hand it the step's task prompt as the user turn,
 forward its event stream into the Session code-step log via ``ctx.log``, and map declared outputs to Artifacts.
 The harness's model turns go through the Breadboard model gateway (``breadboard_model.BreadboardModel`` over
 ``ctx.converse``), so they use presets and fallback, count against the Session's budget, and show up in its cost.
+
+Two adapters share everything but the agent: ``strands`` builds a plain Strands ``Agent`` with four workspace tools;
+``strands-harness`` builds Strands Harness (``create_harness``: shell/read/write/edit tools, context management,
+todos, a helper subagent), with the features Breadboard already owns turned off (memory, sessions, skills).
 """
 import fnmatch
 import os
@@ -25,6 +29,20 @@ There is no human to answer questions mid-task, so:
 - Never invent results, test output, or file contents. If you could not finish, say exactly what remains.
 - Network access is restricted; package installs or downloads may fail. Report such failures rather than working around them.
 Finish with a concise Markdown summary: what you changed and why, files touched, verification performed, assumptions, open issues."""
+
+# Strands Harness brings its own agent contract; this is the domain block appended to it.
+HARNESS_INSTRUCTIONS = """Your user is Breadboard, an orchestration system, not a person: it sends you one task and reads your final answer.
+There is no human to answer questions mid-task: make the most reasonable assumption when something is ambiguous, and list every assumption in your final answer.
+Work only inside the workspace directory {workspace} (your working directory); file tools take absolute paths under it.
+Prefer small, reviewable changes that follow the existing code's conventions. Do not reformat unrelated code.
+Verify your work (build, tests, linters) when the project supports it, and report the results honestly. Never invent results, test output, or file contents.
+Network access is restricted; package installs or downloads may fail. Report such failures rather than working around them.
+Finish with a concise Markdown summary: what you changed and why, files touched, verification performed, assumptions, open issues."""
+
+# Breadboard owns durability (step boundaries), memory (Knowledge), and the network policy (default-deny egress), so
+# the harness gets only its workspace tools and helper subagent.
+HARNESS_BUILTIN_TOOLS = ["shell", "read", "write", "edit", "subagent"]
+ADAPTERS = ("strands", "strands-harness")
 
 
 def _ret(ctx, exit_name, output):
@@ -194,13 +212,33 @@ def _capture(ctx, ws, is_repo, patterns, max_files):
     return refs
 
 
+def _build_agent(adapter, model, ws, forward):
+    """The adapter's agent; raises ImportError when its package is missing from the sandbox image."""
+    if adapter == "strands-harness":
+        from strands_harness import create_harness
+
+        return create_harness(
+            model=model,
+            instructions=HARNESS_INSTRUCTIONS.format(workspace=ws),
+            builtin_tools=HARNESS_BUILTIN_TOOLS,
+            memory=False,
+            session=False,
+            skills=False,
+            caching=False,  # the Breadboard gateway places the cache points
+            callback_handler=forward,
+        )
+    from strands import Agent, tool as strands_tool
+
+    return Agent(model=model, system_prompt=HARNESS_SYSTEM_PROMPT.format(workspace=ws), tools=_make_tools(strands_tool, ws), callback_handler=forward)
+
+
 def handler(input, ctx):
     inp = input or {}
     settings = ctx.ambient.get("settings") or {}
-    if (settings.get("harness") or "strands") != "strands":
-        return _ret(ctx, "failed", {"error": f"unsupported harness adapter: {settings.get('harness')}"})
+    adapter = settings.get("harness") or "strands"
+    if adapter not in ADAPTERS:
+        return _ret(ctx, "failed", {"error": f"unsupported harness adapter: {adapter}"})
     try:
-        from strands import Agent, tool as strands_tool
         from breadboard_model import BreadboardModel
     except ImportError:
         return _ret(ctx, "failed", {"error": "strands not installed — add strands-agents to the python sandbox image"})
@@ -213,22 +251,25 @@ def handler(input, ctx):
 
     preset = settings.get("preset") or "medium"
     model_id = settings.get("model_id") or None
+    effort = settings.get("effort") or None
     forward = _Forwarder(ctx)
-    agent = Agent(
-        model=BreadboardModel(ctx, preset=preset, model_id=model_id),
-        system_prompt=HARNESS_SYSTEM_PROMPT.format(workspace=ws),
-        tools=_make_tools(strands_tool, ws),
-        callback_handler=forward,
-    )
-    ctx.log("info", "starting Strands harness", {"preset": preset, "model_id": model_id, "workspace_is_repo": is_repo})
-    started = time.time()
     try:
+        agent = _build_agent(adapter, BreadboardModel(ctx, preset=preset, model_id=model_id, effort=effort), ws, forward)
+    except ImportError as e:
+        return _ret(ctx, "failed", {"error": f"{adapter} adapter unavailable ({e}) — add it to the python sandbox image"})
+    ctx.log("info", f"starting {adapter}", {"preset": preset, "model_id": model_id, "effort": effort, "workspace_is_repo": is_repo})
+    started = time.time()
+    cwd = os.getcwd()
+    try:
+        os.chdir(ws)  # the harness's built-in tools resolve paths against the working directory
         result = agent(prompt)
     except Exception as e:  # model/tool-loop failure: still keep what we saw
         ctx.log("error", f"harness failed: {e}")
         transcript = ctx.create_artifact(title="Harness transcript (failed run)", body="\n".join(forward.transcript) or "_empty_",
                                          tags=["intermediate", "harness-transcript"], scope="session")
         return _ret(ctx, "failed", {"error": str(e), "transcript_artifact": _ref(transcript)})
+    finally:
+        os.chdir(cwd)
 
     elapsed = round(time.time() - started, 1)
     final_text = str(result).strip() or "_The harness returned no final message._"
@@ -242,7 +283,7 @@ def handler(input, ctx):
     # Summary + patch carry no explicit scope/tag: the calling step's `artifacts:` declaration (or the Breadboard
     # default) decides whether they are reviewable deliverables or session scratch.
     summary = ctx.create_artifact(title="Harness summary", body=final_text, tags=["harness-summary"],
-                                  properties={"preset": preset, "model_id": model_id, "elapsed_s": elapsed, "usage": usage})
+                                  properties={"adapter": adapter, "preset": preset, "model_id": model_id, "effort": effort, "elapsed_s": elapsed, "usage": usage})
     transcript = ctx.create_artifact(title="Harness transcript", body="\n".join(forward.transcript) or "_empty_",
                                      tags=["intermediate", "harness-transcript"], scope="session")
     patch_ref = None

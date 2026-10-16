@@ -137,6 +137,7 @@ export async function createKit(overrides: Record<string, unknown> = {}): Promis
         cost_usd: turnCost.usd,
         turns: 1,
         model_ids: ['fake-model'],
+        tool_calls: input.call_index_start ?? 0,
       };
     },
   } as unknown as SubagentRuntime;

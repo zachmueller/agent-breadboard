@@ -23,6 +23,11 @@ export type RetryPolicy = z.infer<typeof zRetryPolicy>;
 export const DEFAULT_RETRY: RetryPolicy = { max_attempts: 3, backoff: { base_s: 5, cap_s: 300 } };
 export const DEFAULT_MAX_VISITS = 25;
 
+/** Reasoning effort ([05] §2): how much a model thinks before answering. Unset means the model's own default. */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const zEffort = z.enum(EFFORT_LEVELS);
+export type Effort = z.infer<typeof zEffort>;
+
 export const zBudget = z.object({
   max_cost_usd: z.number().positive(),
   max_tokens: z.number().int().positive(),

@@ -7,8 +7,8 @@ description: >
   Breadboard acting as the harness's "user" ([06] §3). The harness transcript (turns, tool calls, results) is
   streamed into the Session's code-step log, and declared outputs are captured as Artifacts: a summary, the full
   transcript, a patch (for git workspaces), and changed files matching `capture` globs.
-  v1 adapter: Strands Agents (SDK-level integration; model turns through the Breadboard model gateway). Exits
-  `done` or `failed`.
+  Adapters: Strands Agents (`strands`, the default) and Strands Harness (`strands-harness`); both integrate at the
+  SDK level with model turns through the Breadboard model gateway. Exits `done` or `failed`.
 language: python
 entrypoint: src/main.py
 builtin: true
@@ -64,8 +64,10 @@ settings:
   harness:
     type: string
     default: strands
-    enum: [strands]
-    description: Harness adapter. v1 ships Strands Agents only; future adapters (e.g. Claude Code) slot in here.
+    enum: [strands, strands-harness]
+    description: >
+      Harness adapter. `strands` is a Strands Agent with four workspace tools; `strands-harness` is Strands Harness
+      (shell/read/write/edit, context management, todos, a helper subagent). Future adapters (e.g. Claude Code) slot in here.
   workspace_repo:
     type: string
     default: ""
@@ -78,6 +80,11 @@ settings:
     type: string
     default: ""
     description: Optional explicit model id (overrides the preset).
+  effort:
+    type: string
+    default: ""
+    enum: ["", low, medium, high, xhigh, max]
+    description: Reasoning effort for the harness's model turns. Empty = the model's default.
   max_capture_files:
     type: number
     default: 20

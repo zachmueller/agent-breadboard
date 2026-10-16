@@ -3,7 +3,7 @@
  * orchestrator, and sandbox primitives share one implementation of each behaviour.
  * Concrete classes live in their subsystem directories; `build.ts` wires them.
  */
-import type { Actor, ArtifactRef, BreadboardConfig, Circuit, EdgeRecord, Fixtures, McpServer, NodeRecord, NodeRevision, Page, Presets, Rubric, Scope, SessionBudget, SessionEvent, SessionKind, SessionRecord, SessionSummaryDto, StreamEvent, Subagent, Tool, Turn, EventTopic, ConfigTreeEntry, ConfigDefinitionDto, ProposalDto, ReviewQueueItemDto, LineageDto, NodeDto, NeedInputRequest } from '@breadboard/shared';
+import type { Actor, ArtifactRef, BreadboardConfig, Circuit, EdgeRecord, Effort, Fixtures, McpServer, NodeRecord, NodeRevision, Page, Presets, Rubric, Scope, SessionBudget, SessionEvent, SessionKind, SessionRecord, SessionSummaryDto, StreamEvent, Subagent, Tool, Turn, EventTopic, ConfigTreeEntry, ConfigDefinitionDto, ProposalDto, ReviewQueueItemDto, LineageDto, NodeDto, NeedInputRequest } from '@breadboard/shared';
 import type { Db } from '../db/index.js';
 import type { Env } from './env.js';
 import type { Logger } from './logger.js';
@@ -165,7 +165,23 @@ export interface ChatMessage {
 export type ChatContent =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+  | ReasoningContent;
+
+/**
+ * A model's reasoning (extended thinking), kept so it can be replayed verbatim on the next turn and read in
+ * transcripts. `text` is the summary the model returned (may be empty); `signature` / `redacted` (base64) are opaque
+ * and bound to `model_id` and to the conversation prefix, fingerprinted as `prefix_fp` (system prompt + tool specs).
+ * Providers drop the block when replaying to a different model or under a different prefix.
+ */
+export interface ReasoningContent {
+  type: 'reasoning';
+  text: string;
+  signature?: string;
+  redacted?: string;
+  model_id: string;
+  prefix_fp?: string;
+}
 
 export interface ToolSpec {
   name: string;
@@ -186,6 +202,8 @@ export interface ModelRequest {
   requires?: Array<'tool-use' | 'structured-output' | 'streaming' | 'embeddings' | 'vision'>;
   max_tokens?: number;
   temperature?: number;
+  /** Reasoning effort; ignored by models that do not reason. */
+  effort?: Effort;
   /** Model overrides (eval comparison runs): preset → explicit model id. */
   model_overrides?: Record<string, string> | null;
   /** Logging context */
@@ -194,8 +212,13 @@ export interface ModelRequest {
 }
 
 export interface TokenUsage {
+  /** Uncached input tokens. */
   input_tokens: number;
   output_tokens: number;
+  /** Input tokens served from the prompt cache. */
+  cache_read_tokens?: number;
+  /** Input tokens written to the prompt cache. */
+  cache_write_tokens?: number;
 }
 export interface ModelResponse {
   model_id: string;
@@ -215,6 +238,10 @@ export interface ModelCapabilities {
   streaming: boolean;
   embeddings: boolean;
   vision: boolean;
+  /** Honours cache points (prompt caching). */
+  'prompt-caching': boolean;
+  /** Returns reasoning blocks and accepts an effort level. */
+  reasoning: boolean;
   context_tokens: number;
 }
 
@@ -273,6 +300,15 @@ export interface SessionFilter {
   limit?: number;
 }
 
+/** A session's own spend, summed over its turns. Token budgets count all four token columns. */
+export interface SessionCost {
+  cost_usd: number;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_cache_read: number;
+  tokens_cache_write: number;
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput): Promise<SessionRecord>;
   get(id: string): Promise<SessionRecord | null>;
@@ -283,10 +319,10 @@ export interface SessionStore {
   events(id: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]>;
   recordTurn(t: Omit<Turn, 'turn_id' | 'created_at'> & { attempt?: number; latency_ms?: number | null; fallback_from?: string | null }): Promise<Turn>;
   turns(id: string, stepId?: string, attempt?: number): Promise<Turn[]>;
-  upsertCheckpoint(cp: { session_id: string; step_id: string; attempt: number; status: 'running' | 'exited' | 'failed'; exit_name?: string | null; output?: unknown; ambient: unknown; cost_usd?: number; tokens_in?: number; tokens_out?: number; visit?: number; kind?: string; child_session_id?: string | null; error?: string | null; ended?: boolean }): Promise<void>;
+  upsertCheckpoint(cp: { session_id: string; step_id: string; attempt: number; status: 'running' | 'exited' | 'failed'; exit_name?: string | null; output?: unknown; ambient: unknown; cost_usd?: number; tokens_in?: number; tokens_out?: number; tokens_cache_read?: number; tokens_cache_write?: number; visit?: number; kind?: string; child_session_id?: string | null; error?: string | null; ended?: boolean }): Promise<void>;
   checkpoints(id: string): Promise<Array<Record<string, any>>>;
   /** Cost aggregates from turn rows (authoritative leaf) ([02] §6). */
-  cost(id: string): Promise<{ cost_usd: number; tokens_in: number; tokens_out: number }>;
+  cost(id: string): Promise<SessionCost>;
   costIncludingChildren(id: string): Promise<number>;
   children(id: string): Promise<SessionRecord[]>;
   /** Spend across all sessions within a rolling window ([02] §5.1). */
@@ -388,6 +424,13 @@ export interface RunConversationInput {
   hooks?: ConversationHooks;
   /** Narrow the tool surface: step tools_override ([03] §3.1). */
   tools_override?: string[] | null;
+  /** Reasoning effort for this run (an LLM step's `effort`); falls back to the subagent's. */
+  effort?: Effort;
+  /**
+   * First tool-call index to use. A conversation continued in the same attempt (finish-tool re-ask) passes the
+   * previous result's `tool_calls`, so idempotency-journal keys stay unique within the attempt ([06] §4.4).
+   */
+  call_index_start?: number;
 }
 
 export interface ConversationResult {
@@ -399,6 +442,8 @@ export interface ConversationResult {
   cost_usd: number;
   turns: number;
   model_ids: string[];
+  /** Next unused tool-call index (`call_index_start` + tool calls executed). */
+  tool_calls: number;
 }
 
 export interface SubagentRuntime {

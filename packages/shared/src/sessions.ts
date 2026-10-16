@@ -82,6 +82,9 @@ export interface Turn {
   model_id: string | null;
   tokens_in: number | null;
   tokens_out: number | null;
+  /** Input tokens served from / written to the prompt cache (`tokens_in` is the uncached remainder). */
+  tokens_cache_read?: number | null;
+  tokens_cache_write?: number | null;
   cost_usd: number | null;
   created_at: string;
 }

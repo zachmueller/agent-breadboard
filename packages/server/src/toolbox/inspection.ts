@@ -64,6 +64,10 @@ function renderTurn(t: TurnRow, index: number, max: number) {
       const c = clipText(b.text, max);
       return typeof c === 'string' ? { type: 'text', text: c } : { type: 'text', ...c };
     }
+    if (b.kind === 'reasoning') {
+      const c = clipText(b.text, max);
+      return { type: 'reasoning', ...(typeof c === 'string' ? { text: c } : c), ...(b.redacted ? { redacted: true } : {}) };
+    }
     if (b.kind === 'tool_use') return { type: 'tool_use', id: b.id ?? null, name: b.name, input: clipJson(b.input, max) };
     if (b.kind === 'tool_result') {
       const text = resultText(b.content);
@@ -81,6 +85,8 @@ function renderTurn(t: TurnRow, index: number, max: number) {
     model_id: t.model_id,
     tokens_in: t.tokens_in,
     tokens_out: t.tokens_out,
+    ...(t.tokens_cache_read ? { tokens_cache_read: t.tokens_cache_read } : {}),
+    ...(t.tokens_cache_write ? { tokens_cache_write: t.tokens_cache_write } : {}),
     cost_usd: t.cost_usd,
     latency_ms: t.latency_ms ?? null,
     fallback_from: t.fallback_from ?? null,

@@ -76,7 +76,9 @@ describe('ConversationService', () => {
 
     script = () => ({ text: 'What should the report cover?', cost_usd: 0.02 });
     const first = await svc.post({ session_id: s.session_id, text: 'I need a Q3 report', by: f.memberPrincipal });
+    // The context preamble is recorded as a system turn ahead of the first message.
     expect(first.turns.map((t) => [t.role, t.username])).toEqual([
+      ['system', null],
       ['user', 'member'],
       ['assistant', null],
     ]);
@@ -92,19 +94,21 @@ describe('ConversationService', () => {
     expect(second.turns.map((t) => t.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
     expect(second.draft_task).toMatchObject({ source: 'task', task_uid: TASK, title: 'Write the Q3 report', priority: 'high', status: 'queued', references: [NOTE], created_tasks: [TASK] });
 
-    // The model saw the full history, user turns attributed, with the draft-task preamble up front.
+    // The model saw the full history, user turns attributed, with the draft-task preamble up front. The preamble did
+    // not change, so the second post appended nothing before the new message (append-only history).
     const call = subagents.calls[1]!;
     expect(call.step_id).toBe(CONVERSATION_STEP_ID);
     expect(call.attempt).toBe(2);
-    expect(call.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+    expect(call.messages.map((m) => m.role)).toEqual(['user', 'user', 'assistant', 'user']);
     expect(textOf(call.messages[0]!)).toContain('[Draft task] none yet');
-    expect(textOf(call.messages[0]!)).toContain('[@member] I need a Q3 report');
-    expect(textOf(call.messages[1]!)).toBe('What should the report cover?');
-    expect(textOf(call.messages[2]!)).toBe('[@member] Revenue and churn, please');
+    expect(call.messages.slice(0, 3)).toEqual(subagents.calls[0]!.messages.concat(call.messages[2]!));
+    expect(textOf(call.messages[1]!)).toBe('[@member] I need a Q3 report');
+    expect(textOf(call.messages[2]!)).toBe('What should the report cover?');
+    expect(textOf(call.messages[3]!)).toBe('[@member] Revenue and churn, please');
 
     const turns = await svc.turns(s.session_id, f.memberPrincipal);
     expect(turns.filter((t) => t.role === 'user').map((t) => t.username)).toEqual(['member', 'member']);
-    expect(turns).toHaveLength(6);
+    expect(turns).toHaveLength(7);
 
     const log = await store.events(s.session_id);
     expect(log.filter((e) => e.event_type === 'tool-call').map((e) => e.payload.name)).toEqual(['breadboard_create_task']);
@@ -116,7 +120,10 @@ describe('ConversationService', () => {
     // A third turn shows the created task in the preamble.
     script = () => ({ text: 'Anything else?' });
     await svc.post({ session_id: s.session_id, text: 'Thanks', by: f.memberPrincipal });
-    expect(textOf(subagents.calls[2]!.messages[0]!)).toContain(`"task_uid": "${TASK}"`);
+    const third = subagents.calls[2]!.messages;
+    expect(textOf(third.at(-2)!)).toMatch(/^\[Context update\]/);
+    expect(textOf(third.at(-2)!)).toContain(`"task_uid": "${TASK}"`);
+    expect(third.slice(0, 4)).toEqual(subagents.calls[1]!.messages); // earlier history unchanged
   });
 
   it('designer chat sees the open definition with working-tree overrides and surfaces proposal ids', async () => {
@@ -151,7 +158,7 @@ describe('ConversationService', () => {
     expect(pre).not.toContain('ORIGINAL PROMPT');
     expect(pre).toContain('WRITE PROMPT');
     expect(pre).toMatch(/unsaved working-tree changes.*prompts\/gather\.md/);
-    expect(pre).toContain('[@admin] Make the gather step stricter');
+    expect(textOf(subagents.calls[0]!.messages[1]!)).toContain('[@admin] Make the gather step stricter');
     // The working tree is per-message editor state: never persisted on the session.
     expect(((await store.get(s.session_id))!.state_detail as any).context.working_tree).toBeUndefined();
 
@@ -159,7 +166,10 @@ describe('ConversationService', () => {
     script = () => ({ text: 'Looks good.' });
     const next = await svc.post({ session_id: s.session_id, text: 'Show me the diff', context: { proposal_id: proposalId }, by: f.adminPrincipal });
     expect(next.proposals).toEqual([]);
-    const pre2 = textOf(subagents.calls[1]!.messages[0]!);
+    // The changed context is appended before the new message; the first preamble stays where it was.
+    expect(textOf(subagents.calls[1]!.messages[0]!)).toBe(pre);
+    const pre2 = textOf(subagents.calls[1]!.messages.at(-2)!);
+    expect(pre2).toContain('[Context update]');
     expect(pre2).toContain(`[Open proposal] ${proposalId} (open)`);
     expect(pre2).toContain('+new');
     expect(pre2).toContain('ORIGINAL PROMPT'); // no working tree sent this time
@@ -167,7 +177,7 @@ describe('ConversationService', () => {
     // The proposal id stays in the session context; once merged, its diff is no longer sent.
     proposalStatus = 'merged';
     await svc.post({ session_id: s.session_id, text: 'Thanks', by: f.adminPrincipal });
-    const pre3 = textOf(subagents.calls[2]!.messages[0]!);
+    const pre3 = textOf(subagents.calls[2]!.messages.at(-2)!);
     expect(pre3).toContain(`[Proposal] ${proposalId} was merged`);
     expect(pre3).not.toContain('+new');
   });
@@ -217,7 +227,7 @@ describe('ConversationService', () => {
     await svc.submit({ session_id: s.session_id, text: 'And then this', by: f.adminPrincipal });
     release();
     await vi.waitFor(() => expect(svc.busy(s.session_id)).toBe(false));
-    expect((await svc.turns(s.session_id, f.adminPrincipal)).map((t) => t.role)).toEqual(['user', 'assistant', 'tool', 'assistant', 'user', 'assistant', 'tool', 'assistant']);
+    expect((await svc.turns(s.session_id, f.adminPrincipal)).map((t) => t.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant', 'user', 'assistant', 'tool', 'assistant']);
     expect(await svc.proposals(s.session_id)).toEqual([proposalId]);
     expect((await store.get(s.session_id))!.state_detail.last_error).toBeNull();
     // Every turn and tool event reached live clients.

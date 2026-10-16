@@ -38,7 +38,7 @@ Python tools that need third-party packages can either vendor them in the tool d
 FROM breadboard-sandbox-py:local
 USER root
 RUN python3 -m ensurepip \
- && python3 -m pip install --no-cache-dir strands-agents \
+ && python3 -m pip install --no-cache-dir "strands-agents>=1.61" strands-harness==0.3.1 \
  && python3 -m pip uninstall -y pip
 USER 10001:10001
 ```

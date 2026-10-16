@@ -5,13 +5,21 @@
  * reference; Bedrock (especially regional / cross-region inference profiles) can price differently, so teams that
  * need exact accounting override per preset entry via `pricing` in `presets/models.yaml`.
  * Unknown models fall back to a deliberately conservative (high) default so budgets fail safe.
+ *
+ * Prompt-cache rates: when a row or override sets no `cache_read_per_m` / `cache_write_per_m`, they derive from the
+ * input rate (reads 0.1×, writes 1.25× — the 5-minute-TTL write premium).
  */
 import type { TokenUsage } from '../core/services.js';
 
 export interface ModelPrice {
   input_per_m: number;
   output_per_m: number;
+  cache_read_per_m?: number;
+  cache_write_per_m?: number;
 }
+
+export const CACHE_READ_MULTIPLIER = 0.1;
+export const CACHE_WRITE_MULTIPLIER = 1.25;
 
 /** Conservative fallback for unknown models: over-estimates spend rather than under-estimating it. */
 export const DEFAULT_PRICE: Readonly<ModelPrice> = Object.freeze({ input_per_m: 15, output_per_m: 75 });
@@ -23,15 +31,15 @@ interface PriceRow {
   price: ModelPrice;
 }
 
-const p = (input_per_m: number, output_per_m: number): ModelPrice => ({ input_per_m, output_per_m });
+const p = (input_per_m: number, output_per_m: number, cache_read_per_m?: number): ModelPrice => ({ input_per_m, output_per_m, ...(cache_read_per_m !== undefined ? { cache_read_per_m } : {}) });
 
 export const PRICING: readonly PriceRow[] = [
   // --- Anthropic Claude -------------------------------------------------------------------------
-  { label: 'Claude Fable 5.1', match: /claude-fable-5-1/, price: p(10, 50) },
-  { label: 'Claude Mythos 5.1', match: /claude-mythos-5-1/, price: p(10, 50) },
+  { label: 'Claude Fable 5.1', match: /claude-fable-5-1/, price: p(10, 50, 0.25) },
+  { label: 'Claude Mythos 5.1', match: /claude-mythos-5-1/, price: p(10, 50, 0.25) },
   { label: 'Claude Fable 5', match: /claude-fable-5/, price: p(10, 50) },
   { label: 'Claude Mythos 5', match: /claude-mythos-5/, price: p(10, 50) },
-  { label: 'Claude Opus 5.5', match: /claude-opus-5-5/, price: p(4, 20) },
+  { label: 'Claude Opus 5.5', match: /claude-opus-5-5/, price: p(4, 20, 0.2) },
   { label: 'Claude Opus 5', match: /claude-opus-5/, price: p(5, 25) },
   { label: 'Claude Sonnet 5.5', match: /claude-sonnet-5-5/, price: p(2, 10) },
   { label: 'Claude Sonnet 5', match: /claude-sonnet-5/, price: p(2, 10) },
@@ -100,8 +108,26 @@ export function priceFor(modelId: string, override?: ModelPrice | null): ModelPr
   return override ?? lookupPrice(modelId) ?? DEFAULT_PRICE;
 }
 
+/** Every token the model processed (uncached + cached input, output): what token budgets count. */
+export function totalTokens(usage: TokenUsage): number {
+  return usage.input_tokens + usage.output_tokens + (usage.cache_read_tokens ?? 0) + (usage.cache_write_tokens ?? 0);
+}
+
 export function computeCost(price: ModelPrice, usage: TokenUsage): number {
-  const usd = (usage.input_tokens * price.input_per_m + usage.output_tokens * price.output_per_m) / 1_000_000;
+  const read = price.cache_read_per_m ?? price.input_per_m * CACHE_READ_MULTIPLIER;
+  const write = price.cache_write_per_m ?? price.input_per_m * CACHE_WRITE_MULTIPLIER;
+  const usd =
+    (usage.input_tokens * price.input_per_m + usage.output_tokens * price.output_per_m + (usage.cache_read_tokens ?? 0) * read + (usage.cache_write_tokens ?? 0) * write) / 1_000_000;
   // Round to micro-dollars to keep sums stable in logs/DB.
   return Math.round(usd * 1e6) / 1e6;
+}
+
+/** TokenUsage → the `session_turns` token columns (null when the turn reported no usage). */
+export function usageColumns(usage: TokenUsage | null | undefined): { tokens_in: number | null; tokens_out: number | null; tokens_cache_read: number | null; tokens_cache_write: number | null } {
+  return {
+    tokens_in: usage?.input_tokens ?? null,
+    tokens_out: usage?.output_tokens ?? null,
+    tokens_cache_read: usage?.cache_read_tokens ?? null,
+    tokens_cache_write: usage?.cache_write_tokens ?? null,
+  };
 }

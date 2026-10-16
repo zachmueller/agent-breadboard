@@ -102,7 +102,7 @@ function build(): PrimitivesImpl {
       get: (id: string) =>
         id === 'sess_child' ? session(id, 'running', { parent_session: 'sess_parent' }) : id === 'sess_other' ? session(id, 'running') : id === 'sess_intake' ? session(id, 'running', { kind: 'intake' }) : null,
       mustGet: (id: string) => session(id, 'running'),
-      cost: () => ({ cost_usd: spentUsd, tokens_in: 0, tokens_out: 0 }),
+      cost: () => ({ cost_usd: spentUsd, tokens_in: 0, tokens_out: 0, tokens_cache_read: 0, tokens_cache_write: 0 }),
       costIncludingChildren: () => spentUsd,
       recordTurn: (t: any) => ({ ...t, turn_id: 'trn_1', created_at: '' }),
     }),
@@ -144,7 +144,7 @@ function build(): PrimitivesImpl {
     gateway: (() => {
       // `providers` / `fallbackEvents` are synchronous in the real gateway, so they sit beside the recording fake.
       const gw = fake<Pick<PrimitivesDeps['gateway'], 'complete'>>('gateway', calls, {
-        complete: () => ({ model_id: 'm-1', provider: 'mock', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 2 }, cost_usd: 0.01, latency_ms: 5, fallback_from: null }),
+        complete: () => ({ model_id: 'm-1', provider: 'mock', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 2, cache_read_tokens: 500 }, cost_usd: 0.01, latency_ms: 5, fallback_from: null }),
       });
       return { complete: (req) => gw.complete(req), providers: () => ['mock'], fallbackEvents: () => [] } as PrimitivesDeps['gateway'];
     })(),
@@ -360,11 +360,12 @@ describe('broker_fetch, run_tool, config', () => {
     spentUsd = 0;
     await f.db.query(`INSERT INTO tool_executions (execution_key, tool_uid, tool_commit, input_hash, status) VALUES ($1,$2,$3,'h','running')`, ['exec-model', MODEL_TOOL, 'abc123']);
     const toolCode = subagentPrincipal(f, grants(), { execution_key: 'exec-model', token_kind: 'actor' });
-    const req = { messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], tools: [{ name: 'run_command', input_schema: { type: 'object' } }] };
+    const req = { messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], tools: [{ name: 'run_command', input_schema: { type: 'object' } }], effort: 'high', force_tool: 'run_command' };
     const out = await prims.call('model_converse', req, toolCode, { session_id: 'sess_parent', step_id: 'implement#2' });
     expect(out).toMatchObject({ stop_reason: 'end_turn', model_id: 'm-1', cost_usd: 0.01, message: { content: [{ type: 'text', text: 'hello' }] } });
-    expect(callsTo('gateway', 'complete')[0]!.args[0]).toMatchObject({ preset: 'medium', session_id: 'sess_parent', step_id: 'implement', tools: [{ name: 'run_command', description: 'run_command' }] });
-    expect(callsTo('sessions', 'recordTurn')[0]!.args[0]).toMatchObject({ session_id: 'sess_parent', step_id: 'implement', attempt: 2, role: 'assistant', model_id: 'm-1', cost_usd: 0.01, tokens_in: 10, tokens_out: 2 });
+    expect(callsTo('gateway', 'complete')[0]!.args[0]).toMatchObject({ preset: 'medium', session_id: 'sess_parent', step_id: 'implement', tools: [{ name: 'run_command', description: 'run_command' }], effort: 'high', force_tool: 'run_command' });
+    expect(callsTo('sessions', 'recordTurn')[0]!.args[0]).toMatchObject({ session_id: 'sess_parent', step_id: 'implement', attempt: 2, role: 'assistant', model_id: 'm-1', cost_usd: 0.01, tokens_in: 10, tokens_out: 2, tokens_cache_read: 500 });
+    expect(out).toMatchObject({ usage: { input_tokens: 10, output_tokens: 2, cache_read_tokens: 500 } });
     // Never for the model or users; never for tools that did not declare the capability; never past the budget.
     expect(await codeOf(prims.call('model_converse', req, subagentPrincipal(f, grants({ primitives: ['model_converse'] }))))).toBe('grant-denied');
     expect(await codeOf(prims.call('model_converse', req, f.memberPrincipal))).toBe('grant-denied');

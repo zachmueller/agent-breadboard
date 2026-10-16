@@ -7,10 +7,11 @@
  * themselves; this layer adds the primitive-level gates (which names a principal may call, `run_circuit`
  * execute grants, circuit read grants on `read_config`, session visibility on `get_session_summary`).
  */
-import { BreadboardError, validateAgainst, type ConfigDefinitionDto, type JsonSchema } from '@breadboard/shared';
+import { BreadboardError, EFFORT_LEVELS, validateAgainst, type ConfigDefinitionDto, type JsonSchema } from '@breadboard/shared';
 import { proposalToolChecks } from './proposal-checks.js';
 import { hasScope, requireScope, type Principal } from '../core/principal.js';
 import type { ChatMessage, Primitives, SessionStore, ToolSpec } from '../core/services.js';
+import { usageColumns } from '../gateway/pricing.js';
 import { obj, sessionVisible, STRING_ARRAY, UID, type PrimitiveCallCtx, type PrimitiveDef, type PrimitivesDeps } from './primitive-defs.js';
 import { inspectionCatalog } from './inspection.js';
 import { normalizePath } from '../config/repo.js';
@@ -480,7 +481,7 @@ export class PrimitivesImpl implements Primitives {
         name: 'model_converse',
         scope: 'tools:execute',
         description:
-          "One model turn through the Breadboard model gateway (presets, fallback, the session's budget and cost tracking). Tool code only; the tool must declare the `model` capability. Messages and the reply use Breadboard's chat format (text, tool_use, tool_result blocks).",
+          "One model turn through the Breadboard model gateway (presets, fallback, prompt caching, the session's budget and cost tracking). Tool code only; the tool must declare the `model` capability. Messages and the reply use Breadboard's chat format (text, tool_use, tool_result, reasoning blocks); pass reasoning blocks back unchanged on the next turn.",
         input_schema: obj(
           {
             system: { type: 'string' },
@@ -490,6 +491,8 @@ export class PrimitivesImpl implements Primitives {
             model_id: { type: 'string', minLength: 1, description: 'Explicit model id (overrides the preset).' },
             max_tokens: { type: 'integer', minimum: 1 },
             temperature: { type: 'number' },
+            effort: { type: 'string', enum: [...EFFORT_LEVELS], description: 'Reasoning effort (ignored by models that do not reason).' },
+            force_tool: { type: 'string', minLength: 1, description: 'Make the model call this tool (forced where the model allows it, an instruction otherwise).' },
           },
           ['messages'],
         ),
@@ -503,7 +506,7 @@ export class PrimitivesImpl implements Primitives {
           if (!session_id) throw new BreadboardError('invalid-state', 'model_converse needs a session (its spend is accounted there)');
           const session = await d.sessions.mustGet(session_id);
           const [spent, used] = await Promise.all([d.sessions.costIncludingChildren(session_id), d.sessions.cost(session_id)]);
-          if (spent >= session.budget.max_cost_usd || used.tokens_in + used.tokens_out >= session.budget.max_tokens) {
+          if (spent >= session.budget.max_cost_usd || used.tokens_in + used.tokens_out + used.tokens_cache_read + used.tokens_cache_write >= session.budget.max_tokens) {
             throw new BreadboardError('budget-exceeded', `session ${session_id} has no model budget left`, { spent_usd: spent, max_cost_usd: session.budget.max_cost_usd });
           }
           const [step_id, attempt] = (ctx.step_id ?? 'tool').split('#');
@@ -515,6 +518,8 @@ export class PrimitivesImpl implements Primitives {
             tools: (a.tools ?? []).map((t: { name: string; description?: string; input_schema?: JsonSchema }) => ({ name: t.name, description: t.description ?? t.name, input_schema: t.input_schema ?? { type: 'object' } })),
             max_tokens: a.max_tokens,
             temperature: a.temperature,
+            effort: a.effort,
+            force_tool: a.force_tool,
             model_overrides: session.model_overrides ?? null,
             session_id,
             step_id: step_id!,
@@ -527,8 +532,7 @@ export class PrimitivesImpl implements Primitives {
             username: null,
             content: res.message.content,
             model_id: res.model_id,
-            tokens_in: res.usage.input_tokens,
-            tokens_out: res.usage.output_tokens,
+            ...usageColumns(res.usage),
             cost_usd: res.cost_usd,
             latency_ms: res.latency_ms ?? null,
             fallback_from: res.fallback_from ?? null,

@@ -1,6 +1,7 @@
 /** Normalize conversation turn content (string | content blocks) for rendering. Pure. */
 export type ChatBlock =
   | { type: 'text'; text: string }
+  | { type: 'reasoning'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; content: unknown; is_error: boolean };
 
@@ -19,6 +20,9 @@ export function blocksOf(content: unknown): ChatBlock[] {
       if (b.trim()) out.push({ type: 'text', text: b });
     } else if (b?.type === 'text' && typeof b.text === 'string') {
       if (b.text.trim()) out.push({ type: 'text', text: b.text });
+    } else if (b?.type === 'reasoning') {
+      // Only the readable summary; signatures are replay data. Empty (omitted/redacted) reasoning is not shown.
+      if (typeof b.text === 'string' && b.text.trim()) out.push({ type: 'reasoning', text: b.text });
     } else if (b?.type === 'tool_use' || b?.type === 'tool_call') {
       out.push({ type: 'tool_use', id: String(b.id ?? ''), name: String(b.name ?? 'tool'), input: b.input ?? b.arguments ?? null });
     } else if (b?.type === 'tool_result') {

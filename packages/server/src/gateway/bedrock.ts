@@ -5,6 +5,7 @@
  * The request/response mapping is exported as pure functions (`toConverseRequest` / `fromConverseResponse`) so it
  * can be unit-tested without AWS.
  */
+import { createHash } from 'node:crypto';
 import {
   BedrockRuntimeClient,
   ConverseCommand,
@@ -15,24 +16,16 @@ import {
   type ConverseCommandOutput,
   type ConverseStreamOutput,
   type Message,
+  type Tool,
   type ToolChoice,
 } from '@aws-sdk/client-bedrock-runtime';
-import type { ChatContent, ChatMessage, ModelCapabilities, ModelProvider, ModelRequest, ModelResponse, TokenUsage } from '../core/services.js';
+import type { ChatContent, ChatMessage, ModelCapabilities, ModelProvider, ModelRequest, ModelResponse, ReasoningContent, TokenUsage } from '../core/services.js';
 import type { Logger } from '../core/logger.js';
 import { ProviderUnavailableError, errorMessage } from './errors.js';
 import { computeCost, normalizeModelId, priceFor } from './pricing.js';
 
 type ProviderResponse = Omit<ModelResponse, 'fallback_from' | 'cost_usd'>;
 type ProviderRequest = ModelRequest & { model_id: string };
-
-/**
- * Assistant messages produced by this provider carry the raw Converse content (incl. reasoning blocks with their
- * signatures). When the same model continues the conversation the raw blocks are replayed verbatim, keeping the
- * history append-only (required by models that bind thinking blocks to the conversation).
- */
-export interface BedrockChatMessage extends ChatMessage {
-  bedrock_raw?: { model_id: string; content: ContentBlock[] };
-}
 
 // ---------------------------------------------------------------------------
 // Model-family heuristics
@@ -105,9 +98,45 @@ export function defaultMaxTokens(modelId: string): number {
   }
 }
 
+/**
+ * How a model reasons: `default-on` models (every Claude 5.x and later) think adaptively whether asked or not, so the
+ * provider always asks for summarized reasoning it can show and replay; `opt-in` models (Opus/Sonnet 4.6-4.9) think
+ * only when the request sets an effort; `none` models get no reasoning fields at all.
+ */
+export function reasoningMode(modelId: string): 'default-on' | 'opt-in' | 'none' {
+  const id = normalizeModelId(modelId);
+  if (modelFamily(id) !== 'anthropic') return 'none';
+  if (/claude-(?:opus|sonnet|haiku|fable|mythos)-(?:[5-9]|\d{2,})/.test(id)) return 'default-on';
+  if (/claude-(?:opus|sonnet)-4-[6-9]/.test(id)) return 'opt-in';
+  return 'none';
+}
+
+/** Whether the request runs with thinking on (then forced tool choice and sampling parameters are not sent). */
+function thinkingActive(req: Pick<ModelRequest, 'effort'> & { model_id: string }): boolean {
+  const mode = reasoningMode(req.model_id);
+  return mode === 'default-on' || (mode === 'opt-in' && !!req.effort);
+}
+
+/**
+ * Models that honour Converse cache points, and where. Claude caches the tool list, the system prompt and any message;
+ * Nova caches the system prompt and messages, but rejects a cache point in a message holding tool results ("extraneous
+ * key [cachePoint]", verified 2026-10-15).
+ */
+export function promptCaching(modelId: string): { tools: boolean; toolResults: boolean } | null {
+  const id = normalizeModelId(modelId);
+  switch (modelFamily(id)) {
+    case 'anthropic':
+      return /claude-3-(?:haiku|opus|sonnet)|claude-3-5-sonnet|claude-v2|claude-instant/.test(id) ? null : { tools: true, toolResults: true };
+    case 'nova':
+      return /nova-(?:micro|lite|pro|premier|2)/.test(id) ? { tools: false, toolResults: false } : null;
+    default:
+      return null;
+  }
+}
+
 export function bedrockCapabilities(modelId: string): ModelCapabilities {
   const id = normalizeModelId(modelId);
-  const none: ModelCapabilities = { 'tool-use': false, 'structured-output': false, streaming: false, embeddings: false, vision: false, context_tokens: 0 };
+  const none: ModelCapabilities = { 'tool-use': false, 'structured-output': false, streaming: false, embeddings: false, vision: false, 'prompt-caching': false, reasoning: false, context_tokens: 0 };
   if (isEmbeddingModel(id)) {
     return { ...none, embeddings: true, context_tokens: id.startsWith('cohere.') ? 512 : 8192 };
   }
@@ -118,6 +147,8 @@ export function bedrockCapabilities(modelId: string): ModelCapabilities {
     streaming: true,
     embeddings: false,
     vision,
+    'prompt-caching': promptCaching(id) !== null,
+    reasoning: reasoningMode(id) !== 'none',
     context_tokens: context,
   });
   switch (modelFamily(id)) {
@@ -184,8 +215,31 @@ export function toolNameAliases(modelId: string, names: string[]): Map<string, s
 type Rename = (name: string) => string;
 const asIs: Rename = (n) => n;
 
-function contentToConverse(c: ChatContent, modelId: string, rename: Rename = asIs): ContentBlock | null {
+/**
+ * Fingerprint of the prefix a reasoning block is bound to (system prompt + tool specs as sent). A block is replayed
+ * only under the same fingerprint, so a changed system prompt (a designer chat whose config moved on) drops the old
+ * blocks instead of failing the request.
+ */
+export function prefixFingerprint(input: Pick<ConverseCommandInput, 'system' | 'toolConfig'>): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ system: input.system ?? [], tools: input.toolConfig?.tools ?? [] }))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/** Replay rules for a stored reasoning block: same model, and same prefix when the block recorded one. */
+export function replayableReasoning(c: ReasoningContent, modelId: string, prefixFp: string | null): boolean {
+  if (normalizeModelId(c.model_id) !== normalizeModelId(modelId)) return false;
+  return !c.prefix_fp || !prefixFp || c.prefix_fp === prefixFp;
+}
+
+function contentToConverse(c: ChatContent, modelId: string, rename: Rename = asIs, prefixFp: string | null = null): ContentBlock | null {
   switch (c.type) {
+    case 'reasoning': {
+      if (!replayableReasoning(c, modelId, prefixFp)) return null;
+      if (c.redacted) return { reasoningContent: { redactedContent: Uint8Array.from(Buffer.from(c.redacted, 'base64')) } } as ContentBlock;
+      return { reasoningContent: { reasoningText: { text: c.text, ...(c.signature ? { signature: c.signature } : {}) } } } as ContentBlock;
+    }
     case 'text':
       return c.text.length ? ({ text: c.text } as ContentBlock) : null;
     case 'tool_use':
@@ -207,20 +261,15 @@ function contentToConverse(c: ChatContent, modelId: string, rename: Rename = asI
 
 /**
  * Converse requires alternating user/assistant turns starting with `user`. Our `system`/`tool` roles fold into
- * user turns; consecutive same-role messages merge (tool results first, as Claude requires).
+ * user turns; consecutive same-role messages merge (tool results first, as Claude requires). Reasoning blocks are
+ * replayed verbatim when `replayableReasoning` allows, and dropped otherwise.
  */
-export function toConverseMessages(messages: ChatMessage[], modelId: string, rename: Rename = asIs): Message[] {
+export function toConverseMessages(messages: ChatMessage[], modelId: string, rename: Rename = asIs, prefixFp: string | null = null): Message[] {
   const out: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] }> = [];
-  const normalized = normalizeModelId(modelId);
-  for (const m of messages as BedrockChatMessage[]) {
+  for (const m of messages) {
     const role: 'user' | 'assistant' = m.role === 'assistant' ? 'assistant' : 'user';
-    let blocks: ContentBlock[];
-    if (role === 'assistant' && m.bedrock_raw && normalizeModelId(m.bedrock_raw.model_id) === normalized) {
-      blocks = m.bedrock_raw.content;
-    } else {
-      blocks = m.content.map((c) => contentToConverse(c, modelId, rename)).filter((b): b is ContentBlock => b !== null);
-      if (m.role === 'system') blocks = blocks.map((b) => ('text' in b && b.text ? ({ text: `[system] ${b.text}` } as ContentBlock) : b));
-    }
+    let blocks = m.content.map((c) => contentToConverse(c, modelId, rename, prefixFp)).filter((b): b is ContentBlock => b !== null);
+    if (m.role === 'system') blocks = blocks.map((b) => ('text' in b && b.text ? ({ text: `[system] ${b.text}` } as ContentBlock) : b));
     if (!blocks.length) continue;
     const last = out[out.length - 1];
     if (last && last.role === role) last.content.push(...blocks);
@@ -258,27 +307,36 @@ export function novaToolSchema(schema: unknown): Record<string, unknown> {
   return { type: 'object', properties: inline(root.properties ?? {}, 0), ...required };
 }
 
+const CACHE_POINT = { cachePoint: { type: 'default' } } as const;
+
+/**
+ * Converse request for a provider call. Thinking models get adaptive thinking with summarized reasoning (and the
+ * request's effort); they are never sent a forced tool choice or sampling parameters, which thinking rejects. Models
+ * with prompt caching get cache points after the tools, after the system prompt, and at the end of the history.
+ */
 export function toConverseRequest(req: ProviderRequest): ConverseCommandInput {
   const modelId = req.model_id;
   const nova = modelFamily(modelId) === 'nova';
+  const thinking = thinkingActive(req);
+  const caching = promptCaching(modelId);
   const aliases = toolNameAliases(modelId, (req.tools ?? []).map((t) => t.name));
   const rename: Rename = aliases ? (n) => aliases.get(n) ?? n.replace(/[^A-Za-z0-9_]/g, '_') : asIs;
   const system: string[] = [];
   if (req.system?.trim()) system.push(req.system);
   const input: ConverseCommandInput = {
     modelId,
-    messages: toConverseMessages(req.messages, modelId, rename),
+    messages: [],
     inferenceConfig: {
       maxTokens: req.max_tokens ?? defaultMaxTokens(modelId),
-      ...(req.temperature !== undefined && acceptsTemperature(modelId) ? { temperature: req.temperature } : {}),
+      ...(req.temperature !== undefined && !thinking && acceptsTemperature(modelId) ? { temperature: req.temperature } : {}),
     },
   };
   if (req.tools?.length) {
-    input.toolConfig = {
-      tools: req.tools.map((t) => ({
-        toolSpec: { name: rename(t.name), description: t.description || t.name, inputSchema: { json: (nova ? novaToolSchema(t.input_schema) : (t.input_schema ?? { type: 'object' })) as any } },
-      })),
-    };
+    const tools: Tool[] = req.tools.map((t) => ({
+      toolSpec: { name: rename(t.name), description: t.description || t.name, inputSchema: { json: (nova ? novaToolSchema(t.input_schema) : (t.input_schema ?? { type: 'object' })) as any } },
+    }));
+    if (caching?.tools) tools.push(CACHE_POINT as Tool);
+    input.toolConfig = { tools };
     // Nova calls tools reliably only with greedy decoding; otherwise it fails with "Model produced invalid sequence
     // as part of ToolUse" (Nova user guide, "Troubleshooting tool calls").
     if (nova) {
@@ -286,13 +344,28 @@ export function toConverseRequest(req: ProviderRequest): ConverseCommandInput {
       input.additionalModelRequestFields = { inferenceConfig: { topK: 1 } };
     }
     if (req.force_tool && req.tools.some((t) => t.name === req.force_tool)) {
-      const choice = toolChoiceFor(modelId, rename(req.force_tool), req.tools.length);
+      const choice = thinking ? null : toolChoiceFor(modelId, rename(req.force_tool), req.tools.length);
       if (choice) input.toolConfig.toolChoice = choice;
       else system.push(forcedToolInstruction(rename(req.force_tool)));
     }
   }
-  if (system.length) input.system = system.map((text) => ({ text }));
+  if (system.length) input.system = [...system.map((text) => ({ text })), ...(caching ? [CACHE_POINT] : [])];
+  if (thinking) {
+    input.additionalModelRequestFields = { ...(input.additionalModelRequestFields as object | undefined), thinking: { type: 'adaptive', display: 'summarized' } };
+    if (req.effort) input.outputConfig = { effort: req.effort };
+  }
+  input.messages = toConverseMessages(req.messages, modelId, rename, prefixFingerprint(input));
+  if (caching) {
+    const last = input.messages[input.messages.length - 1];
+    const holdsResults = !!last?.content?.some((b) => 'toolResult' in b && b.toolResult);
+    if (last?.content?.length && (caching.toolResults || !holdsResults)) last.content = [...last.content, CACHE_POINT as ContentBlock];
+  }
   return input;
+}
+
+/** Drop every reasoning block from a request's history (recovery when the model rejects replayed reasoning). */
+export function withoutReasoning(req: ProviderRequest): ProviderRequest {
+  return { ...req, messages: req.messages.map((m) => ({ ...m, content: m.content.filter((c) => c.type !== 'reasoning') })) };
 }
 
 /** Downgrade a forced tool choice to `auto` + instruction (used when a model rejects forcing at runtime). */
@@ -321,34 +394,56 @@ export function mapStopReason(r: string | undefined): ModelResponse['stop_reason
   }
 }
 
-function contentFromConverse(blocks: ContentBlock[]): ChatContent[] {
+function contentFromConverse(blocks: ContentBlock[], modelId: string, prefixFp: string | null): ChatContent[] {
   const out: ChatContent[] = [];
+  const bound = { model_id: modelId, ...(prefixFp ? { prefix_fp: prefixFp } : {}) };
   for (const b of blocks) {
     if ('text' in b && typeof b.text === 'string') {
       if (b.text.length) out.push({ type: 'text', text: b.text });
     } else if ('toolUse' in b && b.toolUse) {
       out.push({ type: 'tool_use', id: b.toolUse.toolUseId ?? '', name: b.toolUse.name ?? '', input: b.toolUse.input ?? {} });
+    } else if ('reasoningContent' in b && b.reasoningContent) {
+      const r = b.reasoningContent;
+      if ('redactedContent' in r && r.redactedContent) out.push({ type: 'reasoning', text: '', redacted: Buffer.from(r.redactedContent).toString('base64'), ...bound });
+      else if ('reasoningText' in r && r.reasoningText) out.push({ type: 'reasoning', text: r.reasoningText.text ?? '', ...(r.reasoningText.signature ? { signature: r.reasoningText.signature } : {}), ...bound });
     }
-    // reasoningContent and other block kinds are preserved only in `bedrock_raw`.
   }
   return out;
 }
 
-/** `aliases` (original → sent, from `toolNameAliases`) maps tool calls back to the real tool names; `bedrock_raw` keeps the aliases for replay. */
-export function fromConverseResponse(out: Pick<ConverseCommandOutput, 'output' | 'stopReason' | 'usage'>, modelId: string, latencyMs: number, provider = 'bedrock', aliases: Map<string, string> | null = null): ProviderResponse {
+/** Converse usage → TokenUsage; cache counts appear only when non-zero. */
+export function usageFromConverse(u: { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheWriteInputTokens?: number } | undefined): TokenUsage {
+  return {
+    input_tokens: u?.inputTokens ?? 0,
+    output_tokens: u?.outputTokens ?? 0,
+    ...(u?.cacheReadInputTokens ? { cache_read_tokens: u.cacheReadInputTokens } : {}),
+    ...(u?.cacheWriteInputTokens ? { cache_write_tokens: u.cacheWriteInputTokens } : {}),
+  };
+}
+
+/**
+ * `aliases` (original → sent, from `toolNameAliases`) maps tool calls back to the real tool names. `prefixFp`
+ * (from `prefixFingerprint` of the request) is stamped on reasoning blocks so replay can check it.
+ */
+export function fromConverseResponse(
+  out: Pick<ConverseCommandOutput, 'output' | 'stopReason' | 'usage'>,
+  modelId: string,
+  latencyMs: number,
+  provider = 'bedrock',
+  aliases: Map<string, string> | null = null,
+  prefixFp: string | null = null,
+): ProviderResponse {
   const raw = (out.output && 'message' in out.output ? out.output.message?.content : undefined) ?? [];
   const original = aliases ? new Map([...aliases].map(([name, alias]) => [alias, name])) : null;
-  const content = contentFromConverse(raw).map((c) => (original && c.type === 'tool_use' && original.has(c.name) ? { ...c, name: original.get(c.name)! } : c));
+  const content = contentFromConverse(raw, modelId, prefixFp).map((c) => (original && c.type === 'tool_use' && original.has(c.name) ? { ...c, name: original.get(c.name)! } : c));
   let stop = mapStopReason(out.stopReason);
   if (stop !== 'tool_use' && content.some((c) => c.type === 'tool_use') && stop === 'other') stop = 'tool_use';
-  const message: BedrockChatMessage = { role: 'assistant', content };
-  if (raw.length) Object.defineProperty(message, 'bedrock_raw', { value: { model_id: modelId, content: raw }, enumerable: false, writable: true, configurable: true });
   return {
     model_id: modelId,
     provider,
-    message,
+    message: { role: 'assistant', content },
     stop_reason: stop,
-    usage: { input_tokens: out.usage?.inputTokens ?? 0, output_tokens: out.usage?.outputTokens ?? 0 },
+    usage: usageFromConverse(out.usage),
     latency_ms: latencyMs,
   };
 }
@@ -360,11 +455,13 @@ const RETRYABLE = new Set(['ThrottlingException', 'ServiceUnavailableException',
 /** Not worth retrying, but the model is unusable right now → fall back. */
 const UNAVAILABLE = new Set(['ResourceNotFoundException', 'AccessDeniedException', 'ServiceQuotaExceededException']);
 
-export function classifyBedrockError(e: unknown): 'retryable' | 'unavailable' | 'forced-tool-rejected' | 'fatal' {
+export function classifyBedrockError(e: unknown): 'retryable' | 'unavailable' | 'forced-tool-rejected' | 'reasoning-rejected' | 'fatal' {
   const name = (e as { name?: string } | null)?.name ?? '';
   const status = (e as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode;
   if (RETRYABLE.has(name) || status === 429 || status === 503) return 'retryable';
   if (UNAVAILABLE.has(name)) return 'unavailable';
+  // A replayed thinking block the model will not accept (bound to another conversation prefix, or a bad signature).
+  if (name === 'ValidationException' && /thinking|reasoning/i.test(errorMessage(e)) && /signature|different conversation|block_binding/i.test(errorMessage(e))) return 'reasoning-rejected';
   if (name === 'ValidationException' && /tool_?choice/i.test(errorMessage(e))) return 'forced-tool-rejected';
   if (name === 'ValidationException' && /end of (?:its )?life|deprecated|legacy|not supported for (?:this|on-demand)/i.test(errorMessage(e))) return 'unavailable';
   return 'fatal';
@@ -435,34 +532,60 @@ export class BedrockProvider implements ModelProvider {
     throw new ProviderUnavailableError(this.name, modelId, `${(lastErr as Error)?.name ?? 'error'} after ${this.maxAttempts} attempts: ${errorMessage(lastErr)}`, lastErr);
   }
 
+  /**
+   * Send `input`, recovering once from each request shape a model can reject: a forced tool choice (→ `auto` +
+   * instruction) and replayed reasoning (→ the same history without reasoning blocks).
+   */
+  private async sendWithRecovery<T>(req: ProviderRequest, input: ConverseCommandInput, send: (input: ConverseCommandInput) => Promise<T>): Promise<{ out: T; input: ConverseCommandInput }> {
+    const aliases = toolNameAliases(req.model_id, (req.tools ?? []).map((t) => t.name));
+    let forcedDowngraded = false;
+    let reasoningStripped = false;
+    for (;;) {
+      try {
+        return { out: await send(input), input };
+      } catch (e) {
+        const kind = classifyBedrockError(e);
+        if (kind === 'forced-tool-rejected' && req.force_tool && input.toolConfig?.toolChoice && !forcedDowngraded) {
+          this.log?.info({ model_id: req.model_id }, 'model rejected forced tool_choice; retrying with auto + instruction');
+          input = withoutForcedToolChoice(input, aliases?.get(req.force_tool) ?? req.force_tool);
+          forcedDowngraded = true;
+        } else if (kind === 'reasoning-rejected' && !reasoningStripped && req.messages.some((m) => m.content.some((c) => c.type === 'reasoning'))) {
+          this.log?.warn({ model_id: req.model_id, err: errorMessage(e) }, 'model rejected replayed reasoning; retrying without reasoning blocks');
+          const stripped = toConverseRequest(withoutReasoning(req));
+          input = forcedDowngraded ? withoutForcedToolChoice(stripped, aliases?.get(req.force_tool!) ?? req.force_tool!) : stripped;
+          reasoningStripped = true;
+        } else {
+          throw e;
+        }
+      }
+    }
+  }
+
   async invoke(req: ProviderRequest): Promise<ProviderResponse> {
     let input = toConverseRequest(req);
     const aliases = toolNameAliases(req.model_id, (req.tools ?? []).map((t) => t.name));
     const started = Date.now();
     const out: ConverseCommandOutput = await this.withRetry(req.model_id, async () => {
-      try {
-        return await this.client.send(new ConverseCommand(input));
-      } catch (e) {
-        if (req.force_tool && input.toolConfig?.toolChoice && classifyBedrockError(e) === 'forced-tool-rejected') {
-          this.log?.info({ model_id: req.model_id }, 'model rejected forced tool_choice; retrying with auto + instruction');
-          input = withoutForcedToolChoice(input, aliases?.get(req.force_tool) ?? req.force_tool);
-          return await this.client.send(new ConverseCommand(input));
-        }
-        throw e;
-      }
+      const sent = await this.sendWithRecovery(req, input, (i) => this.client.send(new ConverseCommand(i)));
+      input = sent.input;
+      return sent.out;
     });
-    return fromConverseResponse(out, req.model_id, Date.now() - started, this.name, aliases);
+    return fromConverseResponse(out, req.model_id, Date.now() - started, this.name, aliases, prefixFingerprint(input));
   }
 
   async *stream(req: ProviderRequest): AsyncIterable<{ type: 'text'; text: string } | { type: 'done'; response: ProviderResponse }> {
-    const input = toConverseRequest(req);
+    let input = toConverseRequest(req);
     const aliases = toolNameAliases(req.model_id, (req.tools ?? []).map((t) => t.name));
     const started = Date.now();
     // Retries only apply to opening the stream (before any event was yielded).
-    const res = await this.withRetry(req.model_id, () => this.client.send(new ConverseStreamCommand(input)));
-    const blocks = new Map<number, { text?: string; tool?: { id: string; name: string; json: string }; reasoning?: { text: string; signature?: string } }>();
+    const res = await this.withRetry(req.model_id, async () => {
+      const sent = await this.sendWithRecovery(req, input, (i) => this.client.send(new ConverseStreamCommand(i)));
+      input = sent.input;
+      return sent.out;
+    });
+    const blocks = new Map<number, { text?: string; tool?: { id: string; name: string; json: string }; reasoning?: { text: string; signature?: string; redacted?: Uint8Array } }>();
     let stopReason: string | undefined;
-    let usage: TokenUsage = { input_tokens: 0, output_tokens: 0 };
+    let usage: ConverseCommandOutput['usage'];
     for await (const ev of (res.stream ?? []) as AsyncIterable<ConverseStreamOutput>) {
       if ('contentBlockStart' in ev && ev.contentBlockStart) {
         const idx = ev.contentBlockStart.contentBlockIndex ?? 0;
@@ -483,12 +606,13 @@ export class BedrockProvider implements ModelProvider {
           b.reasoning = b.reasoning ?? { text: '' };
           if (typeof d.reasoningContent.text === 'string') b.reasoning.text += d.reasoningContent.text;
           if (typeof d.reasoningContent.signature === 'string') b.reasoning.signature = d.reasoningContent.signature;
+          if (d.reasoningContent.redactedContent) b.reasoning.redacted = d.reasoningContent.redactedContent;
           blocks.set(idx, b);
         }
       } else if ('messageStop' in ev && ev.messageStop) {
         stopReason = ev.messageStop.stopReason;
       } else if ('metadata' in ev && ev.metadata) {
-        usage = { input_tokens: ev.metadata.usage?.inputTokens ?? 0, output_tokens: ev.metadata.usage?.outputTokens ?? 0 };
+        usage = ev.metadata.usage;
       } else {
         const errKey = Object.keys(ev).find((k) => /Exception$/.test(k));
         if (errKey) {
@@ -510,15 +634,17 @@ export class BedrockProvider implements ModelProvider {
           }
           return { toolUse: { toolUseId: b.tool.id, name: b.tool.name, input: parsed as any } } as ContentBlock;
         }
+        if (b.reasoning?.redacted) return { reasoningContent: { redactedContent: b.reasoning.redacted } } as ContentBlock;
         if (b.reasoning) return { reasoningContent: { reasoningText: { text: b.reasoning.text, ...(b.reasoning.signature ? { signature: b.reasoning.signature } : {}) } } } as ContentBlock;
         return { text: b.text ?? '' } as ContentBlock;
       });
     const response = fromConverseResponse(
-      { output: { message: { role: 'assistant', content: raw } }, stopReason: stopReason as any, usage: { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, totalTokens: usage.input_tokens + usage.output_tokens } },
+      { output: { message: { role: 'assistant', content: raw } }, stopReason: stopReason as any, usage },
       req.model_id,
       Date.now() - started,
       this.name,
       aliases,
+      prefixFingerprint(input),
     );
     yield { type: 'done', response };
   }

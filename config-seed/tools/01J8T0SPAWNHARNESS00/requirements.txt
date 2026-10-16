@@ -1,2 +1,4 @@
 # Python dependencies for spawn-harness. Install into the Python sandbox image (breadboard-sandbox-py).
-strands-agents>=1.0
+strands-agents>=1.61
+# The `strands-harness` adapter; pinned because its agent contract (system prompt) is part of what a run used.
+strands-harness==0.3.1

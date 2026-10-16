@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useQueryClient } from '@tanstack/react-query';
-import { Send, Wrench, Sparkles, RotateCcw, ExternalLink, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Send, Wrench, Sparkles, RotateCcw, ExternalLink, AlertTriangle, CheckCircle2, Brain } from 'lucide-react';
 import { convApi, proposalPath, useBreadboardSettings, type ConversationSnapshot, type ConversationTurn } from '../lib/configApi';
 import { useWorkingTree } from '../model/workingTree';
 import { Btn, Md, Spin, TextAreaInput, notify, errorMessage, useLiveEvents, useLiveConnected, payloadSessionId } from '../ui';
@@ -373,6 +373,18 @@ function TurnView({ turn, toolNames, outcomes }: { turn: ConversationTurn; toolN
     <div className="space-y-1.5">
       {blocks.map((b, i) => {
         if (b.type === 'text') return <Md key={i} source={b.text} />;
+        if (b.type === 'reasoning') {
+          return (
+            <details key={i} className="rounded-md border border-dashed border-line text-xs">
+              <summary className="flex cursor-pointer items-center gap-1.5 px-2 py-1 text-fg-muted">
+                <Brain className="size-3" /> Reasoning
+              </summary>
+              <div className="px-2 pb-2 text-fg-muted">
+                <Md source={b.text} />
+              </div>
+            </details>
+          );
+        }
         if (b.type === 'tool_use') {
           return (
             <details key={i} className="rounded-md border border-line bg-sunken text-xs">

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { zUid, zSlug, zJsonSchema, zRetryPolicy, zBudget, zReviewers, SCHEMA_TAGS } from './common.js';
+import { zUid, zSlug, zJsonSchema, zRetryPolicy, zBudget, zReviewers, zEffort, SCHEMA_TAGS } from './common.js';
 
 export const zStepExit = z.object({
   name: z.string().min(1).regex(/^[a-z0-9][a-z0-9-]*$/, 'exit names are lowercase-dash'),
@@ -38,6 +38,8 @@ export const zLlmStep = z.object({
   /** Max schema-invalid finish re-asks within one attempt. */
   max_reasks: z.number().int().min(0).max(10).default(2),
   max_turns: z.number().int().min(1).max(500).default(60),
+  /** Reasoning effort for this step; overrides the subagent's. Ignored by models that do not reason. */
+  effort: zEffort.optional(),
 });
 
 export const zCodeStep = z.object({

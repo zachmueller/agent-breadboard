@@ -92,7 +92,7 @@ export class MemorySessionStore {
   async recordTurn(t: Omit<Turn, 'turn_id' | 'created_at'> & { attempt?: number; latency_ms?: number | null; fallback_from?: string | null }): Promise<Turn> {
     const log = this.turnLog.get(t.session_id);
     if (!log) throw new Error(`session ${t.session_id} not found`);
-    const turn = { turn_id: mintId('trn'), session_id: t.session_id, step_id: t.step_id, role: t.role, username: t.username, content: structuredClone(t.content), model_id: t.model_id, tokens_in: t.tokens_in, tokens_out: t.tokens_out, cost_usd: t.cost_usd, created_at: this.now(), attempt: t.attempt ?? 1 };
+    const turn = { turn_id: mintId('trn'), session_id: t.session_id, step_id: t.step_id, role: t.role, username: t.username, content: structuredClone(t.content), model_id: t.model_id, tokens_in: t.tokens_in, tokens_out: t.tokens_out, tokens_cache_read: t.tokens_cache_read, tokens_cache_write: t.tokens_cache_write, cost_usd: t.cost_usd, created_at: this.now(), attempt: t.attempt ?? 1 };
     log.push(turn);
     const { attempt: _a, ...out } = turn;
     return structuredClone(out);
@@ -105,9 +105,10 @@ export class MemorySessionStore {
   }
 
   /** Turn-sum cost; `excludeStep` mirrors the analysis join's judge exclusion. */
-  async cost(id: string): Promise<{ cost_usd: number; tokens_in: number; tokens_out: number }> {
+  async cost(id: string): Promise<{ cost_usd: number; tokens_in: number; tokens_out: number; tokens_cache_read: number; tokens_cache_write: number }> {
     const ts = this.turnLog.get(id) ?? [];
-    return { cost_usd: ts.reduce((s, t) => s + (t.cost_usd ?? 0), 0), tokens_in: ts.reduce((s, t) => s + (t.tokens_in ?? 0), 0), tokens_out: ts.reduce((s, t) => s + (t.tokens_out ?? 0), 0) };
+    const sum = (k: 'tokens_in' | 'tokens_out' | 'tokens_cache_read' | 'tokens_cache_write') => ts.reduce((s, t) => s + (t[k] ?? 0), 0);
+    return { cost_usd: ts.reduce((s, t) => s + (t.cost_usd ?? 0), 0), tokens_in: sum('tokens_in'), tokens_out: sum('tokens_out'), tokens_cache_read: sum('tokens_cache_read'), tokens_cache_write: sum('tokens_cache_write') };
   }
 
   async costIncludingChildren(id: string): Promise<number> {
@@ -212,6 +213,7 @@ export class FakeSubagentRuntime {
       cost_usd: cost,
       turns: 1 + (results.length ? 1 : 0),
       model_ids: ['model-a'],
+      tool_calls: (input.call_index_start ?? 0) + toolUses.length,
     };
   }
 

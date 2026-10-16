@@ -165,7 +165,7 @@ Every circuit run gets **its own Session ID** — whether initiated top-level, t
 
 ## 6. Cost tracking
 
-- Every LLM call records tokens in/out and computed cost on its `turn` event (projected into `session_turns` rows, §4); step checkpoints aggregate turns; Sessions aggregate steps.
+- Every LLM call records tokens in/out, prompt-cache reads/writes, and computed cost on its `turn` event (projected into `session_turns` rows, §4); step checkpoints aggregate turns; Sessions aggregate steps. `tokens_in` is the uncached input; cache reads and writes are separate columns because they are priced differently ([12](12-security-deployment.md) §7). Token budgets count all four, so caching lowers cost without changing how far a token budget goes.
 - **No double counting rule:** cost is *authoritative* only at the turn level (the leaf); step and session figures are materialized aggregates of leaf rows, and a parent Session's reported "total including children" is always computed by walking the session tree at query time — never stored denormalized.
 - **v1 scope:** only LLM costs (i.e., model-provider spend via the gateway, Bedrock reference) are captured first-class. Sandbox compute, storage, etc. are future work.
 - Purpose: support cost-vs-performance analysis (e.g., trying different model presets on the same circuit — joins against eval results, [04 — Evals](04-evals.md) §6).

@@ -30,6 +30,8 @@ export interface SessionSummaryDto extends SessionRecord {
   cost_usd: number;
   tokens_in: number;
   tokens_out: number;
+  tokens_cache_read?: number;
+  tokens_cache_write?: number;
   /** Including descendant sessions, computed at query time ([02] §6). */
   cost_usd_including_children: number;
   children: Array<Pick<SessionRecord, 'session_id' | 'kind' | 'circuit_uid' | 'state' | 'parent_step_id'>>;
@@ -45,6 +47,8 @@ export interface StepSummaryDto {
   cost_usd: number;
   tokens_in: number;
   tokens_out: number;
+  tokens_cache_read?: number;
+  tokens_cache_write?: number;
   started_at: string | null;
   ended_at: string | null;
   child_session_id?: string | null;

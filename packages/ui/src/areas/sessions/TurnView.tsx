@@ -4,7 +4,7 @@
  * which the MCP transcript tool uses too.
  */
 import { useState } from 'react';
-import { Bot, ChevronRight, CornerDownRight, Cpu, User, Wrench, AlertTriangle, Settings2 } from 'lucide-react';
+import { Bot, Brain, ChevronRight, CornerDownRight, Cpu, User, Wrench, AlertTriangle, Settings2 } from 'lucide-react';
 import { resultText, toBlocks, type Turn, type TurnBlock as Block } from '@breadboard/shared';
 
 // Re-exported for the Intake chat and the sessions barrel, which normalise turns the same way.
@@ -37,6 +37,28 @@ function ToolCall({ block, result }: { block: Extract<Block, { kind: 'tool_use' 
               <ToolResultBody block={result} />
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The model's reasoning summary, collapsed to its first line. Redacted reasoning has no readable text. */
+export function Reasoning({ block }: { block: Extract<Block, { kind: 'reasoning' }> }) {
+  const [open, setOpen] = useState(false);
+  const text = block.text.trim();
+  const preview = text ? text.split('\n')[0] : block.redacted ? 'Redacted by the model provider' : 'No summary returned';
+  return (
+    <div className="rounded-md border border-dashed border-line">
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} disabled={!text} className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] text-fg-muted hover:bg-hover disabled:cursor-default disabled:hover:bg-transparent">
+        <ChevronRight size={13} className={cn('shrink-0 text-fg-subtle transition-transform', open && 'rotate-90', !text && 'invisible')} aria-hidden />
+        <Brain size={13} className="shrink-0 text-fg-subtle" aria-hidden />
+        <span className="font-medium">Reasoning</span>
+        {!open && <span className="min-w-0 flex-1 truncate italic text-fg-subtle">{preview}</span>}
+      </button>
+      {open && (
+        <div className="border-t border-line px-2.5 py-2 text-fg-muted">
+          <Markdown source={text} size="sm" />
         </div>
       )}
     </div>
@@ -96,6 +118,8 @@ export function TurnItem({ turn, results }: { turn: TurnLike; results?: Map<stri
           {(turn.tokens_in ?? 0) + (turn.tokens_out ?? 0) > 0 && (
             <span className="tabular">
               {formatTokens(turn.tokens_in)} in · {formatTokens(turn.tokens_out)} out
+              {turn.tokens_cache_read ? ` · ${formatTokens(turn.tokens_cache_read)} cached` : ''}
+              {turn.tokens_cache_write ? ` · ${formatTokens(turn.tokens_cache_write)} to cache` : ''}
             </span>
           )}
           {turn.cost_usd ? <span className="tabular">{formatCost(turn.cost_usd)}</span> : null}
@@ -110,6 +134,7 @@ export function TurnItem({ turn, results }: { turn: TurnLike; results?: Map<stri
           <div className="flex flex-col gap-2">
             {blocks.map((b, i) => {
               if (b.kind === 'text') return b.text.trim() ? <Markdown key={i} source={b.text} size="sm" /> : null;
+              if (b.kind === 'reasoning') return <Reasoning key={i} block={b} />;
               if (b.kind === 'tool_use') return <ToolCall key={i} block={b} result={b.id ? results?.get(b.id) : undefined} />;
               if (b.kind === 'tool_result')
                 return (

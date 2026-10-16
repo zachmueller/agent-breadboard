@@ -39,6 +39,8 @@ export const DEFAULT_PRIMITIVES: readonly string[] = Object.freeze([
   'find_similar_tasks',
   'get_session_summary',
 ]);
+/** Finds the note UIDs of knowledge already injected into a conversation (see `injectKnowledge`). */
+const INJECTED_MARKER = /^\[Injected knowledge: .*?\(\[\[([0-9A-HJKMNP-TV-Z]{20})\|/gm;
 export const DEFAULT_MAX_TURNS = 60;
 const MAX_TOOL_RESULT_CHARS = 100_000;
 const MAX_TOOL_NAME = 64;
@@ -261,7 +263,9 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
       try {
         const server = await this.deps.config.mcp(serverUid, resolved.commit);
         const slug = server.slug;
-        for (const t of await this.deps.mcp.tools(serverUid, allow, resolved.commit)) {
+        // Sorted so the tool list (the front of the prompt-cache prefix) does not depend on server listing order.
+        const listed = [...(await this.deps.mcp.tools(serverUid, allow, resolved.commit))].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        for (const t of listed) {
           let name = sanitizeToolName(`mcp__${slug}__${t.name}`);
           if (routes.has(name)) name = sanitizeToolName(`mcp__${serverUid}__${t.name}`);
           add({ ...t, name }, { kind: 'mcp', server_uid: serverUid, tool: t.name });
@@ -294,7 +298,8 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
     let cost = 0;
     const modelIds: string[] = [];
     let turns = 0;
-    let callIndex = 0;
+    let callIndex = input.call_index_start ?? 0;
+    const effort = input.effort ?? subagent.definition.effort;
     let forceTool: string | undefined = input.force_tool;
     let nudged = false;
     let lastText = '';
@@ -306,6 +311,7 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
       cost_usd: Math.round(cost * 1e6) / 1e6,
       turns,
       model_ids: modelIds,
+      tool_calls: callIndex,
     });
 
     while (turns < maxTurns) {
@@ -317,6 +323,7 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
         tools: tools.length ? tools : undefined,
         force_tool: forceTool,
         requires: tools.length ? ['tool-use'] : undefined,
+        ...(effort ? { effort } : {}),
         model_overrides: input.model_overrides ?? null,
         session_id,
         step_id,
@@ -327,6 +334,8 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
       messages.push(res.message);
       usage.input_tokens += res.usage.input_tokens;
       usage.output_tokens += res.usage.output_tokens;
+      if (res.usage.cache_read_tokens) usage.cache_read_tokens = (usage.cache_read_tokens ?? 0) + res.usage.cache_read_tokens;
+      if (res.usage.cache_write_tokens) usage.cache_write_tokens = (usage.cache_write_tokens ?? 0) + res.usage.cache_write_tokens;
       cost += res.cost_usd;
       if (!modelIds.includes(res.model_id)) modelIds.push(res.model_id);
       const text = textOf(res.message.content);
@@ -385,7 +394,8 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
 
   /**
    * Context-rule knowledge injection ([07]): notes whose rules match the conversation text are added as user messages
-   * just before the latest user message, so the request itself stays last.
+   * just before the latest user message, so the request itself stays last. Notes already injected earlier in the
+   * history (a re-asked conversation) are not injected again.
    */
   private async injectKnowledge(messages: ChatMessage[], subagent: ResolvedSubagent, grants: Grants, hooks: NonNullable<RunConversationInput['hooks']>): Promise<void> {
     const userText = messages
@@ -402,6 +412,7 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
       return;
     }
     const already = new Set(subagent.injected_notes.map((n) => n.uid));
+    for (const m of messages) for (const c of m.content) if (c.type === 'text') for (const hit of c.text.matchAll(INJECTED_MARKER)) already.add(hit[1]!);
     const injected: ChatMessage[] = [];
     for (const m of matches) {
       if (already.has(m.uid)) continue;

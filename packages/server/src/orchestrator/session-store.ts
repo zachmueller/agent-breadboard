@@ -13,7 +13,7 @@ import {
   type Turn,
 } from '@breadboard/shared';
 import type { Db, Queryable } from '../db/index.js';
-import type { CreateSessionInput, SessionFilter, SessionStore } from '../core/services.js';
+import type { CreateSessionInput, SessionCost, SessionFilter, SessionStore } from '../core/services.js';
 import { clampLimit, decodeCursor, encodeCursor } from '../content/cursor.js';
 import { toIso } from '../content/nodes.js';
 
@@ -92,6 +92,8 @@ function rowToTurn(r: any): Turn & { attempt: number; latency_ms: number | null;
     model_id: r.model_id ?? null,
     tokens_in: r.tokens_in == null ? null : Number(r.tokens_in),
     tokens_out: r.tokens_out == null ? null : Number(r.tokens_out),
+    tokens_cache_read: r.tokens_cache_read == null ? null : Number(r.tokens_cache_read),
+    tokens_cache_write: r.tokens_cache_write == null ? null : Number(r.tokens_cache_write),
     cost_usd: r.cost_usd == null ? null : Number(r.cost_usd),
     created_at: toIso(r.created_at),
     attempt: Number(r.attempt ?? 1),
@@ -236,6 +238,9 @@ export class PgSessionStore implements SessionStore {
     const cost = t.cost_usd == null ? null : Number(t.cost_usd);
     const tokIn = t.tokens_in == null ? null : Number(t.tokens_in);
     const tokOut = t.tokens_out == null ? null : Number(t.tokens_out);
+    const cacheRead = t.tokens_cache_read ? Number(t.tokens_cache_read) : null;
+    const cacheWrite = t.tokens_cache_write ? Number(t.tokens_cache_write) : null;
+    const tokens = (tokIn ?? 0) + (tokOut ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
     return this.db.transaction(async (tx) => {
       await this.appendEventTx(
         tx,
@@ -250,6 +255,8 @@ export class PgSessionStore implements SessionStore {
           model_id: t.model_id ?? null,
           tokens_in: tokIn,
           tokens_out: tokOut,
+          ...(cacheRead ? { tokens_cache_read: cacheRead } : {}),
+          ...(cacheWrite ? { tokens_cache_write: cacheWrite } : {}),
           cost_usd: cost,
           latency_ms: t.latency_ms ?? null,
           fallback_from: t.fallback_from ?? null,
@@ -257,17 +264,17 @@ export class PgSessionStore implements SessionStore {
         t.step_id,
       );
       const r = await tx.query(
-        `INSERT INTO session_turns (turn_id, session_id, step_id, attempt, role, username, content, model_id, tokens_in, tokens_out, cost_usd, latency_ms, fallback_from)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-        [turnId, t.session_id, t.step_id, attempt, t.role, t.username ?? null, JSON.stringify(t.content ?? null), t.model_id ?? null, tokIn, tokOut, cost, t.latency_ms == null ? null : Math.round(t.latency_ms), t.fallback_from ?? null],
+        `INSERT INTO session_turns (turn_id, session_id, step_id, attempt, role, username, content, model_id, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, cost_usd, latency_ms, fallback_from)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+        [turnId, t.session_id, t.step_id, attempt, t.role, t.username ?? null, JSON.stringify(t.content ?? null), t.model_id ?? null, tokIn, tokOut, cacheRead, cacheWrite, cost, t.latency_ms == null ? null : Math.round(t.latency_ms), t.fallback_from ?? null],
       );
-      if (cost || tokIn || tokOut) {
+      if (cost || tokens) {
         await tx.query(
           `UPDATE sessions SET budget = budget || jsonb_build_object(
              'spent_usd', coalesce((budget->>'spent_usd')::numeric, 0) + $2::numeric,
              'spent_tokens', coalesce((budget->>'spent_tokens')::numeric, 0) + $3::numeric), updated_at = now()
            WHERE session_id = $1`,
-          [t.session_id, cost ?? 0, (tokIn ?? 0) + (tokOut ?? 0)],
+          [t.session_id, cost ?? 0, tokens],
         );
       }
       return rowToTurn(r.rows[0]);
@@ -289,10 +296,10 @@ export class PgSessionStore implements SessionStore {
     return r.rows.map(rowToTurn);
   }
 
-  async upsertCheckpoint(cp: { session_id: string; step_id: string; attempt: number; status: 'running' | 'exited' | 'failed'; exit_name?: string | null; output?: unknown; ambient: unknown; cost_usd?: number; tokens_in?: number; tokens_out?: number; visit?: number; kind?: string; child_session_id?: string | null; error?: string | null; ended?: boolean }): Promise<void> {
+  async upsertCheckpoint(cp: Parameters<SessionStore['upsertCheckpoint']>[0]): Promise<void> {
     await this.db.query(
-      `INSERT INTO step_checkpoints (session_id, step_id, attempt, status, exit_name, output, ambient, cost_usd, tokens_in, tokens_out, visit, kind, child_session_id, error, ended_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,coalesce($8::numeric,0),coalesce($9::bigint,0),coalesce($10::bigint,0),coalesce($11::integer,1),$12,$13,$14, CASE WHEN $15::boolean THEN now() ELSE NULL END)
+      `INSERT INTO step_checkpoints (session_id, step_id, attempt, status, exit_name, output, ambient, cost_usd, tokens_in, tokens_out, visit, kind, child_session_id, error, ended_at, tokens_cache_read, tokens_cache_write)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,coalesce($8::numeric,0),coalesce($9::bigint,0),coalesce($10::bigint,0),coalesce($11::integer,1),$12,$13,$14, CASE WHEN $15::boolean THEN now() ELSE NULL END, coalesce($16::bigint,0), coalesce($17::bigint,0))
        ON CONFLICT (session_id, step_id, attempt) DO UPDATE SET
          status = EXCLUDED.status,
          exit_name = coalesce(EXCLUDED.exit_name, step_checkpoints.exit_name),
@@ -301,6 +308,8 @@ export class PgSessionStore implements SessionStore {
          cost_usd = coalesce($8::numeric, step_checkpoints.cost_usd),
          tokens_in = coalesce($9::bigint, step_checkpoints.tokens_in),
          tokens_out = coalesce($10::bigint, step_checkpoints.tokens_out),
+         tokens_cache_read = coalesce($16::bigint, step_checkpoints.tokens_cache_read),
+         tokens_cache_write = coalesce($17::bigint, step_checkpoints.tokens_cache_write),
          visit = coalesce($11::integer, step_checkpoints.visit),
          kind = coalesce(EXCLUDED.kind, step_checkpoints.kind),
          child_session_id = coalesce(EXCLUDED.child_session_id, step_checkpoints.child_session_id),
@@ -322,6 +331,8 @@ export class PgSessionStore implements SessionStore {
         cp.child_session_id ?? null,
         cp.error ?? null,
         !!cp.ended,
+        cp.tokens_cache_read ?? null,
+        cp.tokens_cache_write ?? null,
       ],
     );
   }
@@ -336,15 +347,22 @@ export class PgSessionStore implements SessionStore {
       cost_usd: Number(row.cost_usd ?? 0),
       tokens_in: Number(row.tokens_in ?? 0),
       tokens_out: Number(row.tokens_out ?? 0),
+      tokens_cache_read: Number(row.tokens_cache_read ?? 0),
+      tokens_cache_write: Number(row.tokens_cache_write ?? 0),
       created_at: toIso(row.created_at),
       ended_at: row.ended_at ? toIso(row.ended_at) : null,
     }));
   }
 
-  async cost(id: string): Promise<{ cost_usd: number; tokens_in: number; tokens_out: number }> {
-    const r = await this.db.query(`SELECT coalesce(sum(cost_usd),0) AS c, coalesce(sum(tokens_in),0) AS i, coalesce(sum(tokens_out),0) AS o FROM session_turns WHERE session_id = $1`, [id]);
+  async cost(id: string): Promise<SessionCost> {
+    const r = await this.db.query(
+      `SELECT coalesce(sum(cost_usd),0) AS c, coalesce(sum(tokens_in),0) AS i, coalesce(sum(tokens_out),0) AS o,
+              coalesce(sum(tokens_cache_read),0) AS cr, coalesce(sum(tokens_cache_write),0) AS cw
+       FROM session_turns WHERE session_id = $1`,
+      [id],
+    );
     const row = r.rows[0] ?? {};
-    return { cost_usd: Number(row.c ?? 0), tokens_in: Number(row.i ?? 0), tokens_out: Number(row.o ?? 0) };
+    return { cost_usd: Number(row.c ?? 0), tokens_in: Number(row.i ?? 0), tokens_out: Number(row.o ?? 0), tokens_cache_read: Number(row.cr ?? 0), tokens_cache_write: Number(row.cw ?? 0) };
   }
 
   /** Walks the session tree at query time — never stored ([02] §6). */
@@ -359,7 +377,8 @@ export class PgSessionStore implements SessionStore {
          SELECT session_id FROM sessions WHERE session_id = $1
          UNION SELECT s.session_id FROM sessions s JOIN tree t ON s.parent_session = t.session_id
        )
-       SELECT coalesce(sum(cost_usd),0) AS c, coalesce(sum(coalesce(tokens_in,0) + coalesce(tokens_out,0)),0) AS t
+       SELECT coalesce(sum(cost_usd),0) AS c,
+              coalesce(sum(coalesce(tokens_in,0) + coalesce(tokens_out,0) + coalesce(tokens_cache_read,0) + coalesce(tokens_cache_write,0)),0) AS t
        FROM session_turns WHERE session_id IN (SELECT session_id FROM tree)`,
       [id],
     );
@@ -397,6 +416,8 @@ export class PgSessionStore implements SessionStore {
       cost_usd: c.cost_usd,
       tokens_in: c.tokens_in,
       tokens_out: c.tokens_out,
+      tokens_cache_read: c.tokens_cache_read,
+      tokens_cache_write: c.tokens_cache_write,
       started_at: c.created_at ?? null,
       ended_at: c.ended_at ?? null,
       child_session_id: c.child_session_id ?? null,
@@ -407,6 +428,8 @@ export class PgSessionStore implements SessionStore {
       cost_usd: cost.cost_usd,
       tokens_in: cost.tokens_in,
       tokens_out: cost.tokens_out,
+      tokens_cache_read: cost.tokens_cache_read,
+      tokens_cache_write: cost.tokens_cache_write,
       cost_usd_including_children: total,
       children: kids.map((k) => ({ session_id: k.session_id, kind: k.kind, circuit_uid: k.circuit_uid, state: k.state, parent_step_id: k.parent_step_id })),
       steps,
