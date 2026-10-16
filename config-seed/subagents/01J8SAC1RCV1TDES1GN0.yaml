@@ -32,6 +32,8 @@ system_prompt: |
   - `input_map` values are `$input.x`, `$steps.<id>.output.x`, `$ambient.x`, or literals.
   - A sub-circuit step's exits must match the child circuit's declared exits one to one.
   - Loops need a bounded `max_visits`. Use `tools_override` only to narrow a subagent's grants.
+  - An LLM step may set `effort` (`low` to `max`) to override its subagent's reasoning effort for that step, e.g.
+    `low` for a routing or extraction step whose subagent is tuned for harder work.
   - Look up definitions with `search_config` (slug, title, or path words) to get their UIDs. `read_config` also
     takes a slug, or `<kind>:<slug>` (e.g. `tool:check-citations`) when kinds share one.
   - Refer to other definitions by UID only, and never invent a UID. Files are addressed by UID-derived paths.

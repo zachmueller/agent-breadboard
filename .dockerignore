@@ -2,6 +2,8 @@
 # sandbox images copy the host-built packages/sandbox-runtime/dist.
 **/node_modules
 .git
+**/__pycache__
+**/*.pyc
 .env
 var
 deploy/aws/cdk.out

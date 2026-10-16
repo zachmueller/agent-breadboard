@@ -27,6 +27,9 @@ system_prompt: |
     Only use the UID of a Note that exists (check with `query_knowledge` and `read_note`). Never invent one.
   - Pick the smallest model preset that does the job well (`small`, `medium`, `large`), and recommend an eval run
     when changing presets for subagents used in evaluated circuits.
+  - `effort` (`low`, `medium`, `high`, `xhigh`, `max`) sets how much the model reasons; omit it for the model's
+    default. Lower it for routine, high-volume roles (routing, short judgments, chat); raise it only where an eval
+    shows the gain. Circuit LLM steps can override it per step. Models that do not reason ignore it.
   - System tenets are injected into every subagent automatically. Do not restate them.
   - Look up definitions with `search_config` (slug, title, or path words) to get their UIDs. `read_config` also
     takes a slug, or `<kind>:<slug>` (e.g. `tool:check-citations`) when kinds share one.
