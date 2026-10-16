@@ -4,6 +4,7 @@
  * MCP `get_breadboard_overview` tool. Each panel degrades independently so one failing subsystem doesn't
  * blank the rest.
  */
+import type { SessionKind } from '@breadboard/shared';
 import type { Principal } from './principal.js';
 import type { ConnectorScheduler, ContentService, Dispatcher, EvalService, ModelGateway, SessionStore } from './services.js';
 
@@ -15,6 +16,9 @@ export interface DashboardServices {
   gateway: Pick<ModelGateway, 'fallbackEvents'>;
   connectors: Pick<ConnectorScheduler, 'status'>;
 }
+
+/** Session kinds that execute circuit steps: what the dashboard's Running tile counts. */
+export const RUN_KINDS: SessionKind[] = ['circuit-run', 'eval-run'];
 
 export interface Dashboard {
   need_input: Awaited<ReturnType<ContentService['healthMetric']>> | null;
@@ -35,13 +39,14 @@ export async function buildDashboard(services: DashboardServices, by: Principal,
       return fallback;
     }
   };
-  const count = (state: string) => safe(`sessions.${state}`, () => services.sessions.countByState(state), 0);
+  const count = (state: string, kinds?: SessionKind[]) => safe(`sessions.${state}`, () => services.sessions.countByState(state, kinds), 0);
   const [need_input, capacity, gated, suspended_error, running, queued, evals, gateway_fallbacks, connectors, review_count] = await Promise.all([
     safe('need_input', () => services.content.healthMetric({ days: 30 }), null),
     safe('capacity', () => services.dispatcher.capacity(), null),
     count('suspended-gate'),
     count('suspended-error'),
-    count('running'),
+    // Only runs step; an open designer chat or MCP connection is `running` too, but is not work in flight.
+    count('running', RUN_KINDS),
     count('queued'),
     safe('evals', () => services.evals.dashboard(), null),
     safe('gateway_fallbacks', () => services.gateway.fallbackEvents().slice(-20), []),

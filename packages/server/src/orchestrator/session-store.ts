@@ -7,6 +7,7 @@ import {
   type Page,
   type SessionBudget,
   type SessionEvent,
+  type SessionKind,
   type SessionRecord,
   type SessionSummaryDto,
   type StepSummaryDto,
@@ -399,8 +400,10 @@ export class PgSessionStore implements SessionStore {
     return Number(r.rows[0]?.c ?? 0);
   }
 
-  async countByState(state: string): Promise<number> {
-    const r = await this.db.query(`SELECT count(*)::int AS c FROM sessions WHERE team_id = $1 AND state = $2`, [this.teamId, state]);
+  async countByState(state: string, kinds?: SessionKind[]): Promise<number> {
+    const r = kinds?.length
+      ? await this.db.query(`SELECT count(*)::int AS c FROM sessions WHERE team_id = $1 AND state = $2 AND kind = ANY($3::text[])`, [this.teamId, state, kinds])
+      : await this.db.query(`SELECT count(*)::int AS c FROM sessions WHERE team_id = $1 AND state = $2`, [this.teamId, state]);
     return Number(r.rows[0]?.c ?? 0);
   }
 

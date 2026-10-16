@@ -69,3 +69,6 @@ export const TONE_CLASSES: Record<Tone, { soft: string; solid: string; text: str
   danger: { soft: 'bg-danger-soft text-danger-fg', solid: 'bg-danger text-white', text: 'text-danger-fg', dot: 'bg-danger', border: 'border-danger' },
   info: { soft: 'bg-info-soft text-info-fg', solid: 'bg-info text-white', text: 'text-info-fg', dot: 'bg-info', border: 'border-info' },
 };
+
+/** The session kinds that execute steps, as one Sessions filter value (the API ORs comma-separated kinds). */
+export const RUN_KINDS = 'circuit-run,eval-run';

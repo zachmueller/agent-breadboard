@@ -2,7 +2,7 @@
  * Test-only fakes shared by the evals and conversations tests (not wired into the app).
  * A tiny in-memory SessionStore covering what those services use, plus a scripted SubagentRuntime.
  */
-import { mintId, mintSessionId, type SessionEvent, type SessionRecord, type Turn } from '@breadboard/shared';
+import { mintId, mintSessionId, type SessionEvent, type SessionKind, type SessionRecord, type Turn } from '@breadboard/shared';
 import type { ConversationHooks, ConversationResult, CreateSessionInput, EventBus, ResolvedSubagent, RunConversationInput, SessionFilter, SessionStore, SubagentRuntime } from '../core/services.js';
 import type { Principal } from '../core/principal.js';
 
@@ -117,8 +117,8 @@ export class MemorySessionStore {
     return total;
   }
 
-  async countByState(state: string): Promise<number> {
-    return [...this.sessions.values()].filter((s) => s.state === state).length;
+  async countByState(state: string, kinds?: SessionKind[]): Promise<number> {
+    return [...this.sessions.values()].filter((s) => s.state === state && (!kinds?.length || kinds.includes(s.kind))).length;
   }
 
   asStore(): SessionStore {

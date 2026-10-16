@@ -16,9 +16,12 @@ import { hasScope, requireScope, type Principal } from '../core/principal.js';
 export interface BreadboardMcpServerOptions {
   /** External connection (a user's local harness): appends `external_mcp` tool extensions. */
   external: boolean;
-  /** Breadboard session the connection is logged on (`kind: conversation` for external connections). */
-  session_id: string;
-  /** Record `tool-call` / `tool-result` events on `session_id` (default: true). */
+  /**
+   * The Breadboard session the connection is logged on (`kind: conversation` for external connections), opened on
+   * the first call or resource read: a connection that only initializes and lists tools leaves no session behind.
+   */
+  session: () => Promise<string>;
+  /** Record `tool-call` / `tool-result` events on the session (default: true). */
   record_events?: boolean;
 }
 
@@ -45,6 +48,12 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
   const record = opts.record_events ?? true;
   let callIndex = 0;
 
+  /** The connection's session, and the principal scoped to it: writes carry the session id on their actor. */
+  async function scoped(): Promise<{ session_id: string; principal: Principal }> {
+    const session_id = await opts.session();
+    return { session_id, principal: { ...principal, session_id, actor: { ...principal.actor, session_id } } };
+  }
+
   /** External tool name → tool; primitives win on a slug collision (the tool is then exposed as `tool_<slug>`). */
   async function externalTools(): Promise<Map<string, Tool>> {
     const out = new Map<string, Tool>();
@@ -69,12 +78,13 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
     const name = req.params.name;
     const args = req.params.arguments ?? {};
     const idx = callIndex++;
-    if (record) await safeAppend(services, opts.session_id, 'tool-call', { name, input: args, call_index: idx, via: 'mcp', external: opts.external, actor: principal.actor });
+    const { session_id, principal } = await scoped();
+    if (record) await safeAppend(services, session_id, 'tool-call', { name, input: args, call_index: idx, via: 'mcp', external: opts.external, actor: principal.actor });
     const started = Date.now();
     try {
       let result: unknown;
       if (services.primitives.names.includes(name)) {
-        result = await services.primitives.call(name, args, principal, { session_id: opts.session_id, call_index: idx, depth: 0 });
+        result = await services.primitives.call(name, args, principal, { session_id, call_index: idx, depth: 0 });
       } else {
         requireScope(principal, TOOL_EXECUTE_SCOPE);
         const tool = (await externalTools()).get(name);
@@ -83,17 +93,17 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
           tool_uid: tool.uid,
           input: args,
           principal,
-          ambient: { invocation: 'mcp-external', session_id: opts.session_id },
-          session_id: opts.session_id,
+          ambient: { invocation: 'mcp-external', session_id },
+          session_id,
           call_index: idx,
         });
         result = r.output;
       }
-      if (record) await safeAppend(services, opts.session_id, 'tool-result', { name, call_index: idx, is_error: false, output: clip(result), duration_ms: Date.now() - started });
+      if (record) await safeAppend(services, session_id, 'tool-result', { name, call_index: idx, is_error: false, output: clip(result), duration_ms: Date.now() - started });
       return toResult(result);
     } catch (err) {
       const e = toErrorBody(err);
-      if (record) await safeAppend(services, opts.session_id, 'tool-result', { name, call_index: idx, is_error: true, error: e, duration_ms: Date.now() - started });
+      if (record) await safeAppend(services, session_id, 'tool-result', { name, call_index: idx, is_error: true, error: e, duration_ms: Date.now() - started });
       if (e.code === 'internal') services.log.warn({ err, tool: name }, 'mcp tool call failed');
       return { isError: true, content: [{ type: 'text', text: JSON.stringify(e) }] };
     }
@@ -104,7 +114,8 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
     new ResourceTemplate('breadboard://nodes/{uid}', { list: undefined }),
     { title: 'Breadboard content node', description: 'A content node (Task, Artifact, Comment, Knowledge Note) by UID — head revision.', mimeType: 'application/json' },
     async (uri, vars) => {
-      const node = await services.primitives.call('read_node', { uid: String(vars.uid) }, principal, { session_id: opts.session_id });
+      const { session_id, principal } = await scoped();
+      const node = await services.primitives.call('read_node', { uid: String(vars.uid) }, principal, { session_id });
       return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(node) }] };
     },
   );
@@ -113,7 +124,8 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
     new ResourceTemplate('breadboard://config/{uid}', { list: undefined }),
     { title: 'Breadboard config definition', description: 'A configuration-plane definition (circuit, subagent, tool, MCP onboarding) by UID or slug at main.', mimeType: 'application/json' },
     async (uri, vars) => {
-      const def = await services.primitives.call('read_config', { ref: String(vars.uid) }, principal, { session_id: opts.session_id });
+      const { session_id, principal } = await scoped();
+      const def = await services.primitives.call('read_config', { ref: String(vars.uid) }, principal, { session_id });
       return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(def) }] };
     },
   );

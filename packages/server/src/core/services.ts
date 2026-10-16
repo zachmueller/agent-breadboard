@@ -327,7 +327,8 @@ export interface SessionStore {
   children(id: string): Promise<SessionRecord[]>;
   /** Spend across all sessions within a rolling window ([02] §5.1). */
   spendSince(iso: string): Promise<number>;
-  countByState(state: string): Promise<number>;
+  /** Sessions in `state`, optionally only of these kinds. */
+  countByState(state: string, kinds?: SessionKind[]): Promise<number>;
   summary(id: string): Promise<SessionSummaryDto>;
   /** Highest-priority queued sessions, FIFO within tier. */
   nextQueued(limit: number): Promise<SessionRecord[]>;

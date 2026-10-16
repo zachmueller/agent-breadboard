@@ -133,8 +133,10 @@ async function connect(): Promise<{ client: Client; transport: StreamableHTTPCli
 
 describe('Breadboard MCP over streamable HTTP', () => {
   it('lists primitives + external tools, calls read_node, and logs a conversation session', async () => {
+    const before = sessions.rows.size;
     const { client, transport } = await connect();
     const tools = await client.listTools();
+    expect(sessions.rows.size).toBe(before); // no session until the first call
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain('read_node');
     expect(names).toContain('create_task');
@@ -183,6 +185,27 @@ describe('Breadboard MCP over streamable HTTP', () => {
     await transport.terminateSession();
     await client.close();
     expect(sessions.rows.get(s.session_id)!.state).toBe('completed');
+  });
+
+  it('a connection that only initializes and lists tools leaves no session', async () => {
+    const before = sessions.rows.size;
+    const { client, transport } = await connect();
+    await client.listTools();
+    await transport.terminateSession();
+    await client.close();
+    expect(sessions.rows.size).toBe(before);
+  });
+
+  it('concurrent first calls share one conversation session', async () => {
+    const before = new Set(sessions.rows.keys());
+    const { client, transport } = await connect();
+    await Promise.all([client.callTool({ name: 'whoami', arguments: {} }), client.callTool({ name: 'read_node', arguments: { uid: 'NODE3' } })]);
+    const opened = [...sessions.rows.keys()].filter((id) => !before.has(id));
+    expect(opened).toHaveLength(1);
+    expect((await sessions.events(opened[0]!)).filter((e) => e.event_type === 'tool-call')).toHaveLength(2);
+    await transport.terminateSession();
+    await client.close();
+    expect(sessions.rows.get(opened[0]!)!.state).toBe('completed');
   });
 
   it('tells the harness how to navigate and lists the inspection tools', async () => {
@@ -294,6 +317,7 @@ describe('graceful shutdown', () => {
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(live.server.address() as { port: number }).port}${MCP_PATH}`), { requestInit: { headers: { Authorization: 'Bearer x' } } });
     const client = new Client({ name: 'shutdown-probe', version: '1' });
     await client.connect(transport);
+    await client.callTool({ name: 'whoami', arguments: {} }); // opens the conversation session
     await new Promise((r) => setTimeout(r, 200)); // let the client open its GET stream
     const open = (await store.list({ kind: ['conversation'], state: ['running'] })).items.filter((x) => (x.state_detail as any).client?.name === 'shutdown-probe');
     expect(open).toHaveLength(1);

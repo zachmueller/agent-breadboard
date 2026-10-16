@@ -9,7 +9,7 @@ import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, CloudOff, Gaug
 import { useAuth } from '../../lib/auth';
 import { useDashboard, useReviewQueue } from '../../lib/queries';
 import { formatCost, formatNumber, pluralize } from '../../lib/format';
-import { TONE_CLASSES, type Tone } from '../../lib/states';
+import { RUN_KINDS, TONE_CLASSES, type Tone } from '../../lib/states';
 import { Badge, Callout, ConfigLink, EmptyState, ErrorState, NodeChip, PageBody, PageHeader, Panel, SessionChip, Skeleton, TimeAgo, Tooltip, buttonClasses, cn } from '../../components';
 import { LineChart } from './LineChart';
 
@@ -441,7 +441,7 @@ export function Dashboard() {
               <>
                 <StatTile to="/sessions" search={{ state: 'suspended-gate' }} icon={<Pause size={15} />} label="Awaiting review" value={d.sessions.gated} tone="warn" hint="Suspended at a hard gate" />
                 <StatTile to="/sessions" search={{ state: 'suspended-error' }} icon={<AlertTriangle size={15} />} label="Suspended · error" value={d.sessions.suspended_error} tone="danger" hint="Retries exhausted or budget exceeded" />
-                <StatTile to="/sessions" search={{ state: 'running' }} icon={<Play size={15} />} label="Running" value={d.sessions.running} tone="info" hint="Actively stepping" />
+                <StatTile to="/sessions" search={{ state: 'running', kind: RUN_KINDS }} icon={<Play size={15} />} label="Running" value={d.sessions.running} tone="info" hint="Actively stepping" />
                 <StatTile to="/sessions" search={{ state: 'queued' }} icon={<Hourglass size={15} />} label="Queued" value={d.sessions.queued} tone="neutral" hint="Waiting for capacity" />
               </>
             )}

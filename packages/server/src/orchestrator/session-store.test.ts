@@ -39,3 +39,14 @@ describe('prompt-cache token accounting', () => {
     expect(plain).toMatchObject({ tokens_cache_read: null, tokens_cache_write: null });
   });
 });
+
+describe('countByState', () => {
+  it('counts every kind in a state, or only the given kinds', async () => {
+    const budget = { max_cost_usd: 0, max_tokens: 0, spent_usd: 0, spent_tokens: 0 };
+    const [all, runs] = await Promise.all([sessions.countByState('suspended-error'), sessions.countByState('suspended-error', ['circuit-run', 'eval-run'])]);
+    for (const kind of ['circuit-run', 'eval-run', 'conversation', 'intake'] as const) await sessions.create({ kind, budget, created_by: f.memberPrincipal.actor, state: 'suspended-error' });
+    expect(await sessions.countByState('suspended-error')).toBe(all + 4);
+    expect(await sessions.countByState('suspended-error', ['circuit-run', 'eval-run'])).toBe(runs + 2);
+    expect(await sessions.countByState('suspended-error', [])).toBe(all + 4);
+  });
+});

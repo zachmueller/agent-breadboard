@@ -3,7 +3,9 @@
  *
  * Authentication is the normal `/api` preHandler (bearer token → Principal). Each MCP session is bound to
  * the user who initialized it and is logged as a Breadboard Session of `kind: conversation` whose tool
- * calls are recorded as `tool-call` / `tool-result` events under the connecting user's actor.
+ * calls are recorded as `tool-call` / `tool-result` events under the connecting user's actor. The session is
+ * opened on the first tool call or resource read, not at `initialize`: harnesses connect eagerly at startup and
+ * may never call a tool, and those connections would otherwise show as empty `running` sessions.
  */
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -22,7 +24,8 @@ export const MCP_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 interface McpConnection {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
-  session_id: string;
+  /** The connection's Breadboard session id, once its first call has opened it. */
+  session: Promise<string> | null;
   actor_key: string;
   last_seen: number;
   closed: boolean;
@@ -52,10 +55,13 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
     } catch {
       /* already closed */
     }
+    if (!c.session) return; // never called a tool: nothing was logged
+    let sessionId: string | undefined;
     try {
-      await services.sessions.update(c.session_id, { state: 'completed', ended_at: new Date().toISOString(), state_detail: { ...c.state_detail, closed_reason: reason } });
+      sessionId = await c.session;
+      await services.sessions.update(sessionId, { state: 'completed', ended_at: new Date().toISOString(), state_detail: { ...c.state_detail, closed_reason: reason } });
     } catch (err) {
-      services.log.warn({ err, session_id: c.session_id }, 'failed to close MCP conversation session');
+      services.log.warn({ err, session_id: sessionId }, 'failed to close MCP conversation session');
     }
   }
 
@@ -98,23 +104,25 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
     // External connections are user connections, logged with the `user` actor ([11] §4).
     requireUser(principal);
     const stateDetail = { mcp: true, external: true, client: clientInfo(req.body) };
-    const session = await services.sessions.create({
-      kind: 'conversation',
-      budget: { max_cost_usd: 0, max_tokens: 0, spent_usd: 0, spent_tokens: 0 },
-      created_by: principal.actor,
-      state: 'running',
-      state_detail: stateDetail,
-    });
-    await services.sessions.update(session.session_id, { started_at: new Date().toISOString() }).catch(() => undefined);
-    const scoped: Principal = { ...principal, session_id: session.session_id, actor: { ...principal.actor, session_id: session.session_id } };
-    const server = createBreadboardMcpServer(services, scoped, { external: true, session_id: session.session_id });
     let conn: McpConnection | null = null;
+    // Concurrent first calls share one session; a failed create is retried by the next call.
+    const open = (): Promise<string> => {
+      const c: McpConnection | null = conn;
+      // A call racing close() must not open a session nothing would close.
+      if (!c || c.closed) return Promise.reject(new BreadboardError('internal', 'MCP connection is not open'));
+      c.session ??= openSession(services, principal, stateDetail).catch((err) => {
+        c.session = null;
+        throw err;
+      });
+      return c.session;
+    };
+    const server = createBreadboardMcpServer(services, principal, { external: true, session: open });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
-        conn = { transport, server, session_id: session.session_id, actor_key: actorKey(principal), last_seen: Date.now(), closed: false, state_detail: stateDetail };
+        conn = { transport, server, session: null, actor_key: actorKey(principal), last_seen: Date.now(), closed: false, state_detail: stateDetail };
         connections.set(id, conn);
-        services.log.info({ mcp_session: id, session_id: session.session_id, actor: principal.actor }, 'MCP connection opened');
+        services.log.info({ mcp_session: id, actor: principal.actor }, 'MCP connection opened');
       },
       onsessionclosed: (id) => {
         void close(id, 'client-delete');
@@ -125,18 +133,26 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
     };
     await server.connect(transport);
     await delegate(req, reply, transport);
-    if (!conn) {
-      // initialize failed: nothing to keep open
-      await services.sessions.update(session.session_id, { state: 'cancelled', ended_at: new Date().toISOString() }).catch(() => undefined);
-      await server.close().catch(() => undefined);
-    }
+    if (!conn) await server.close().catch(() => undefined); // initialize failed: nothing to keep open
     return reply;
   };
 
   app.route({ method: ['POST', 'GET', 'DELETE'], url: MCP_PATH, handler });
 }
 
-/** Hand the raw Node request/response to the SDK transport; Fastify has already parsed the JSON body. */
+async function openSession(services: HttpServices, principal: Principal, stateDetail: Record<string, unknown>): Promise<string> {
+  const session = await services.sessions.create({
+    kind: 'conversation',
+    budget: { max_cost_usd: 0, max_tokens: 0, spent_usd: 0, spent_tokens: 0 },
+    created_by: principal.actor,
+    state: 'running',
+    state_detail: stateDetail,
+  });
+  await services.sessions.update(session.session_id, { started_at: new Date().toISOString() }).catch(() => undefined);
+  services.log.info({ session_id: session.session_id, actor: principal.actor }, 'MCP conversation session opened');
+  return session.session_id;
+}
+
 /**
  * Connections live in this process only, so an MCP conversation the database still shows `running` when the
  * endpoint registers was left by an earlier process (a restart that skipped the graceful shutdown, a crash):
@@ -162,6 +178,7 @@ async function closeOrphans(services: HttpServices): Promise<void> {
   if (closed) services.log.info({ closed }, 'closed MCP conversations left by an earlier process');
 }
 
+/** Hand the raw Node request/response to the SDK transport; Fastify has already parsed the JSON body. */
 async function delegate(req: FastifyRequest, reply: FastifyReply, transport: StreamableHTTPServerTransport): Promise<void> {
   reply.hijack();
   // Carry headers set by earlier hooks (CORS) onto the raw response.

@@ -6,7 +6,7 @@ import { SESSION_KINDS, SESSION_STATES, type SessionRecord } from '@breadboard/s
 import { useConfigTree, useSessions } from '../../lib/queries';
 import { useUrlSearch } from '../../lib/url';
 import { durationMs, formatDuration, humanize } from '../../lib/format';
-import { sessionStateMeta } from '../../lib/states';
+import { RUN_KINDS, sessionStateMeta } from '../../lib/states';
 import {
   Badge,
   ConfigLink,
@@ -46,7 +46,7 @@ export function SessionsList() {
 
   const filters: FilterDef[] = [
     { key: 'state', label: 'State', type: 'select', options: SESSION_STATES.map((s) => ({ value: s, label: sessionStateMeta(s).label })) },
-    { key: 'kind', label: 'Kind', type: 'select', options: SESSION_KINDS.map((k) => ({ value: k, label: humanize(k) })) },
+    { key: 'kind', label: 'Kind', type: 'select', options: [{ value: RUN_KINDS, label: 'Runs (circuit + eval)' }, ...SESSION_KINDS.map((k) => ({ value: k, label: humanize(k) }))] },
     { key: 'circuit', label: 'Circuit', type: 'select', options: circuitOptions },
     { key: 'task', label: 'Task', type: 'text', placeholder: 'Task UID', mono: true },
     { key: 'created_after', label: 'Since', type: 'date' },
