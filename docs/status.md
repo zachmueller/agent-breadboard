@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-16.
+**As of:** 2026-10-20.
 **Branch:** `main`; the `cdk-aws-deploy` work was merged on 2026-10-10. The verification pass and its follow-ups start at `467a8b1` (`git log 467a8b1..HEAD`).
 **Read first when resuming:** this file, then the checklist at the end of [verification-plan.md](verification-plan.md).
 
@@ -145,6 +145,17 @@ The dashboard's Running tile ("Actively stepping") showed sessions with no event
 
 Exercised: new transport tests (no session without a call, a shared session for concurrent first calls), store and dashboard tests on PGlite, and the root suite. Deployed as server `448001a` to the instance behind a load balancer. After the restart, the reconnecting connections that made no call left no session, and the overview showed `running: 0` while an MCP session was open.
 
+## Decisions made 2026-10-20: RDS IAM authentication
+
+Prompted by an internal compliance finding against the instance behind a load balancer: its database had a login role (the master user) authenticated with a long-lived password, which the server used. Recorded in spec [12](../specs/12-security-deployment.md) §1 and [deploy/aws/README.md](../deploy/aws/README.md) (Database authentication).
+
+1. **The server signs in to RDS with IAM tokens.** `DATABASE_IAM_AUTH` had never worked: `PgDb` passed `connectionString` together with a password function, and node-postgres parses the connection string over the config, so a URL without a password replaced the function with `''`. The pool config is now built from parsed fields (`poolConfig` in `packages/server/src/db/pg.ts`); URL SSL parameters keep their precedence over `DATABASE_SSL`. A refused token fails boot with a hint about `rds-db:connect` and `rds_iam`.
+2. **The reference stack moves the connection into the deployment metadata.** The password-less `DATABASE_URL` and `DATABASE_IAM_AUTH=true` are in `deploy.env`, and `breadboard-apply` passes them as overrides, so hosts bootstrapped earlier switch too. `breadboard-db-grant-iam`, run once over SSM, grants `rds_iam` to the master user inside the server image and lists login roles as `iam-only`, `superuser` or `PASSWORD`.
+3. **The master password leaves the stack; the secret stays.** `-c dbMasterPassword=false` drops `MasterUserPassword` and the host's read access, then the password is removed from the secret's value. The secret cannot go: the template's `MasterUsername` is a reference to it, and a live change set showed that CloudFormation replaces the database when that text changes, even to the same name as a literal (it compares template text, `RequiresRecreation: Always`).
+4. **A user data change restarts the reference host; it does not replace it.** The root volume is EBS and the instance's logical id carries no user-data hash, so CloudFormation stops and starts the same instance. Earlier notes here and in the README said otherwise.
+
+Deployed to the instance behind a load balancer as server `8cb5f5b` (then `7e95830`, infrastructure only): the host restarted once (same instance, private IP and config repo), the grant ran, the master password is refused (`PAM authentication failed`), the server and the load balancer target are healthy, and phase 2 modified the database in place (same resource id, no RDS events).
+
 ## Next steps (in priority order)
 
 0. **Roll out reasoning, caching and Strands Harness** (decisions of 2026-10-15, above). Build the Python sandbox image with `strands-harness==0.3.1`, then run a `spawn-harness` step with `harness: strands-harness` in Docker on Bedrock and a designer chat of three or more messages, checking cache reads and reasoning in the transcript. Upgrades apply migration 0007 at startup; seed changes (`spawn-harness` manifest and sources) reach only new config repos, so existing instances need the tool updated in their config repo. Then compare `strands` and `strands-harness` (and effort settings) on the same fixtures.
@@ -153,7 +164,6 @@ Exercised: new transport tests (no session without a call, a shared session for 
 2. **Close the verification gaps:**
    - The proposal review flow (decisions of 2026-10-14) on Bedrock behind a load balancer, after updating that instance's three designer prompts to the seed's.
    - The Account page in a browser and a Claude Code connection against a running instance (decisions of 2026-10-15): the instance behind a load balancer through its headers helper, once built; the pilot after its server upgrade.
-   - RDS IAM auth (§2.4). Granting a test DB user `rds-db:connect` was not permitted in the session; TLS `verify-full` passed.
    - A real-browser pass over the 11 UI fixes (each was unit-tested only).
    - The egress-relay question for Docker Desktop and for a Linux host running the server outside a container ([deploy/sandbox/README.md](../deploy/sandbox/README.md)).
 3. **Fix the remaining walkthrough issues:**
@@ -190,7 +200,7 @@ Exercised: new transport tests (no session without a call, a shared session for 
 - **Sign-in through the tunnel:** `aws secretsmanager get-secret-value --secret-id breadboard-pilot/admin-token --query SecretString --output text` as `bootstrap-admin`, which holds the `scientist` review role so lit-review gates reach it. The seed dev tokens are refused (401), as designed.
 - **Smoke (2026-10-10):** host checks via SSM showed the server container on the internal `breadboard-sandbox` network with 2+2 warm sandboxes, `cfn-hup` active, migrations applied, and the config repo seeded. Through the tunnel: health ok (`pg`, `bedrock`, `docker`); the broker capabilities `crossref-api` and `semantic-scholar-api` were registered; a task dispatched through triage into lit-review, which ran `gather` on `us.anthropic.claude-sonnet-5` and `summarize` on `us.anthropic.claude-opus-5`, executed `search-scholarly` eight times in the Python sandbox and `check-citations` once in the TypeScript sandbox, logged nine broker calls, and reached `quality-gate` in about four minutes at **$0.89**.
 - **`publicUrl`** is the edge's HTTPS address, so the session cookie is `Secure` and OIDC redirects target the edge. The tunnel still works because the UI uses relative paths and browsers treat `http://localhost` as a secure context (Chrome and Firefox; Safari users of the tunnel should sign in with a bearer token).
-- **Upgrade:** build amd64 images (Colima's Rosetta emulation handles `--platform linux/amd64`), push with a new tag, redeploy with the same `-c` set; cfn-hup swaps the container in place ([deploy/aws/README.md](../deploy/aws/README.md)). Before deploying, check that `cdk diff --method=template` changes only the instance's `Metadata` and outputs. Any `UserData` change would replace the host, and the config repo lives on its root volume. This check passed for the 2026-10-10 upgrade.
+- **Upgrade:** build amd64 images (Colima's Rosetta emulation handles `--platform linux/amd64`), push with a new tag, redeploy with the same `-c` set; cfn-hup swaps the container in place ([deploy/aws/README.md](../deploy/aws/README.md)). Before deploying, check that `cdk diff --method=template` changes only the instance's `Metadata` and outputs. A `UserData` change restarts the host (it does not replace it; decision 4 of 2026-10-20). This check passed for the 2026-10-10 upgrade.
 - **Running cost:** roughly $110–120/month for the `t3.large` host and `db.t4g.medium` instance, plus Bedrock spend per run.
 
 ## Resuming locally

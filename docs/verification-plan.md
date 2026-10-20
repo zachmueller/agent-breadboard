@@ -159,7 +159,7 @@ Then repeat the task smoke from §1.3. Also open two browser tabs on the same Kn
 
 ### 2.4 TLS and IAM paths (optional, needs AWS)
 
-With an RDS instance available: set `DATABASE_SSL=verify-full` plus `DATABASE_SSL_CA_FILE` pointing at the RDS bundle, then `DATABASE_IAM_AUTH=true` with a user granted `rds_iam`. Expected: the boot probe query succeeds and the log shows no password in any connection string.
+With an RDS instance available: set `DATABASE_SSL=verify-full` plus `DATABASE_SSL_CA_FILE` pointing at the RDS bundle, then `DATABASE_IAM_AUTH=true` with a user granted `rds_iam`. Expected: the boot probe query succeeds and the log shows no password in any connection string. On the reference stack this is the default (deploy/aws README, Database authentication); there, also check that the master password is refused once `breadboard-db-grant-iam` has run.
 
 ---
 
@@ -362,7 +362,7 @@ Run of 2026-10-01 (macOS, Colima, Postgres 16 + pgvector in Docker, Bedrock us-e
 | 1.4 | Compose `sandbox-docker` profile | Pass after fixes | Profile started two servers on :4000 → override file. Fixed: image crashed (nested `ajv`), missing `.dockerignore`, healthcheck `localhost`→`::1`, `PUBLIC_URL` overwritten → `SANDBOX_API_URL`. |
 | 2.2 | Full suite on Postgres | Pass | 38 files / 298 tests. Fixed: pgvector never detected on Postgres; `real[]`→`vector` upgrade for existing installs. |
 | 2.3 | Boot + e2e on Postgres, CRDT persistence | Pass | Migrations idempotent; `yjs_updates` 0→268→493 rows during the two-tab edit (§4). |
-| 2.4 | TLS / IAM (optional) | Partial | `verify-full` with the RDS bundle: TLSv1.3, fails without the CA, no password in logs. IAM auth not run: granting `rds-db:connect` to a test user was not permitted in this session. |
+| 2.4 | TLS / IAM (optional) | Pass after fix | `verify-full` with the RDS bundle: TLSv1.3, fails without the CA, no password in logs. IAM auth (2026-10-20, the instance behind a load balancer): found broken in review before any run (pg dropped the token function when also given a `connectionString`; fixed with `poolConfig`). Before the grant, the token was refused as a password (28P01, with the hint); after `GRANT rds_iam`, the server booted on tokens and the master password was refused (`PAM authentication failed`). |
 | 3.2 | Seed flow on Bedrock | Pass after fixes | Fixed: seed model ids did not exist (now `us.*` inference profiles). Needs the Crossref / Semantic Scholar capabilities. `summarize` on Opus 5 costs ~$1–1.5 per run. |
 | 3.3 | Preset fallback | Pass | Turn records `fallback_from`; dashboard lists the event. |
 | 3.4 | Embeddings + semantic search | Pass after fix | Fixed: notes created via REST/connectors were never embedded. Titan v2, 1024 dims, `vector` column. |
