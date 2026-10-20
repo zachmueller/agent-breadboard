@@ -35,7 +35,7 @@ The image runs with `NODE_ENV=production`, which refuses to start unless `TOKEN_
 | Variable | Why |
 |---|---|
 | `DATABASE_URL`, `DATABASE_SSL=require` (or `verify-full` + `DATABASE_SSL_CA_FILE`) | managed Postgres over TLS |
-| `DATABASE_IAM_AUTH=true` | RDS IAM tokens instead of a password |
+| `DATABASE_IAM_AUTH=true` | RDS IAM tokens instead of a password: `DATABASE_URL` names the user but no password, and the user needs `GRANT rds_iam` plus `rds-db:connect` for the server's AWS role. The reference stack does this (its README, Database authentication) |
 | `MODEL_PROVIDER=bedrock`, `AWS_REGION` | the reference model provider; credentials via the standard AWS chain |
 | `SANDBOX_RUNNER=docker` | isolated per-execution containers; `process` is an unisolated dev fallback |
 | `TOKEN_SIGNING_KEY` | HMAC key for user/actor tokens: at least 32 random characters (`openssl rand -hex 32`). Production refuses to start with the default `dev-only-change-me`, which anyone can read from this repo and use to forge admin sessions. |

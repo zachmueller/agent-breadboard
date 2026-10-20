@@ -1,10 +1,31 @@
 import pg from 'pg';
+import { parseIntoClientConfig } from 'pg-connection-string';
 import { readFileSync } from 'node:fs';
 import type { Db, DbOptions, Queryable, QueryResult } from './index.js';
 import { normalizeRow } from './index.js';
 
 pg.types.setTypeParser(20, (v) => Number(v)); // int8
 pg.types.setTypeParser(1700, (v) => Number(v)); // numeric
+
+/**
+ * The pool config for a `postgres://` URL, as discrete fields. Never `connectionString`: pg parses that over the
+ * config, and for a URL without a password the parsed `password: ''` replaces an IAM token function.
+ * SSL parameters in the URL still win over `DATABASE_SSL`, as they did when pg parsed the URL itself.
+ */
+export function poolConfig(opts: DbOptions, getAuthToken?: () => Promise<string>): pg.PoolConfig {
+  const url = new URL(opts.url);
+  const sslMode = opts.ssl ?? (url.searchParams.get('sslmode') as DbOptions['ssl'] | null) ?? 'prefer';
+  let ssl: pg.PoolConfig['ssl'] = undefined;
+  if (sslMode === 'require') ssl = { rejectUnauthorized: false };
+  else if (sslMode === 'verify-full') ssl = { rejectUnauthorized: true, ca: opts.sslCaFile ? readFileSync(opts.sslCaFile, 'utf8') : undefined };
+  else if (sslMode === 'prefer') ssl = undefined;
+  const config: pg.PoolConfig = { max: opts.poolSize ?? 10, ssl, ...parseIntoClientConfig(opts.url) };
+  if (getAuthToken) {
+    config.password = getAuthToken;
+    if (!config.ssl) config.ssl = { rejectUnauthorized: false }; // RDS accepts IAM tokens over TLS only
+  }
+  return config;
+}
 
 export class PgDb implements Db {
   readonly kind = 'pg' as const;
@@ -13,32 +34,33 @@ export class PgDb implements Db {
 
   static async open(opts: DbOptions): Promise<PgDb> {
     const url = new URL(opts.url);
-    const sslMode = opts.ssl ?? (url.searchParams.get('sslmode') as DbOptions['ssl'] | null) ?? 'prefer';
-    let ssl: pg.PoolConfig['ssl'] = undefined;
-    if (sslMode === 'require') ssl = { rejectUnauthorized: false };
-    else if (sslMode === 'verify-full') ssl = { rejectUnauthorized: true, ca: opts.sslCaFile ? readFileSync(opts.sslCaFile, 'utf8') : undefined };
-    else if (sslMode === 'prefer') ssl = undefined;
-    const config: pg.PoolConfig = {
-      connectionString: opts.url,
-      max: opts.poolSize ?? 10,
-      ssl,
-    };
+    const user = decodeURIComponent(url.username);
+    let getAuthToken: (() => Promise<string>) | undefined;
     if (opts.iamAuth) {
       // RDS IAM authentication: mint a short-lived token from the AWS credential chain per connection.
       const { Signer } = await import('@aws-sdk/rds-signer');
       const signer = new Signer({
         hostname: url.hostname,
         port: Number(url.port || 5432),
-        username: decodeURIComponent(url.username),
+        username: user,
         region: opts.awsRegion ?? process.env.AWS_REGION ?? 'us-east-1',
       });
-      (config as any).password = async () => signer.getAuthToken();
-      if (!ssl) config.ssl = { rejectUnauthorized: false };
+      getAuthToken = () => signer.getAuthToken();
     }
-    const pool = new pg.Pool(config);
+    const pool = new pg.Pool(poolConfig(opts, getAuthToken));
     const db = new PgDb(pool);
     // Probe once so misconfiguration fails fast.
-    await db.query('select 1');
+    try {
+      await db.query('select 1');
+    } catch (e) {
+      await pool.end().catch(() => {});
+      // 28P01 invalid_password, 28000 invalid_authorization_specification: what RDS answers a refused IAM token.
+      const code = (e as { code?: string }).code;
+      if (opts.iamAuth && (code === '28P01' || code === '28000')) {
+        throw new Error(`RDS IAM authentication failed for database user ${user}: the server's AWS role needs rds-db:connect for that user, and the user needs GRANT rds_iam (${(e as Error).message})`, { cause: e });
+      }
+      throw e;
+    }
     db.features.pgvector = await db.ensureVector();
     return db;
   }

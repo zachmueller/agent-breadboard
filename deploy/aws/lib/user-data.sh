@@ -10,8 +10,7 @@ systemctl enable --now docker
 REGION="${region}"
 secret() { aws secretsmanager get-secret-value --region "$REGION" --secret-id "$1" --query SecretString --output text; }
 
-# The RDS-generated secret holds the credentials; the endpoint and database name come from the stack.
-DATABASE_URL=$(secret "${db_secret_arn}" | jq -r '"postgres://\(.username|@uri):\(.password|@uri)@${db_host}:${db_port}/${db_name}"')
+# The database connection (no password: RDS IAM tokens) comes from the deployment metadata, via breadboard-apply.
 TOKEN_SIGNING_KEY=$(secret "${token_secret_arn}")
 BROKER_MASTER_KEY=$(secret "${broker_secret_arn}")
 BOOTSTRAP_ADMIN_TOKEN=$(secret "${admin_secret_arn}")
@@ -25,7 +24,6 @@ fi
 
 mkdir -p /var/breadboard
 cat >/etc/breadboard.env <<ENV
-DATABASE_URL=$DATABASE_URL
 DATABASE_SSL=require
 PUBLIC_URL=$PUBLIC_URL
 PORT=${server_port}

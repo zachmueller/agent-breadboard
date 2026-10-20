@@ -76,11 +76,22 @@ function userData(t: Template): { text: string; refs: string[] } {
 
 /** CloudFormation::Init files on the server instance: path → content (token parts dropped). */
 function initFiles(t: Template): Record<string, string> {
+  return Object.fromEntries(Object.entries(rawInitFiles(t)).map(([path, c]) => [path, typeof c === 'string' ? c : ((c as any)['Fn::Join'][1] as unknown[]).filter((x) => typeof x === 'string').join('')]));
+}
+
+/** The token references (Ref, Fn::GetAtt) in one CloudFormation::Init file. */
+function initRefs(t: Template, path: string): string[] {
+  const c = rawInitFiles(t)[path];
+  return typeof c === 'string' ? [] : ((c as any)['Fn::Join'][1] as unknown[]).filter((x) => typeof x !== 'string').map((x) => JSON.stringify(x));
+}
+
+function rawInitFiles(t: Template): Record<string, unknown> {
   const instance = Object.values(t.findResources('AWS::EC2::Instance'))[0];
   const files = instance.Metadata['AWS::CloudFormation::Init'].config.files as Record<string, { content: unknown }>;
-  const text = (c: unknown): string => (typeof c === 'string' ? c : ((c as any)['Fn::Join'][1] as unknown[]).filter((x) => typeof x === 'string').join(''));
-  return Object.fromEntries(Object.entries(files).map(([path, f]) => [path, text(f.content)]));
+  return Object.fromEntries(Object.entries(files).map(([path, f]) => [path, f.content]));
 }
+
+const instanceUserData = (x: Template) => JSON.stringify(Object.values(x.findResources('AWS::EC2::Instance'))[0].Properties.UserData);
 
 function logicalId(t: Template, type: string, props: Record<string, unknown>): string {
   const ids = Object.keys(t.findResources(type, { Properties: props }));
@@ -311,23 +322,44 @@ describe('BreadboardStack', () => {
     // A graceful stop before the container is replaced, so the server's shutdown closes open MCP conversations.
     expect(apply.indexOf('docker stop -t 30 breadboard')).toBeGreaterThan(-1);
     expect(apply.indexOf('docker stop -t 30 breadboard')).toBeLessThan(apply.indexOf('docker rm -f breadboard'));
+    // The token parts (endpoint, port, secret ARN) are dropped here and checked as references below.
     expect(initFiles(t)['/etc/breadboard/deploy.env']).toBe(
-      `SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\nPUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\nALB_AUTH_ARN=\nALB_AUTH_ISSUER=\nALB_AUTH_CLIENT_ID=\nOIDC_ADOPT_HANDLES=\n`,
+      `SERVER_IMAGE=${IMAGE}\nSANDBOX_IMAGE_TS=\nSANDBOX_IMAGE_PY=\nSERVER_PORT=4000\nPUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\nALB_AUTH_ARN=\nALB_AUTH_ISSUER=\nALB_AUTH_CLIENT_ID=\nOIDC_ADOPT_HANDLES=\nDATABASE_URL=postgres://breadboard@:/breadboard\nDATABASE_IAM_AUTH=true\nDB_SECRET_ARN=\n`,
     );
     const attachment = logicalId(t, 'AWS::SecretsManager::SecretTargetAttachment', {});
     const tokenKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/token-signing-key' });
     const brokerKey = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/broker-master-key' });
     const adminToken = logicalId(t, 'AWS::SecretsManager::Secret', { Name: 'breadboard-test/admin-token' });
     const db = logicalId(t, 'AWS::RDS::DBInstance', {});
-    expect(refs).toEqual(
-      expect.arrayContaining([
-        JSON.stringify({ Ref: attachment }),
-        JSON.stringify({ Ref: tokenKey }),
-        JSON.stringify({ Ref: brokerKey }),
-        JSON.stringify({ Ref: adminToken }),
-        JSON.stringify({ 'Fn::GetAtt': [db, 'Endpoint.Address'] }),
-      ]),
+    expect(refs).toEqual(expect.arrayContaining([tokenKey, brokerKey, adminToken].map((id) => JSON.stringify({ Ref: id }))));
+    // No database settings in the one-time user data: the password-less URL is deployment metadata.
+    expect(text).not.toContain('DATABASE_URL');
+    expect(refs.some((r) => r.includes(attachment) || r.includes(db))).toBe(false);
+    expect(initRefs(t, '/etc/breadboard/deploy.env')).toEqual([
+      JSON.stringify({ 'Fn::GetAtt': [db, 'Endpoint.Address'] }),
+      JSON.stringify({ 'Fn::GetAtt': [db, 'Endpoint.Port'] }),
+      JSON.stringify({ Ref: attachment }),
+    ]);
+    expect(initFiles(t)['/usr/local/bin/breadboard-db-grant-iam']).toContain('GRANT rds_iam TO');
+  });
+
+  it('retires the master password without touching the host when dbMasterSecret is false', () => {
+    const retired = synth({ dbMasterSecret: false });
+    retired.resourceCountIs('AWS::SecretsManager::SecretTargetAttachment', 0);
+    expect(Object.keys(retired.findResources('AWS::SecretsManager::Secret', { Properties: { Name: 'breadboard-test/db' } }))).toHaveLength(0);
+    retired.hasResourceProperties('AWS::RDS::DBInstance', { MasterUsername: 'breadboard', MasterUserPassword: Match.absent(), EnableIAMDatabaseAuthentication: true });
+    // The same DB resource: a new logical id would replace the database.
+    expect(logicalId(retired, 'AWS::RDS::DBInstance', {})).toBe(logicalId(t, 'AWS::RDS::DBInstance', {}));
+    const reads = statements(retired).filter((s) => [s.Action].flat().includes('secretsmanager:GetSecretValue')).map((s) => JSON.stringify(s.Resource));
+    expect(reads.sort()).toEqual(
+      ['token-signing-key', 'broker-master-key', 'admin-token'].map((n) => JSON.stringify({ Ref: logicalId(retired, 'AWS::SecretsManager::Secret', { Name: `breadboard-test/${n}` }) })).sort(),
     );
+    expect(statements(retired).some((s) => s.Action === 'rds-db:connect')).toBe(true);
+    expect(Object.keys(retired.findOutputs('*'))).not.toContain('DbSecretArn');
+    // Neither restart nor replacement: identical user data, and deploy.env loses only the secret reference.
+    expect(instanceUserData(retired)).toBe(instanceUserData(t));
+    expect(initFiles(retired)['/etc/breadboard/deploy.env']).toBe(initFiles(t)['/etc/breadboard/deploy.env']);
+    expect(initRefs(retired, '/etc/breadboard/deploy.env')).toEqual(initRefs(t, '/etc/breadboard/deploy.env').slice(0, 2));
   });
 
   it('applies publicUrl through the deployment metadata, leaving the user data (and so the host) alone', () => {
@@ -512,6 +544,14 @@ describe('breadboard-apply.sh', () => {
     expect(apply(`${base}PUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\nALB_AUTH_ARN=\nALB_AUTH_ISSUER=\nALB_AUTH_CLIENT_ID=\nOIDC_ADOPT_HANDLES=\n`).overrides).toBe('');
   });
 
+  it('passes the password-less database URL and IAM auth through, overriding the boot-time env file', () => {
+    const url = 'postgres://breadboard@db.example.us-east-1.rds.amazonaws.com:5432/breadboard';
+    const r = apply(`${base}PUBLIC_URL=\nBOOTSTRAP_ADMIN=true\nTRUSTED_PROXY_USER=\nTRUSTED_PROXY_SECRET_ARN=\nALB_AUTH_ARN=\nALB_AUTH_ISSUER=\nALB_AUTH_CLIENT_ID=\nOIDC_ADOPT_HANDLES=\nDATABASE_URL=${url}\nDATABASE_IAM_AUTH=true\nDB_SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:breadboard-test/db-AbCdEf\n`);
+    expect(r.overrides).toBe(`DATABASE_URL=${url}\nDATABASE_IAM_AUTH=true\n`);
+    expect(r.awsCalls).toBe(''); // the master secret is the grant helper's, never the container's
+    expect(r.create).toContain('--env-file /etc/breadboard.env --env-file <overrides>');
+  });
+
   it('writes PUBLIC_URL, the disabled bootstrap token and the trusted proxy to a root-only overrides file', () => {
     const arn = 'arn:aws:secretsmanager:eu-west-1:123456789012:secret:TrustedProxySecret-AbCdEf';
     const r = apply(`${base}PUBLIC_URL=https://bb.example.com\nBOOTSTRAP_ADMIN=false\nTRUSTED_PROXY_USER=zach\nTRUSTED_PROXY_SECRET_ARN=${arn}\n`);
@@ -523,6 +563,49 @@ describe('breadboard-apply.sh', () => {
     // The secret value is in the file only, never on a command line.
     expect(r.create).not.toContain('proxy-secret-value');
     expect(r.create).toContain('--env-file /etc/breadboard.env --env-file <overrides>');
+  });
+});
+
+describe('breadboard-db-grant-iam.sh', () => {
+  // Run the real script against stub aws (the master secret) and docker (records the run and its env file).
+  function grant(deployEnv: string): { status: number; stderr: string; dockerArgs: string; envFile: string; awsCalls: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'bb-grant-'));
+    writeFileSync(join(dir, 'deploy.env'), deployEnv);
+    const secret = JSON.stringify({ username: 'breadboard', password: 'p@ss/w0rd', host: 'db.example.us-east-1.rds.amazonaws.com', port: 5432, dbname: 'breadboard', engine: 'postgres' });
+    writeFileSync(join(dir, 'aws'), `#!/bin/sh\necho "$*" >> "$AWS_LOG"\necho '${secret}'\n`, { mode: 0o755 });
+    writeFileSync(join(dir, 'docker'), '#!/bin/sh\necho "$*" >> "$DOCKER_LOG"\nwhile [ $# -gt 0 ]; do [ "$1" = --env-file ] && cat "$2" >> "$ENV_LOG"; shift; done\nexit 0\n', { mode: 0o755 });
+    const read = (f: string) => { try { return readFileSync(join(dir, f), 'utf8'); } catch { return ''; } };
+    let status = 0;
+    let stderr = '';
+    try {
+      execFileSync('bash', [join(import.meta.dirname, '..', 'lib', 'breadboard-db-grant-iam.sh')], {
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, BREADBOARD_DEPLOY_ENV: join(dir, 'deploy.env'), AWS_LOG: join(dir, 'aws.log'), DOCKER_LOG: join(dir, 'docker.log'), ENV_LOG: join(dir, 'env.log') },
+        stdio: 'pipe',
+      });
+    } catch (e) {
+      status = (e as { status: number }).status;
+      stderr = String((e as { stderr: Buffer }).stderr);
+    }
+    return { status, stderr, dockerArgs: read('docker.log'), envFile: read('env.log'), awsCalls: read('aws.log') };
+  }
+  const arn = 'arn:aws:secretsmanager:eu-west-1:123456789012:secret:breadboard-test/db-AbCdEf';
+
+  it('grants rds_iam inside the server image, signing in with the master secret kept off the command line', () => {
+    const r = grant(`SERVER_IMAGE=registry.example.com/bb:v1\nDB_SECRET_ARN=${arn}\n`);
+    expect(r.status).toBe(0);
+    expect(r.awsCalls).toContain(`secretsmanager get-secret-value --region eu-west-1 --secret-id ${arn}`);
+    expect(r.envFile).toBe('MASTER_URL=postgres://breadboard:p%40ss%2Fw0rd@db.example.us-east-1.rds.amazonaws.com:5432/breadboard\n');
+    expect(r.dockerArgs).toMatch(/^run --rm --env-file \S+ registry\.example\.com\/bb:v1 node -e /);
+    expect(r.dockerArgs).toContain("GRANT rds_iam TO ' + client.escapeIdentifier(user)");
+    expect(r.dockerArgs).not.toContain('p@ss');
+    expect(r.dockerArgs).not.toContain('p%40ss');
+  });
+
+  it('refuses to run once the master secret is retired', () => {
+    const r = grant('SERVER_IMAGE=registry.example.com/bb:v1\nDB_SECRET_ARN=\n');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('dbMasterSecret=false');
+    expect(r.dockerArgs).toBe('');
   });
 });
 
@@ -554,6 +637,8 @@ describe('bin/breadboard.ts', () => {
     expect(template).toContain('BOOTSTRAP_ADMIN=true');
     expect(run({ ...required, bootstrapAdmin: 'false' }).template).toContain('BOOTSTRAP_ADMIN=false');
     expect(run({ ...required, trustedProxyUser: 'zach' }).template).toContain('TRUSTED_PROXY_USER=zach');
+    expect(template).toContain('AWS::SecretsManager::SecretTargetAttachment');
+    expect(run({ ...required, dbMasterSecret: 'false' }).template).not.toContain('AWS::SecretsManager::SecretTargetAttachment');
     const role = Object.values<{ Type: string; Properties: { Tags?: unknown[] } }>(JSON.parse(template).Resources).find((r) => r.Type === 'AWS::IAM::Role');
     expect(role?.Properties.Tags).toEqual(
       expect.arrayContaining([{ Key: 'Team', Value: 'research' }, { Key: 'Project', Value: 'agent-breadboard' }, { Key: 'Breadboard', Value: 'smoke' }]),

@@ -1,7 +1,7 @@
 // Agent Breadboard — AWS reference deployment ([12] §1, §9): RDS Postgres (recommended production default)
 // + one reference server host running the container image. One deployment = one Breadboard ([00] §4.1).
 import { readFileSync } from 'node:fs';
-import { Annotations, CfnOutput, Duration, RemovalPolicy, Stack, Token, Validations, type StackProps } from 'aws-cdk-lib';
+import { Annotations, CfnOutput, Duration, RemovalPolicy, SecretValue, Stack, Token, Validations, type StackProps } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as rds from 'aws-cdk-lib/aws-rds';
@@ -32,7 +32,7 @@ export interface BreadboardStackProps extends StackProps {
   serverRootVolumeGb?: number;
   /**
    * Externally reachable base URL, `scheme://host[:port]` (leave empty to use the instance IP). Lives in the deployment
-   * metadata, not the user data, so changing it recreates the container in place instead of replacing the host.
+   * metadata, not the user data, so changing it recreates the container in place instead of restarting the host.
    */
   publicUrl?: string;
   /** docker (recommended) or process. */
@@ -78,6 +78,13 @@ export interface BreadboardStackProps extends StackProps {
   dbMultiAz?: boolean;
   dbBackupRetentionDays?: number;
   dbDeletionProtection?: boolean;
+  /**
+   * Keep the generated master password (`breadboard-<name>/db`). The server always signs in with RDS IAM tokens; RDS
+   * needs a password to create the instance, and `breadboard-db-grant-iam` reads it once to `GRANT rds_iam` to the
+   * master user, which turns its password sign-in off. Afterwards deploy with false, which drops the secret and the
+   * password from the stack without touching the host, then delete the retained secret.
+   */
+  dbMasterSecret?: boolean;
   /** Use an S3 bucket for large blobs instead of the host filesystem. */
   enableS3Objects?: boolean;
 }
@@ -106,6 +113,7 @@ export const DEFAULTS = {
   dbMultiAz: false,
   dbBackupRetentionDays: 14,
   dbDeletionProtection: true,
+  dbMasterSecret: true,
   enableS3Objects: true,
 } satisfies Partial<BreadboardStackProps>;
 
@@ -117,6 +125,10 @@ const KEEP = RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE;
 
 const USER_DATA = readFileSync(new URL('./user-data.sh', import.meta.url), 'utf8');
 const APPLY_SCRIPT = readFileSync(new URL('./breadboard-apply.sh', import.meta.url), 'utf8');
+const GRANT_IAM_SCRIPT = readFileSync(new URL('./breadboard-db-grant-iam.sh', import.meta.url), 'utf8');
+
+/** The RDS master user, which the server signs in as with IAM tokens. */
+const DB_USER = 'breadboard';
 
 /** cfn-hup as a systemd service (the AL2023 package may not ship a unit; this one takes precedence if it does). */
 const CFN_HUP_UNIT = `[Unit]
@@ -232,15 +244,18 @@ export class BreadboardStack extends Stack {
     const dbSg = new ec2.SecurityGroup(this, 'DbSg', { vpc, description: 'Breadboard Postgres', allowAllOutbound: false });
 
     // --- RDS Postgres (the only required stateful dependency) ------------------
+    // The master password exists only to create the instance and for the one-time `GRANT rds_iam` (dbMasterSecret).
     // Explicit so it can be retained with the final snapshot (the generated default is deleted with the stack).
-    // No punctuation: the password ends up in a URL and an env file. (Excluding every punctuation character through
+    // No punctuation: the grant helper puts the password in a URL. (Excluding every punctuation character through
     // rds.DatabaseSecret's excludeCharacters fails at deploy: Secrets Manager still requires one of each type.)
-    const dbCredentials = new secretsmanager.Secret(this, 'DbSecret', {
-      secretName: `${prefix}/db`,
-      description: 'RDS master credentials (username, password)',
-      generateSecretString: { secretStringTemplate: JSON.stringify({ username: 'breadboard' }), generateStringKey: 'password', passwordLength: 30, excludePunctuation: true, includeSpace: false },
-      removalPolicy: KEEP,
-    });
+    const dbCredentials = p.dbMasterSecret
+      ? new secretsmanager.Secret(this, 'DbSecret', {
+          secretName: `${prefix}/db`,
+          description: 'RDS master credentials (username, password)',
+          generateSecretString: { secretStringTemplate: JSON.stringify({ username: DB_USER }), generateStringKey: 'password', passwordLength: 30, excludePunctuation: true, includeSpace: false },
+          removalPolicy: KEEP,
+        })
+      : undefined;
     const engine = rds.DatabaseInstanceEngine.postgres({
       version: rds.PostgresEngineVersion.of(p.dbEngineVersion, p.dbEngineVersion.split('.')[0]),
     });
@@ -254,7 +269,9 @@ export class BreadboardStack extends Stack {
       port: 5432,
       parameterGroup: new rds.ParameterGroup(this, 'DbParams', { engine, parameters: { 'rds.force_ssl': '1' } }),
       databaseName: 'breadboard',
-      credentials: rds.Credentials.fromSecret(dbCredentials),
+      // Without the secret, the placeholder password is deleted from the template below: RDS keeps the current one,
+      // which rds_iam membership has already turned off.
+      credentials: dbCredentials ? rds.Credentials.fromSecret(dbCredentials) : rds.Credentials.fromPassword(DB_USER, SecretValue.unsafePlainText('unused')),
       iamAuthentication: true,
       storageEncrypted: true,
       storageType: rds.StorageType.GP3,
@@ -267,6 +284,7 @@ export class BreadboardStack extends Stack {
       enablePerformanceInsights: true,
       publiclyAccessible: false,
     });
+    if (!dbCredentials) (db.node.defaultChild as rds.CfnDBInstance).addPropertyDeletionOverride('MasterUserPassword');
     dbSg.addIngressRule(serverSg, ec2.Port.tcp(5432), 'Postgres from the server host only');
 
     // --- Secrets ---------------------------------------------------------------
@@ -285,7 +303,7 @@ export class BreadboardStack extends Stack {
     const brokerKey = generated('BrokerMasterKey', 'broker-master-key', 'BROKER_MASTER_KEY: encrypts broker credentials at rest', 43);
     // Production refuses the seed's well-known local tokens; this is how the operator signs in to configure OIDC.
     const adminToken = generated('BootstrapAdminToken', 'admin-token', 'BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: break-glass admin sign-in', 48);
-    const dbSecret = db.secret!;
+    const dbSecret = db.secret; // the attachment, which adds the endpoint to the secret's JSON
     // The trusted proxy's shared secret. No fixed name and not retained: it holds no state, and a fixed name would stay
     // reserved for the deletion window if the proxy were turned off and on again. The proxy reads it by ARN.
     const proxySecret = p.trustedProxyUser
@@ -317,7 +335,8 @@ export class BreadboardStack extends Stack {
       }),
     );
     role.addToPolicy(new iam.PolicyStatement({ actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'], resources: ['*'] }));
-    for (const secret of [dbSecret, tokenKey, brokerKey, adminToken]) secret.grantRead(role);
+    // The master secret is read only by breadboard-db-grant-iam.
+    for (const secret of [dbSecret, tokenKey, brokerKey, adminToken]) secret?.grantRead(role);
     proxySecret?.grantRead(role); // read by breadboard-apply, not the one-time user data
     // Pull access to the ECR repositories the images live in (the bootstrap logs in to their registries).
     const repos = [...new Set([p.serverImage, p.sandboxImageTs, p.sandboxImagePy].map(ecrRepositoryArn).filter((a): a is string => a !== null))];
@@ -326,7 +345,7 @@ export class BreadboardStack extends Stack {
       role.addToPolicy(new iam.PolicyStatement({ actions: ['ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchCheckLayerAvailability'], resources: repos }));
     }
     if (p.brokerRoleArns.length) role.addToPolicy(new iam.PolicyStatement({ actions: ['sts:AssumeRole'], resources: p.brokerRoleArns }));
-    db.grantConnect(role, 'breadboard');
+    db.grantConnect(role, DB_USER);
     bucket?.grantRead(role);
     bucket?.grantPut(role);
 
@@ -335,16 +354,12 @@ export class BreadboardStack extends Stack {
     userData.addCommands(
       renderUserData({
         region: this.region,
-        db_secret_arn: dbSecret.secretArn,
-        db_host: db.dbInstanceEndpointAddress,
-        db_port: db.dbInstanceEndpointPort,
-        db_name: 'breadboard',
         token_secret_arn: tokenKey.secretArn,
         broker_secret_arn: brokerKey.secretArn,
         admin_secret_arn: adminToken.secretArn,
         // Always the IMDS placeholder, resolved at boot to the instance's IP. A configured `publicUrl` is applied
         // through the deployment metadata instead (deploy.env, below), so changing it never touches the user data:
-        // user data is immutable, and a change would replace the host and its config repo.
+        // user data runs once per instance, and changing it stops and restarts the host for nothing.
         public_url: `http://__IMDS__:${p.serverPort}`,
         server_port: String(p.serverPort),
         object_store: bucket ? 's3' : 'fs',
@@ -385,9 +400,10 @@ export class BreadboardStack extends Stack {
     // first boot, and cfn-hup re-applies them in place when a deploy changes the metadata. No fingerprint in the user
     // data, so an image change neither restarts nor replaces the host (the config repo lives on its root volume).
     const serverId = this.getLogicalId(server.instance);
-    // PUBLIC_URL (when set), BOOTSTRAP_ADMIN=false, the trusted proxy and the load-balancer identity override the
-    // boot-time /etc/breadboard.env: breadboard-apply writes them to a root-only overrides env file (fetching the proxy
-    // secret by ARN), so they change in place like the images and no secret value enters the template.
+    // PUBLIC_URL (when set), BOOTSTRAP_ADMIN=false, the trusted proxy, the load-balancer identity and the database
+    // connection override the boot-time /etc/breadboard.env: breadboard-apply writes them to a root-only overrides env
+    // file (fetching the proxy secret by ARN), so they change in place like the images and no secret value enters the
+    // template. The database URL carries no password: the server signs in with RDS IAM tokens.
     const deployEnv = [
       `SERVER_IMAGE=${p.serverImage}`,
       `SANDBOX_IMAGE_TS=${p.sandboxImageTs}`,
@@ -401,12 +417,17 @@ export class BreadboardStack extends Stack {
       `ALB_AUTH_ISSUER=${p.albAuthIssuer}`,
       `ALB_AUTH_CLIENT_ID=${p.albAuthClientId}`,
       `OIDC_ADOPT_HANDLES=${p.oidcAdoptHandles.join(',')}`,
+      `DATABASE_URL=postgres://${DB_USER}@${db.dbInstanceEndpointAddress}:${db.dbInstanceEndpointPort}/breadboard`,
+      'DATABASE_IAM_AUTH=true',
+      `DB_SECRET_ARN=${dbSecret?.secretArn ?? ''}`,
       '',
     ].join('\n');
     server.applyCloudFormationInit(
       ec2.CloudFormationInit.fromElements(
         ec2.InitFile.fromString('/etc/breadboard/deploy.env', deployEnv, { mode: '000644' }),
         ec2.InitFile.fromString('/usr/local/bin/breadboard-apply', APPLY_SCRIPT, { mode: '000755' }),
+        // Run once over SSM (README, Database authentication); not run by cfn-init.
+        ec2.InitFile.fromString('/usr/local/bin/breadboard-db-grant-iam', GRANT_IAM_SCRIPT, { mode: '000755' }),
         ec2.InitFile.fromString('/etc/cfn/cfn-hup.conf', `[main]\nstack=${this.stackId}\nregion=${this.region}\ninterval=1\n`, { mode: '000400' }),
         // Re-running cfn-init rewrites the files above and runs the commands below again; breadboard-apply is a no-op
         // when the deployment is unchanged.
@@ -432,7 +453,7 @@ export class BreadboardStack extends Stack {
     new CfnOutput(this, 'ServerIp', { value: serverIp });
     new CfnOutput(this, 'ServerUrl', { value: p.publicUrl || `http://${serverIp}:${p.serverPort}` });
     new CfnOutput(this, 'RdsEndpoint', { value: db.dbInstanceEndpointAddress });
-    new CfnOutput(this, 'DbSecretArn', { description: 'RDS-generated credentials (username, password).', value: dbSecret.secretArn });
+    if (dbSecret) new CfnOutput(this, 'DbSecretArn', { description: 'RDS master credentials (username, password), until dbMasterSecret=false.', value: dbSecret.secretArn });
     new CfnOutput(this, 'TokenSigningKeySecretArn', { value: tokenKey.secretArn });
     new CfnOutput(this, 'BrokerMasterKeySecretArn', { value: brokerKey.secretArn });
     new CfnOutput(this, 'AdminTokenSecretArn', { description: 'BREADBOARD_BOOTSTRAP_ADMIN_TOKEN: sign in as bootstrap-admin to configure OIDC.', value: adminToken.secretArn });

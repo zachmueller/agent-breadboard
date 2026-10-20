@@ -2,7 +2,7 @@
 
 A TypeScript CDK app that provisions the recommended production shape from [12 — Security & Deployment](../../specs/12-security-deployment.md) §1:
 
-- **RDS Postgres 16** (encrypted, private, forced SSL, IAM auth enabled, automated snapshots + PITR). This is the only required stateful dependency.
+- **RDS Postgres 16** (encrypted, private, forced SSL, automated snapshots + PITR). The server signs in with RDS IAM tokens, not a password. This is the only required stateful dependency.
 - **One reference server host** (EC2, Amazon Linux 2023, IMDSv2 only) running the Breadboard container. Docker runs the tool sandbox, an instance role provides Bedrock access, and secrets come from Secrets Manager.
 - Optional **S3 bucket** (versioned, TLS-only) for large blobs.
 
@@ -59,6 +59,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `dbMultiAz` | `false` | |
 | `dbBackupRetentionDays` | `14` | |
 | `dbDeletionProtection` | `true` | |
+| `dbMasterSecret` | `true` | Keep the generated master password secret. Set `false` once the master user is IAM-only (see Database authentication); applied without touching the host. |
 | `enableS3Objects` | `true` | When false, blobs go to the host filesystem under `/var/breadboard`. |
 | `tags` | none | Extra tags, e.g. `Team=research,CostCenter=1234`. `Project` and `Breadboard` are always set. |
 
@@ -66,10 +67,33 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 
 Secrets Manager generates all four secrets, so their values never appear in the template, in CDK output, or on the deployer's machine:
 
-- `breadboard-<name>/db`: RDS credentials (`username`, `password`). The bootstrap script builds `DATABASE_URL` from these plus the RDS endpoint.
+- `breadboard-<name>/db`: the RDS master credentials (`username`, `password`), which RDS needs to create the instance. The server never uses them; they exist for the one-time grant in Database authentication, after which `dbMasterSecret=false` removes them.
 - `breadboard-<name>/token-signing-key`: `TOKEN_SIGNING_KEY`.
 - `breadboard-<name>/broker-master-key`: `BROKER_MASTER_KEY`. 43 alphanumeric characters, which decode as base64 to exactly 32 bytes.
 - `breadboard-<name>/admin-token`: `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN`, the break-glass sign-in for `bootstrap-admin` (see First sign-in). Kept when `bootstrapAdmin=false`.
+
+## Database authentication
+
+The server signs in to RDS as the master user `breadboard` with IAM tokens: `DATABASE_URL` (no password) and
+`DATABASE_IAM_AUTH=true` live in the deployment metadata, and the instance role holds `rds-db:connect` for that user.
+RDS still creates the instance with a password, so after the first deploy (or after upgrading a stack that predates IAM
+auth) turn the password off once:
+
+1. Grant `rds_iam` to the master user. For PostgreSQL, IAM authentication then takes precedence over its password:
+   ```bash
+   aws ssm send-command --instance-ids <ServerInstanceId> --document-name AWS-RunShellScript \
+     --parameters 'commands=["/usr/local/bin/breadboard-db-grant-iam","docker restart breadboard"]'
+   ```
+   `breadboard-db-grant-iam` signs in with the master secret (read with the instance role, kept off command lines) inside
+   the server image, runs the grant, and lists every login role as `iam-only`, `superuser` or `PASSWORD`. Until it has
+   run, the server cannot sign in: it logs `RDS IAM authentication failed for database user breadboard` and restarts.
+2. Deploy with `-c dbMasterSecret=false` (plus the usual `-c` set). The secret and the password leave the stack; the host
+   is not touched (the container is recreated once). Preview it with `npx cdk deploy … --no-execute` and check the
+   change set: the DB instance must be modified, not replaced.
+3. Delete the secret the stack retained: `aws secretsmanager delete-secret --secret-id breadboard-<name>/db --recovery-window-in-days 7`.
+
+Any principal with `rds-db:connect` for the user can mint a token (`aws rds generate-db-auth-token`), so there is no
+lockout; `REVOKE rds_iam FROM breadboard` from such a session brings password sign-in back.
 
 ## First sign-in
 
@@ -150,7 +174,7 @@ Tools reach AWS APIs through the credential broker's `aws-role` kind ([12](../..
 |---|---|
 | `ServerUrl`, `ServerIp` | `publicUrl` when set, else the instance address. |
 | `RdsEndpoint` | |
-| `DbSecretArn`, `TokenSigningKeySecretArn`, `BrokerMasterKeySecretArn`, `AdminTokenSecretArn` | See Secrets. |
+| `DbSecretArn`, `TokenSigningKeySecretArn`, `BrokerMasterKeySecretArn`, `AdminTokenSecretArn` | See Secrets. `DbSecretArn` only while `dbMasterSecret` is true. |
 | `ObjectsBucket` | When `enableS3Objects` is true. |
 | `TrustedProxySecretArn`, `TrustedProxyHeader`, `TrustedProxyUser` | With `trustedProxyUser`: what the proxy sends (see Behind an authenticating proxy). |
 | `AlbAuthArn` | With `albAuthArn`: the load balancer the server trusts (see Behind an Application Load Balancer with OIDC). |
@@ -159,10 +183,11 @@ Tools reach AWS APIs through the credential broker's `aws-role` kind ([12](../..
 
 ## Behaviour to know about
 
-- **The AMI is pinned on first synth** (`cdk.context.json`). A new AMI would replace the host, and the config repo lives on the host's root volume at `/var/breadboard`. To move to a newer AMI on purpose, mirror the config repo first (see Backup/DR), then run `npx cdk context --reset <key>`.
+- **The AMI is pinned on first synth** (`cdk.context.json`). A new AMI would replace the host, and the config repo lives on the host's root volume at `/var/breadboard`. To move to a newer AMI on purpose, mirror the config repo first (see Backup/DR), then run `npx cdk context --reset <key>`. A new subnet or root volume size replaces it too.
+- **A user data change restarts the host; it does not replace it.** The root volume is EBS, so CloudFormation stops the instance, sets the new user data and starts it again: same instance id, private IP and root volume (with the config repo), a new public IP, a few minutes down. CDK's diff still says "may cause replacement". The new script does not run on the existing host (it runs once per instance), so settings that must reach existing hosts belong in the deployment metadata.
 - **RDS modifications** made through a deploy apply during the deploy, not in the maintenance window; CloudFormation has no way to defer them. Verified 2026-10-01: `-c dbInstanceClass=db.t4g.large` on a single-AZ instance took 6.5 minutes and restarted the DB twice (about 30 s of unavailability); the server reconnected on its own. Use `dbMultiAz=true` or schedule such changes.
 - **Destroy keeps the state.** `npx cdk destroy` leaves a final DB snapshot, all four secrets, and the objects bucket (`DeletionPolicy: RetainExceptOnCreate`, so a failed *first* deploy rolls back completely and can simply be retried). Deletion protection blocks a destroy, so first deploy with `-c dbDeletionProtection=false`. The retained secrets and bucket keep their names, so a new deploy with the same `name` fails until you delete them.
 
-The server reaches Postgres only through `DATABASE_URL` (+ `DATABASE_SSL=require`); any other managed Postgres works identically through the same seam. The bundled `deploy/compose.yaml` local-Postgres profile remains the dev/quickstart path.
+The server reaches Postgres only through `DATABASE_URL` (+ `DATABASE_SSL=require`, `DATABASE_IAM_AUTH=true`); any other managed Postgres works identically through the same seam. The bundled `deploy/compose.yaml` local-Postgres profile remains the dev/quickstart path.
 
 Backup/DR: RDS snapshots + PITR replace self-managed archiving; mirror the config repo (`/var/breadboard/config-repo`, a plain bare git repo) to a remote; the objects bucket is versioned. See `docs/self-hosting.md` for the restore runbook.
