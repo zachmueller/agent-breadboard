@@ -73,7 +73,7 @@ const props: BreadboardStackProps = {
   dbMultiAz: bool('dbMultiAz'),
   dbBackupRetentionDays: num('dbBackupRetentionDays'),
   dbDeletionProtection: bool('dbDeletionProtection'),
-  dbMasterSecret: bool('dbMasterSecret'),
+  dbMasterPassword: bool('dbMasterPassword'),
   enableS3Objects: bool('enableS3Objects'),
 };
 // Unset inputs fall through to the stack's DEFAULTS.

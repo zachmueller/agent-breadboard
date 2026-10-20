@@ -1,13 +1,13 @@
 #!/bin/bash
 # One-time switch of the RDS master user to IAM authentication: GRANT rds_iam to it, after which RDS accepts only IAM
 # tokens for it (the generated password stops working). Run over SSM once the server signs in with IAM tokens
-# (DATABASE_IAM_AUTH in deploy.env), before deploying with -c dbMasterSecret=false: it signs in with the master
+# (DATABASE_IAM_AUTH in deploy.env), before deploying with -c dbMasterPassword=false: it signs in with the master
 # password, read with the instance role. Idempotent; prints every login role and whether it is IAM-only.
 set -euo pipefail
 DEPLOY_ENV="${BREADBOARD_DEPLOY_ENV:-/etc/breadboard/deploy.env}" # overridable for the stack's tests only
 source "$DEPLOY_ENV"
 if [[ -z "${DB_SECRET_ARN:-}" ]]; then
-  echo "this deployment has no master password secret (dbMasterSecret=false), so there is nothing to sign in with" >&2
+  echo "this deployment no longer holds the master password (dbMasterPassword=false), so there is nothing to sign in with" >&2
   exit 1
 fi
 

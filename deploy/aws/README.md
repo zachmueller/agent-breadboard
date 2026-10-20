@@ -59,7 +59,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `dbMultiAz` | `false` | |
 | `dbBackupRetentionDays` | `14` | |
 | `dbDeletionProtection` | `true` | |
-| `dbMasterSecret` | `true` | Keep the generated master password secret. Set `false` once the master user is IAM-only (see Database authentication); applied without touching the host. |
+| `dbMasterPassword` | `true` | Keep the generated master password in the stack. Must be `true` when the database is created; set `false` once the master user is IAM-only (see Database authentication). Applied without touching the host or replacing the database. |
 | `enableS3Objects` | `true` | When false, blobs go to the host filesystem under `/var/breadboard`. |
 | `tags` | none | Extra tags, e.g. `Team=research,CostCenter=1234`. `Project` and `Breadboard` are always set. |
 
@@ -67,7 +67,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 
 Secrets Manager generates all four secrets, so their values never appear in the template, in CDK output, or on the deployer's machine:
 
-- `breadboard-<name>/db`: the RDS master credentials (`username`, `password`), which RDS needs to create the instance. The server never uses them; they exist for the one-time grant in Database authentication, after which `dbMasterSecret=false` removes them.
+- `breadboard-<name>/db`: the RDS master credentials (`username`, `password`), which RDS needs to create the instance. The server never uses them; the password exists for the one-time grant in Database authentication and is removed afterwards. The secret stays, holding the user name: the instance's master user name is a reference to it.
 - `breadboard-<name>/token-signing-key`: `TOKEN_SIGNING_KEY`.
 - `breadboard-<name>/broker-master-key`: `BROKER_MASTER_KEY`. 43 alphanumeric characters, which decode as base64 to exactly 32 bytes.
 - `breadboard-<name>/admin-token`: `BREADBOARD_BOOTSTRAP_ADMIN_TOKEN`, the break-glass sign-in for `bootstrap-admin` (see First sign-in). Kept when `bootstrapAdmin=false`.
@@ -87,10 +87,23 @@ auth) turn the password off once:
    `breadboard-db-grant-iam` signs in with the master secret (read with the instance role, kept off command lines) inside
    the server image, runs the grant, and lists every login role as `iam-only`, `superuser` or `PASSWORD`. Until it has
    run, the server cannot sign in: it logs `RDS IAM authentication failed for database user breadboard` and restarts.
-2. Deploy with `-c dbMasterSecret=false` (plus the usual `-c` set). The secret and the password leave the stack; the host
-   is not touched (the container is recreated once). Preview it with `npx cdk deploy … --no-execute` and check the
-   change set: the DB instance must be modified, not replaced.
-3. Delete the secret the stack retained: `aws secretsmanager delete-secret --secret-id breadboard-<name>/db --recovery-window-in-days 7`.
+2. Deploy with `-c dbMasterPassword=false` (plus the usual `-c` set). The password leaves the template and the instance
+   role loses read access to the secret; the host is not touched (the container is recreated once). Preview it with
+   `npx cdk deploy … --no-execute` and check the change set: the DB instance is modified (`MasterUserPassword` only),
+   not replaced.
+3. Remove the password from the secret, keeping the user name the template reads (the value stays off command lines):
+   ```bash
+   umask 077; f=$(mktemp)
+   aws secretsmanager get-secret-value --secret-id breadboard-<name>/db --query SecretString --output text | jq -c 'del(.password)' > "$f"
+   aws secretsmanager put-secret-value --secret-id breadboard-<name>/db --secret-string "file://$f"; rm -f "$f"
+   ```
+   The earlier version, with the now useless password, keeps the `AWSPREVIOUS` label; move that label onto the new
+   version too (`update-secret-version-stage --version-stage AWSPREVIOUS --move-to-version-id <new> --remove-from-version-id <old>`)
+   to leave the old version unlabelled.
+
+Do not delete the secret or change `MasterUsername`: the master user name in the template is a reference to the secret,
+and CloudFormation compares template text, so any change to it, even to the same name as a literal, replaces the
+database.
 
 Any principal with `rds-db:connect` for the user can mint a token (`aws rds generate-db-auth-token`), so there is no
 lockout; `REVOKE rds_iam FROM breadboard` from such a session brings password sign-in back.
@@ -174,7 +187,7 @@ Tools reach AWS APIs through the credential broker's `aws-role` kind ([12](../..
 |---|---|
 | `ServerUrl`, `ServerIp` | `publicUrl` when set, else the instance address. |
 | `RdsEndpoint` | |
-| `DbSecretArn`, `TokenSigningKeySecretArn`, `BrokerMasterKeySecretArn`, `AdminTokenSecretArn` | See Secrets. `DbSecretArn` only while `dbMasterSecret` is true. |
+| `DbSecretArn`, `TokenSigningKeySecretArn`, `BrokerMasterKeySecretArn`, `AdminTokenSecretArn` | See Secrets. |
 | `ObjectsBucket` | When `enableS3Objects` is true. |
 | `TrustedProxySecretArn`, `TrustedProxyHeader`, `TrustedProxyUser` | With `trustedProxyUser`: what the proxy sends (see Behind an authenticating proxy). |
 | `AlbAuthArn` | With `albAuthArn`: the load balancer the server trusts (see Behind an Application Load Balancer with OIDC). |

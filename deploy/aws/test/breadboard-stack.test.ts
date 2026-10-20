@@ -343,19 +343,26 @@ describe('BreadboardStack', () => {
     expect(initFiles(t)['/usr/local/bin/breadboard-db-grant-iam']).toContain('GRANT rds_iam TO');
   });
 
-  it('retires the master password without touching the host when dbMasterSecret is false', () => {
-    const retired = synth({ dbMasterSecret: false });
-    retired.resourceCountIs('AWS::SecretsManager::SecretTargetAttachment', 0);
-    expect(Object.keys(retired.findResources('AWS::SecretsManager::Secret', { Properties: { Name: 'breadboard-test/db' } }))).toHaveLength(0);
-    retired.hasResourceProperties('AWS::RDS::DBInstance', { MasterUsername: 'breadboard', MasterUserPassword: Match.absent(), EnableIAMDatabaseAuthentication: true });
-    // The same DB resource: a new logical id would replace the database.
-    expect(logicalId(retired, 'AWS::RDS::DBInstance', {})).toBe(logicalId(t, 'AWS::RDS::DBInstance', {}));
+  it('drops the master password without replacing the database or touching the host when dbMasterPassword is false', () => {
+    const retired = synth({ dbMasterPassword: false });
+    const dbId = logicalId(t, 'AWS::RDS::DBInstance', {});
+    const dbProps = (x: Template) => x.findResources('AWS::RDS::DBInstance')[dbId]!.Properties;
+    expect(dbProps(retired).MasterUserPassword).toBeUndefined();
+    // Every other property is unchanged. MasterUsername in particular stays the reference to the secret: CloudFormation
+    // compares the template text, so even the same name as a literal requires replacing the database (verified on a
+    // live stack's change set, 2026-10-20).
+    const { MasterUserPassword, ...rest } = dbProps(t);
+    expect(MasterUserPassword).toBeDefined();
+    expect(dbProps(retired)).toEqual(rest);
+    expect(JSON.stringify(rest.MasterUsername)).toContain('{{resolve:secretsmanager:');
+    // The secret stays (for the user name), but the host can no longer read it.
+    expect(Object.keys(retired.findResources('AWS::SecretsManager::Secret'))).toHaveLength(4);
+    retired.resourceCountIs('AWS::SecretsManager::SecretTargetAttachment', 1);
     const reads = statements(retired).filter((s) => [s.Action].flat().includes('secretsmanager:GetSecretValue')).map((s) => JSON.stringify(s.Resource));
     expect(reads.sort()).toEqual(
       ['token-signing-key', 'broker-master-key', 'admin-token'].map((n) => JSON.stringify({ Ref: logicalId(retired, 'AWS::SecretsManager::Secret', { Name: `breadboard-test/${n}` }) })).sort(),
     );
     expect(statements(retired).some((s) => s.Action === 'rds-db:connect')).toBe(true);
-    expect(Object.keys(retired.findOutputs('*'))).not.toContain('DbSecretArn');
     // Neither restart nor replacement: identical user data, and deploy.env loses only the secret reference.
     expect(instanceUserData(retired)).toBe(instanceUserData(t));
     expect(initFiles(retired)['/etc/breadboard/deploy.env']).toBe(initFiles(t)['/etc/breadboard/deploy.env']);
@@ -604,7 +611,7 @@ describe('breadboard-db-grant-iam.sh', () => {
   it('refuses to run once the master secret is retired', () => {
     const r = grant('SERVER_IMAGE=registry.example.com/bb:v1\nDB_SECRET_ARN=\n');
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('dbMasterSecret=false');
+    expect(r.stderr).toContain('dbMasterPassword=false');
     expect(r.dockerArgs).toBe('');
   });
 });
@@ -637,8 +644,8 @@ describe('bin/breadboard.ts', () => {
     expect(template).toContain('BOOTSTRAP_ADMIN=true');
     expect(run({ ...required, bootstrapAdmin: 'false' }).template).toContain('BOOTSTRAP_ADMIN=false');
     expect(run({ ...required, trustedProxyUser: 'zach' }).template).toContain('TRUSTED_PROXY_USER=zach');
-    expect(template).toContain('AWS::SecretsManager::SecretTargetAttachment');
-    expect(run({ ...required, dbMasterSecret: 'false' }).template).not.toContain('AWS::SecretsManager::SecretTargetAttachment');
+    expect(template).toContain('MasterUserPassword');
+    expect(run({ ...required, dbMasterPassword: 'false' }).template).not.toContain('MasterUserPassword');
     const role = Object.values<{ Type: string; Properties: { Tags?: unknown[] } }>(JSON.parse(template).Resources).find((r) => r.Type === 'AWS::IAM::Role');
     expect(role?.Properties.Tags).toEqual(
       expect.arrayContaining([{ Key: 'Team', Value: 'research' }, { Key: 'Project', Value: 'agent-breadboard' }, { Key: 'Breadboard', Value: 'smoke' }]),
