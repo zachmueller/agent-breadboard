@@ -68,9 +68,9 @@ The authoritative in/out lists live in each spec's cutline section; this is the 
 | Additional node types (`workstream`, `project`, `idea`) | [01](01-data-model.md) §9 |
 | Amazon adapter package | [12](12-security-deployment.md) §9 |
 
-## 4. Deployment milestone: internal pilot
+## 4. Deployment milestone: first internal deployment
 
-The first real deployment target is an **Amazon-internal team pilot**, stood up as soon as Phase 6's acceptance criteria pass (not waiting for Phase 7):
+The first real deployment target is an **Amazon-internal team deployment**, stood up as soon as Phase 6's acceptance criteria pass (not waiting for Phase 7):
 
 - **Scope is minimal:** the AWS reference deployment (`deploy/aws/`, [12](12-security-deployment.md) §1) in an internal AWS account: RDS Postgres, one server host running the server and tool sandboxes, and Bedrock through the host's instance role. This is the path verified end to end on 2026-10-01 (deploy, in-place image upgrade, destroy). Internal container hosting running the same image in the [12](12-security-deployment.md) §1 sandbox topology remains an option, but has not been verified. No internal knowledge connectors or broker capabilities are pulled forward.
 - **Stand-up, as verified:**
@@ -79,9 +79,9 @@ The first real deployment target is an **Amazon-internal team pilot**, stood up 
   3. Make sure the account can invoke every Bedrock model the presets name, including the embeddings model. The seed's chat presets use `us.*` cross-region inference-profile IDs, so a deployment outside US regions needs different preset IDs.
   4. Sign in with the generated bootstrap admin token ([12](12-security-deployment.md) §3), then set up auth (next item) and deactivate `bootstrap-admin`.
   5. To run the lit-review reference circuit, register its two keyless broker capabilities (`crossref-api`, `semantic-scholar-api`).
-- **Auth:** static users (banner-marked, [12](12-security-deployment.md) §3) with real, operator-set tokens: production refuses the seed's `*-change-me` tokens. OIDC is built and verified against a standard provider (Keycloak), so the pilot can switch to the internal IdP once that federation ([12](12-security-deployment.md) §8) is available; that binding has not been verified.
-- **Pilot workload is deliberately undecided:** the tracer bullet and phase work stay workload-neutral (the lit-review reference circuit from [03](03-circuits.md) §2 is the running example); the team picks the first dogfood workload when onboarding is imminent.
-- The Amazon adapter package proper ([12](12-security-deployment.md) §8) remains post-v1; the pilot uses only configuration, not internal-only code. The one internal piece so far is deploy-only: a separate private add-on that fronts the reference host with CloudFront and an internal identity gate, using the stack's server outputs.
+- **Auth:** static users (banner-marked, [12](12-security-deployment.md) §3) with real, operator-set tokens: production refuses the seed's `*-change-me` tokens. OIDC is built and verified against a standard provider (Keycloak), so the deployment can switch to the internal IdP once that federation ([12](12-security-deployment.md) §8) is available; that binding has not been verified.
+- **The first workload is deliberately undecided:** the tracer bullet and phase work stay workload-neutral (the lit-review reference circuit from [03](03-circuits.md) §2 is the running example); the team picks the first dogfood workload when onboarding is imminent.
+- The Amazon adapter package proper ([12](12-security-deployment.md) §8) remains post-v1; the deployment uses only configuration, not internal-only code. The internal pieces are deploy-only: a separate private package that fronts the reference host with an authenticating load balancer, using the stack's server outputs.
 
 ## 5. Post-v1 themes (direction, not commitment)
 
@@ -96,5 +96,5 @@ The first real deployment target is an **Amazon-internal team pilot**, stood up 
 
 1. **Build sequencing.** **Decided:** tracer bullet first (§1), then phases 1→7 each completed to its acceptance criteria.
 2. **v1 scope trims.** **Decided:** none — v1 ships exactly the per-spec cutlines. Python tool runtime, `spawn-harness`, and the designer chat panels all stay in.
-3. **First deployment.** **Decided:** internal team pilot early, per §4 — minimal binding (hosting + Bedrock), static-user auth until Phase 7 OIDC.
-4. **First dogfood workload.** **Decided:** deferred — tracer and phase work stay workload-neutral; chosen at pilot onboarding (§4).
+3. **First deployment.** **Decided:** an internal team deployment early, per §4 — minimal binding (hosting + Bedrock), static-user auth until Phase 7 OIDC.
+4. **First dogfood workload.** **Decided:** deferred — tracer and phase work stay workload-neutral; chosen at onboarding (§4).
