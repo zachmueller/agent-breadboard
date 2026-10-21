@@ -181,10 +181,19 @@ Prompted by a team whose past analyses live in a git monorepo, with no search AP
    - **CodeCommit.** AWS credentials (`aws-role`, `aws-sigv4`) work only for CodeCommit, as its SigV4-derived git password. The password matches the AWS CLI credential helper's for the same timestamp. A live `ls-remote` and a full fetch with a preemptive Basic header both succeeded.
    - **Git environment.** Git runs with an allowlisted environment, a timeout, and stall detection (`http.lowSpeedLimit`). A dropped connection had left a test fetch hanging for 10 minutes without it.
 
-Not yet deployed. To use it on an instance:
-1. Ship a server image with this change.
-2. Register the credential and capability.
-3. Declare the repo, and grant it to subagents.
+Deployed to the instance behind a load balancer as server `20ea21f` (a metadata-only change: same host, health ok, git 2.54 with PCRE). That instance mirrors one CodeCommit repository: about 455 MB packed, 4,415 files and 274 notebooks.
+
+**First clone.**
+- The two attempts made before the role's `codecommit:GitPull` was deployed got a 403. They were audited and retried 5 minutes apart.
+- The next attempt cloned the repository in 73 s.
+- Rendering the notebooks' cell sources took 12 MB, against 244 MB of raw notebooks.
+
+**Verified over MCP.**
+- `search_repo`: a files-only search hit its 500-file cap and reported 30 skipped oversized files. A notebook search returned cell locations and output-free snippets.
+- `read_repo_file`: the cell view's line numbers matched the search hits. The tool paged a long file and listed directories.
+- Freshness: searches inside 5 minutes did not fetch. The first search after the window fetched once, and the next one reused that fetch. The broker audit has one `GIT` row per fetch and none per search.
+
+Not yet exercised: a subagent calling the primitives in a circuit run.
 
 ## Next steps (in priority order)
 
