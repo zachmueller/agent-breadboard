@@ -142,6 +142,17 @@ describe('SubagentRuntime.resolve', () => {
     expect([...explicit.primitives]).toEqual(['read_node', 'create_task']);
   });
 
+  it('a repos grant implies the repository primitives, even on an explicit list', () => {
+    const none = grantsFor(subagentDef({}));
+    expect(none.repos.size).toBe(0);
+    expect(none.primitives.has('search_repo')).toBe(false);
+    const dflt = grantsFor(subagentDef({ repos: ['handbook'] }));
+    expect([...dflt.repos]).toEqual(['handbook']);
+    for (const n of [...DEFAULT_PRIMITIVES, 'search_repo', 'read_repo_file']) expect(dflt.primitives.has(n)).toBe(true);
+    const explicit = grantsFor(subagentDef({ repos: ['handbook'], primitives: ['read_node'] }));
+    expect([...explicit.primitives]).toEqual(['read_node', 'search_repo', 'read_repo_file']);
+  });
+
   it('principalFor builds an actor principal', async () => {
     const { runtime } = harness();
     const r = await runtime.resolve(SA, COMMIT);

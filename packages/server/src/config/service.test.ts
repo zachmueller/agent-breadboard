@@ -384,6 +384,18 @@ describe('ConfigService validation rules', () => {
     err(bb, /intake\.triage_circuit references circuit/);
   });
 
+  it('checks repository grants against the repos declared in breadboard.yaml', async () => {
+    const undeclared = await validate([{ path: CONFIG_PATHS.subagent(SUB_B), content: subagentYaml(SUB_B, 'research-writer', { repos: ['docs-repo'] }) }]);
+    err(undeclared, /repository 'docs-repo' is not declared under repos/);
+    const declared = await validate([
+      { path: 'breadboard.yaml', content: toYaml({ schema: SCHEMA_TAGS.breadboard, repos: [{ name: 'docs-repo', url: 'https://git.example.com/team/docs.git' }] }) },
+      { path: CONFIG_PATHS.subagent(SUB_B), content: subagentYaml(SUB_B, 'research-writer', { repos: ['docs-repo'] }) },
+    ]);
+    expect(declared.errors.filter((e) => e.includes('docs-repo'))).toEqual([]);
+    const badExclude = await validate([{ path: 'breadboard.yaml', content: toYaml({ schema: SCHEMA_TAGS.breadboard, repos: [{ name: 'docs-repo', url: 'https://git.example.com/team/docs.git', exclude: ['../up'] }] }) }]);
+    err(badExclude, /repos 'docs-repo' exclude/);
+  });
+
   it('enforces circuit graph rules', async () => {
     const steps = (): any[] => JSON.parse(JSON.stringify((parseYaml(circuitYaml()) as any).steps));
     // missing exit target

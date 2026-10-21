@@ -98,6 +98,7 @@ beforeAll(async () => {
     conversations: () => proxy as any,
     dispatcher: () => proxy as any,
     connectors: () => proxy as any,
+    mirrors: () => proxy as any,
     instance: { name: 'agent-breadboard', version: 'test', db: 'pglite', sandbox: 'process', public_url: 'http://localhost:4000' },
   });
   services = { primitives, toolbox, sessions, log: f.log } as unknown as Services;

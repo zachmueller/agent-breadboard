@@ -2,7 +2,7 @@
 
 export interface PrimitiveInfo {
   name: string;
-  group: 'Content' | 'Knowledge' | 'Intake' | 'Sessions & circuits' | 'Evals' | 'Configuration';
+  group: 'Content' | 'Knowledge' | 'Repositories' | 'Intake' | 'Sessions & circuits' | 'Evals' | 'Configuration';
   description: string;
 }
 
@@ -18,6 +18,8 @@ export const PRIMITIVES: PrimitiveInfo[] = [
   { name: 'query_knowledge', group: 'Knowledge', description: 'Search readable Knowledge Notes (text, semantic, hybrid).' },
   { name: 'read_note', group: 'Knowledge', description: 'Read a Note as Markdown plus its base revision.' },
   { name: 'propose_note_edit', group: 'Knowledge', description: 'Propose an edit to a Note in a writable domain (reconcile path).' },
+  { name: 'search_repo', group: 'Repositories', description: 'Search a granted repository mirror like grep (implied by a repos grant).' },
+  { name: 'read_repo_file', group: 'Repositories', description: 'Read a file or directory of a granted repository mirror (implied by a repos grant).' },
   { name: 'create_task', group: 'Intake', description: 'Create a Task in the Intake queue.' },
   { name: 'find_similar_tasks', group: 'Intake', description: 'Find similar existing Tasks (duplicate detection).' },
   { name: 'run_circuit', group: 'Sessions & circuits', description: 'Invoke a circuit with an execute grant as a sub-session.' },
@@ -54,6 +56,8 @@ export function grantHints(s: any): string[] {
   if (prim.has('propose_note_edit') && !write.length) out.push('propose_note_edit is allowed but no knowledge domain is writable.');
   if (write.length && !prim.has('propose_note_edit')) out.push('Writable domains need the propose_note_edit primitive to be usable.');
   if ((prim.has('query_knowledge') || prim.has('read_note')) && !read.length) out.push('Knowledge primitives are allowed but no domain is readable.');
+  const repos: string[] = Array.isArray(s?.repos) ? s.repos : [];
+  if ((prim.has('search_repo') || prim.has('read_repo_file')) && !repos.length) out.push('Repository primitives are allowed but no repository is granted (repos).');
   const notRead = write.filter((d) => !read.includes(d));
   if (notRead.length) out.push(`Writable but not readable: ${notRead.join(', ')}.`);
   return out;
@@ -101,6 +105,12 @@ export function subagentFieldDiff(base: any, next: any, label: (kind: string, ui
     if (add.length) out.push({ field: `knowledge.${side}`, kind: 'added', detail: add.join(', ') });
     if (rem.length) out.push({ field: `knowledge.${side}`, kind: 'removed', detail: rem.join(', ') });
   }
+  const br = new Set<string>(base.repos ?? []);
+  const nr = new Set<string>(next.repos ?? []);
+  const addRepos = [...nr].filter((r) => !br.has(r));
+  const remRepos = [...br].filter((r) => !nr.has(r));
+  if (addRepos.length) out.push({ field: 'repos', kind: 'added', detail: addRepos.join(', ') });
+  if (remRepos.length) out.push({ field: 'repos', kind: 'removed', detail: remRepos.join(', ') });
   const bp = effectivePrimitives(base);
   const np = effectivePrimitives(next);
   if (bp.custom !== np.custom || j([...bp.list].sort()) !== j([...np.list].sort())) {

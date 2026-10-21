@@ -34,6 +34,10 @@ describe('subagentFieldDiff', () => {
     expect(txt).toContain('knowledge.write:added:glossary');
     expect(txt).toContain('primitives:changed:+run_circuit');
   });
+  it('reports repository grants', () => {
+    const d = subagentFieldDiff({ ...base, repos: ['old'] }, { ...base, repos: ['handbook'] });
+    expect(d.map((x) => `${x.field}:${x.kind}:${x.detail}`)).toEqual(['repos:added:handbook', 'repos:removed:old']);
+  });
 });
 
 describe('primitives and hints', () => {
@@ -46,5 +50,7 @@ describe('primitives and hints', () => {
     expect(h.join('\n')).toMatch(/run_circuit primitive/);
     expect(h.join('\n')).toMatch(/propose_note_edit primitive/);
     expect(h.join('\n')).toMatch(/Writable but not readable: x/);
+    expect(grantHints({ primitives: ['search_repo'] }).join('\n')).toMatch(/no repository is granted/);
+    expect(grantHints({ primitives: ['search_repo'], repos: ['r'] }).join('\n')).not.toMatch(/repository/);
   });
 });

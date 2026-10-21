@@ -134,6 +134,36 @@ The closed set of built-in operations available to tool code via `ctx` (and mirr
 - The **inspection primitives** ([11](11-api-mcp.md) §4: `list_sessions`, `read_session_transcript`, `read_session_events`, `list_session_executions`, `search_nodes`, `inspect_node`, `get_config_history`, `list_proposals`, `read_proposal`, `diff_config`, …) are read-only and part of the same catalog: a Subagent sees them only when its `primitives` grant lists them (a designer that should learn from real runs, for instance), and they enforce session visibility and knowledge grants like every other read.
 - `model_converse({messages, system?, tools?, preset?, model_id?, max_tokens?, temperature?, effort?, force_tool?})` (`ctx.converse`) — one model turn through the model gateway ([12](12-security-deployment.md) §7), for tool code only: it is never offered to a model directly or over MCP, and the calling tool must declare the reserved `model` capability (§5). Messages, tool definitions, and the reply use Breadboard's chat format (text, `tool_use`, `tool_result`, `reasoning` blocks; pass `reasoning` blocks back unchanged on the next turn), so the gateway's preset resolution, fallback walking, prompt caching, and the Session's `model_overrides` apply. `effort` is the reasoning effort; `force_tool` makes the model call a tool (forced where the model allows it, an instruction otherwise). The reply's usage carries prompt-cache reads/writes. The call needs a Session, is refused once the Session's cost or token budget is spent, and is recorded as a turn on the calling step (model, tokens, cost, fallback), so sandboxed model use is visible and accounted exactly like an LLM step's.
 
+### 7.1 Repository mirrors
+
+Some reference material lives in git repositories outside Breadboard: a team's analysis monorepo, a handbook, past design docs. Tool containers cannot hold a clone, because nothing persists between executions (§4) and the broker carries neither git's protocol nor its packfiles (§5). So the **server** keeps the mirrors, and two read-only primitives search and read them:
+
+- **Configuration.** `breadboard.yaml` declares `repos:` ([config reference](../docs/config-reference.md)): `{name, description, url, branch (main), capability?, refresh_minutes (5), max_file_bytes (1 MiB), max_notebook_bytes (50 MiB), exclude [], fetch_timeout_s (600), enabled}`. Each entry becomes a bare single-branch clone under `MIRROR_DIR`. The clone is a cache: deleting it costs one re-clone.
+- **Freshness.** A call without a pinned `commit` fetches first when the mirror's last fetch attempt is at least `refresh_minutes` old, so a burst of searches costs one fetch:
+  - **Single flight.** One fetch runs per mirror at a time, and concurrent callers share it. A caller waits for it for up to about 20 s, then answers from the current head (`refreshing: true`).
+  - **Failure.** A failed fetch keeps the previous head serving (`stale: true`, `refresh_error`) and is not retried until the window has passed again.
+  - **Persistence.** Fetch times survive restarts, so a restart does not refetch inside the window.
+  - **Initial clone.** The first clone starts at boot.
+- **Consistency.** Each call resolves one commit SHA and reads only through it. Results cite that SHA, a later read can pass it back, and the reflog keeps cited commits readable after force-pushes.
+- **`search_repo`.** It searches like grep over the commit's tree:
+  - **Pattern.** `pattern` is literal unless `regex: true` (PCRE). `ignore_case` and `word` are also available.
+  - **Paths.** `paths` and `exclude` take git glob pathspecs.
+  - **Output.** `context` lines, `max_results`, `max_per_file`, `files_only`, and a `max_chars` budget. The result lists the files with match lines and columns and grep-style snippets.
+  - **Notebooks.** Jupyter notebooks are searched by cell source only, with outputs dropped, and their hits carry `cell`, `cell_type` and `cell_line`.
+  - **Skipped files.** Binary files, and files over `max_file_bytes`, are skipped and counted.
+- **`read_repo_file`.** It returns a file or line range with numbered lines and `next_start_line`, or a directory listing. Notebooks show their cell view, which uses the same line numbers as search hits; `raw: true` returns the JSON instead.
+- **Access.**
+  - **Scope.** Both primitives require the `knowledge:read` token scope.
+  - **Members.** Members read every mirror.
+  - **Subagents.** A subagent reads only the mirrors in its `repos` grant ([05](05-subagents.md) §2.5). A non-empty grant adds both primitives to its surface, even when `primitives` is an explicit list.
+  - **Configuration.** The Breadboard's own configuration is not a mirror; `search_config` and `read_config` read it.
+- **Auth.** A private remote names a broker capability, and the broker authenticates the fetch ([12](12-security-deployment.md) §5):
+  - **Bearer, basic and header credentials** become an HTTP header.
+  - **`aws-role` and `aws-sigv4` credentials** with `service: codecommit` become AWS CodeCommit's SigV4-derived git password.
+  - **Scope.** The remote must fall within the capability's hosts and path prefixes, and its methods must allow GET and POST.
+  - **Environment.** Headers reach git only through its environment, never argv or a config file. Every authenticated fetch is audited.
+- **Isolation.** The server runs git with a clean environment (no inherited `GIT_*`, no credential helpers, prompts or hooks), https only, a timeout, and stall detection. User paths are resolved through the commit's tree index and never reach argv; user globs and patterns do reach argv, but only after validation and behind `--` and `-e`.
+
 ## 8. External exposure
 
 Each tool extension may **opt in** (`exposure.external_mcp: true`) to being exposed outside the Breadboard via the Breadboard MCP server ([11](11-api-mcp.md) §4). This lets teams leverage shared tooling from their local harness setups (e.g., Claude Code on a laptop) without replicating functionality in a separate MCP server. External calls authenticate as a user and run under that user's permissions, in the same sandbox with the same limits.
@@ -153,6 +183,8 @@ Central onboarding simplifies configuration: each distinct MCP server is onboard
 ## 11. v1 cutline
 
 **In:** `tool@v1` manifest; TS + Python runtimes; Docker sandbox with warm pools, limits, default-deny egress; credential broker integration; idempotency journal; pre-packaged tool set (incl. `spawn-harness` with Strands Agents and Strands Harness adapters); read-only AI code access + branch proposals; MCP onboarding; external MCP exposure; inventory + editor UI.
+
+**In (added after v1):** server-side repository mirrors with `search_repo` / `read_repo_file` (§7.1).
 
 **Out (future):** additional languages; long-running/daemon tools; tool-level caching layer; per-tool telemetry dashboards; harness adapters beyond Strands (e.g., Claude Code).
 

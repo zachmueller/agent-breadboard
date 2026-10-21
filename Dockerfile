@@ -42,6 +42,7 @@ ENV PORT=4000 HOST=0.0.0.0 \
     CONFIG_REPO_DIR=/var/breadboard/config-repo \
     CONFIG_WORKTREE_CACHE_DIR=/var/breadboard/config-trees \
     OBJECT_STORE_DIR=/var/breadboard/objects \
+    MIRROR_DIR=/var/breadboard/mirrors \
     CONFIG_SEED_DIR=/app/config-seed \
     UI_DIST_DIR=/app/packages/ui/dist \
     LOG_PRETTY=false

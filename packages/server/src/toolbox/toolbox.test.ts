@@ -103,6 +103,7 @@ function subagentPrincipal(tools: Record<string, Record<string, unknown>>, overr
       circuits: { read: new Set(), execute: new Set() },
       knowledge: { read: new Set(), write: new Set() },
       primitives: new Set(),
+      repos: new Set(),
       tools_override: override ? new Set(override) : null,
     },
     session_id: null,

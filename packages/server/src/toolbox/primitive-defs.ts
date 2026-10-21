@@ -7,7 +7,7 @@ import type { Queryable } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import { canSeeSession, type Principal } from '../core/principal.js';
 import type { IdentityStore } from '../identity/identity.js';
-import type { ConfigService, ConnectorScheduler, ContentService, ConversationService, CredentialBroker, Dispatcher, EvalService, EventBus, KnowledgeService, ModelGateway, Orchestrator, SessionStore, TaskService, Toolbox } from '../core/services.js';
+import type { ConfigService, ConnectorScheduler, ContentService, ConversationService, CredentialBroker, Dispatcher, EvalService, EventBus, KnowledgeService, ModelGateway, Orchestrator, RepoMirrors, SessionStore, TaskService, Toolbox } from '../core/services.js';
 
 export interface PrimitiveCallCtx {
   session_id?: string | null;
@@ -49,6 +49,8 @@ export interface PrimitivesDeps {
   conversations: () => Pick<ConversationService, 'proposals' | 'busy' | 'draftTask'>;
   dispatcher: () => Pick<Dispatcher, 'capacity'>;
   connectors: () => Pick<ConnectorScheduler, 'status'>;
+  /** Repository mirrors behind `search_repo` / `read_repo_file` ([06] §7.1). */
+  mirrors: () => Pick<RepoMirrors, 'search' | 'read' | 'status'>;
   /** Instance facts for `get_breadboard_overview` (the `/health` fields plus the public URL). */
   instance: { name: string; version: string; db: string; sandbox: string; public_url: string };
 }

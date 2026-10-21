@@ -51,6 +51,8 @@ circuits:                                # circuit visibility (default: none)
 knowledge:                               # Knowledge Domain access (default: none)
   read: [glossary, prior-art]
   write: []                              # domains this subagent may edit via the reconcile path
+
+repos: [handbook]                        # repository mirrors it may search and read (default: none)
 ```
 
 ### 2.1 System prompt
@@ -71,6 +73,14 @@ Controls which circuits the Subagent can **read** (inspect definitions) or **exe
 ### 2.4 Knowledge access
 
 Read/write lists of Knowledge Domain slugs ([07 — Knowledge](07-knowledge.md) §3). Read scopes search/RAG and deterministic injection; write gates the AI-edit path.
+
+### 2.5 Repository access
+
+A list of repository mirror names from `breadboard.yaml` `repos:` ([06](06-toolbox.md) §7.1). It scopes `search_repo` and `read_repo_file` to those mirrors.
+
+- **The grant implies the primitives.** A non-empty list adds both primitives to the subagent's surface, even when `primitives` is an explicit list, because the grant is useless without them.
+- **Validation.** Config validation rejects a name that `breadboard.yaml` does not declare.
+- **Tools inherit it.** Tool code a subagent invokes inherits the grant like any other.
 
 ## 3. Execution semantics
 

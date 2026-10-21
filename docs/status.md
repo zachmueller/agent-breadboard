@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-20.
+**As of:** 2026-10-21.
 **Branch:** `main`; the `cdk-aws-deploy` work was merged on 2026-10-10. The verification pass and its follow-ups start at `467a8b1` (`git log 467a8b1..HEAD`).
 **Read first when resuming:** this file, then the checklist at the end of [verification-plan.md](verification-plan.md).
 
@@ -159,6 +159,32 @@ Deployed to the instance behind a load balancer as server `8cb5f5b` (then `7e958
 ## Fixed 2026-10-21: long MCP tool calls lost their result
 
 The MCP transport's idle sweep closes a connection 30 minutes after its last request. A tool call's request is the last one while the call runs, so a call of about 30 minutes (an Athena query at Athena's own DML timeout) had its connection closed under it: the tool finished, and the result was lost. The MCP server now reports each tool call's start and end to the transport (`on_call`). A connection with a call in flight is never idle, and its idle clock restarts when the call returns. A new transport test covers this (it hangs on the old code). Deployed to the instance behind a load balancer as server `55308cf` (a metadata-only change: same host, health ok, no migrations).
+
+## Decisions made 2026-10-21: repository mirrors
+
+Prompted by a team whose past analyses live in a git monorepo, with no search API on the host, which it wants circuits to draw on. Recorded in spec [06](../specs/06-toolbox.md) §7.1, [05](../specs/05-subagents.md) §2.5, [11](../specs/11-api-mcp.md) §4 and [12](../specs/12-security-deployment.md) §1, §5.
+
+1. **The server keeps the clones, not a tool.**
+   - A tool can't keep one. Tool containers keep nothing between runs, the sandbox images have no git, and the broker can't carry git (UTF-8 bodies, a 4 MB cap, 30 s).
+   - **Storage.** `breadboard.yaml` `repos:` declares the mirrors. Each one is a bare single-branch clone under `MIRROR_DIR` (`packages/server/src/mirrors/`).
+   - **Primitives.** Two primitives read them: `search_repo` (git grep at one commit; notebooks by cell source; binary and oversized files skipped) and `read_repo_file`. There are no sandboxed wrapper tools.
+2. **Freshness.**
+   - **When it fetches.** A call fetches first when the last attempt is `refresh_minutes` (5) old. One fetch runs at a time per mirror, and callers wait for it for up to 20 s.
+   - **On failure.** A failed fetch serves the previous commit with `refresh_error` and waits out the window before retrying.
+   - **Across restarts.** `state.json` keeps the window across restarts.
+3. **Access.**
+   - **Subagents.** A subagent needs `repos: [<name>]`, which adds both primitives even to an explicit `primitives` list.
+   - **Members and scope.** Members read every mirror. The scope is `knowledge:read`, so existing read-only tokens work.
+   - **Overview.** `get_breadboard_overview` reports the mirrors.
+4. **Auth.**
+   - **Capabilities.** A private remote names a broker capability. `withRepoAuth` checks the remote against its hosts and path prefixes, turns the credential into a header, passes it to git only through `GIT_CONFIG_*` environment variables, and audits each fetch as method `GIT`.
+   - **CodeCommit.** AWS credentials (`aws-role`, `aws-sigv4`) work only for CodeCommit, as its SigV4-derived git password. The password matches the AWS CLI credential helper's for the same timestamp. A live `ls-remote` and a full fetch with a preemptive Basic header both succeeded.
+   - **Git environment.** Git runs with an allowlisted environment, a timeout, and stall detection (`http.lowSpeedLimit`). A dropped connection had left a test fetch hanging for 10 minutes without it.
+
+Not yet deployed. To use it on an instance:
+1. Ship a server image with this change.
+2. Register the credential and capability.
+3. Declare the repo, and grant it to subagents.
 
 ## Next steps (in priority order)
 

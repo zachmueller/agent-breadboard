@@ -138,7 +138,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'get_breadboard_overview',
       scope: 'sessions:read',
-      description: 'One-call health picture of this Breadboard: instance (name, version, database, sandbox, model providers, public URL), config main commit and definition counts by kind, dispatcher capacity and hourly spend, session counts by state, open proposals, your review-queue size, knowledge domains, need-input rate over 30 days, eval dashboard, recent model fallbacks and connector status.',
+      description: 'One-call health picture of this Breadboard: instance (name, version, database, sandbox, model providers, public URL), config main commit and definition counts by kind, dispatcher capacity and hourly spend, session counts by state, open proposals, your review-queue size, knowledge domains, need-input rate over 30 days, eval dashboard, recent model fallbacks, connector status and the repository mirrors you can search (`search_repo`).',
       input_schema: obj({}),
       handler: async (_a, p) => {
         const quiet = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => {
@@ -149,13 +149,14 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
             return null;
           }
         };
-        const [dash, main_commit, tree, open, domains, providers] = await Promise.all([
+        const [dash, main_commit, tree, open, domains, providers, repos] = await Promise.all([
           buildDashboard({ content: d.content, dispatcher: d.dispatcher(), sessions: d.sessions, evals: d.evals, gateway: d.gateway, connectors: d.connectors() }, p, d.log),
           quiet('config.main', () => d.config.mainCommit()),
           quiet('config.tree', () => d.config.tree()),
           quiet('proposals', () => d.config.listProposals({ status: 'open', limit: 200 })),
           quiet('knowledge', () => d.knowledge.domains()),
           quiet('providers', async () => d.gateway.providers()),
+          quiet('repos', () => d.mirrors().status(p)),
         ]);
         const definitions: Record<string, number> = {};
         for (const e of tree ?? []) definitions[e.kind] = (definitions[e.kind] ?? 0) + 1;
@@ -174,6 +175,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
           evals: dash.evals,
           gateway_fallbacks: dash.gateway_fallbacks.slice(-5),
           connectors: dash.connectors,
+          repos: repos ? repos.map((r) => ({ name: r.name, description: r.description, branch: r.branch, phase: r.phase, commit: r.commit, fetched_at: r.fetched_at, stale: r.stale, last_error: r.last_error })) : null,
         };
       },
     },

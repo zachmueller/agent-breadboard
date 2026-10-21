@@ -12,6 +12,8 @@ export interface Grants {
   knowledge: { read: Set<string>; write: Set<string> };
   /** Built-in primitive names the subagent may call. */
   primitives: Set<string>;
+  /** Repository mirror names the subagent may search and read ([06] §7.1). */
+  repos: Set<string>;
   /** Step-level narrowing of the tool surface ([03] §3.1); null = no override. */
   tools_override: Set<string> | null;
 }
@@ -111,6 +113,12 @@ export function canReadDomains(p: Principal, domains: string[]): boolean {
   if (!p.grants) return true;
   if (domains.length === 0) return false; // notes outside any domain are not visible to AI
   return domains.some((d) => p.grants!.knowledge.read.has(d));
+}
+
+/** Repository mirrors: members and grant-less internal actors read every mirror; AI principals only their granted ones. */
+export function canReadRepo(p: Principal, name: string): boolean {
+  if (!p.grants) return true;
+  return p.grants.repos.has(name);
 }
 
 export function canWriteDomains(p: Principal, domains: string[]): boolean {

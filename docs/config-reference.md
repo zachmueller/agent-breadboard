@@ -45,6 +45,7 @@ UIDs are 20 characters of Crockford base32 (digits and uppercase letters except 
 | `sandbox.nesting_depth_cap` | runTool/runCircuit nesting | 8 |
 | `sandbox.images.{typescript,python}` | sandbox images | `breadboard-sandbox-*:local` |
 | `connectors[]` | `{tool, schedule_minutes, domains, settings, enabled}` | `[]` |
+| `repos[]` | git repositories the server mirrors for `search_repo` / `read_repo_file` ([06] §7.1): `{name, description, url, branch, capability, refresh_minutes, max_file_bytes, max_notebook_bytes, exclude, fetch_timeout_s, enabled}`. `name` is the slug subagents grant; `url` is https (credentials never in the URL); `capability` names the broker capability that authenticates the fetch (omit for a public repo); a call fetches first when the last fetch is `refresh_minutes` old; `exclude` globs are never searched | `[]` (each: branch `main`, refresh 5 min, file cap 1 MiB, notebook cap 50 MiB, fetch timeout 600 s) |
 
 ## presets/models.yaml (`breadboard/presets@v1`)
 
@@ -63,7 +64,7 @@ Each entry: `provider` (must have an installed adapter — v1 ships `bedrock`, p
 
 ## subagents/<uid>.yaml (`breadboard/subagent@v1`)
 
-`uid`, `slug`, `title`, `description`, `system_prompt` (Markdown; `{{knowledge:<UID>}}` injects a live Note at step start), `model_preset`, `tools[]` (`{tool: <uid>, settings?}` or `{mcp: <uid>, allow?: [names]}`), `circuits[]` (`{circuit: <uid>, access: read|execute}`), `knowledge {read: [domains], write: [domains]}`, optional `primitives[]` (built-in primitive allowlist; default is the content + knowledge-read set, with `propose_note_edit`/`run_circuit` added when the matching grants exist).
+`uid`, `slug`, `title`, `description`, `system_prompt` (Markdown; `{{knowledge:<UID>}}` injects a live Note at step start), `model_preset`, `tools[]` (`{tool: <uid>, settings?}` or `{mcp: <uid>, allow?: [names]}`), `circuits[]` (`{circuit: <uid>, access: read|execute}`), `knowledge {read: [domains], write: [domains]}`, `repos[]` (names from `breadboard.yaml` `repos[]` the subagent may search and read; a non-empty list adds `search_repo` and `read_repo_file` even to an explicit `primitives` list), optional `primitives[]` (built-in primitive allowlist; default is the content + knowledge-read set, with `propose_note_edit`/`run_circuit` added when the matching grants exist).
 
 ## circuits/<uid>/circuit.yaml (`breadboard/circuit@v1`)
 

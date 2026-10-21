@@ -27,6 +27,7 @@ function sampleGrants(): Grants {
     circuits: { read: new Set(['C1']), execute: new Set(['C2']) },
     knowledge: { read: new Set(['eng', 'ops']), write: new Set(['eng']) },
     primitives: new Set(['create_artifact', 'read_note']),
+    repos: new Set(['handbook']),
     tools_override: new Set(['TOOL0000000000000001']),
   };
 }

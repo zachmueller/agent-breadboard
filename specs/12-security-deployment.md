@@ -23,6 +23,7 @@
 │  postgres 16+     (local container for dev/quickstart, or external         │
 │                    managed instance — AWS RDS recommended for prod)        │
 │  config repo      (bare git repo on a host volume)                         │
+│  repo mirrors     (bare clones on the same volume; a cache, [06] §7.1)     │
 │  object storage   (filesystem volume by default; S3-compatible option)     │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -42,7 +43,7 @@
 ## 2. Threat model (summary)
 
 In scope for v1 protections:
-1. **Prompt-injected AI actions** — content/knowledge text steering a Subagent into harmful tool use. Mitigations: narrow per-Subagent grants ([05](05-subagents.md)), config-plane changes always human-gated, sandbox egress default-deny, broker policy checks, wipeout guardrails ([07](07-knowledge.md) §6).
+1. **Prompt-injected AI actions** — content/knowledge text (including files read from repository mirrors) steering a Subagent into harmful tool use. Mitigations: narrow per-Subagent grants ([05](05-subagents.md)), config-plane changes always human-gated, sandbox egress default-deny, broker policy checks, wipeout guardrails ([07](07-knowledge.md) §6).
 2. **Malicious/buggy tool code** — mitigations: per-execution containers, resource limits, no credentials in-container, capability-scoped broker, human review on all tool-code merges.
 3. **Credential exfiltration** — mitigations: broker holds all secrets; tools/models never see raw credentials; broker call audit log.
 4. **Runaway spend** — mitigations: per-run budgets + Breadboard spend rate limit ([02](02-sessions-orchestrator.md) §5.1); budget exhaustion suspends, never silently continues.
@@ -81,6 +82,13 @@ The broker is a module inside the server process (v1) with a strict internal bou
 - **Execution:** the sandbox `ctx.fetch(capability, request)` calls the broker; the broker validates (tool actually declares the capability ∧ request within scope), attaches the credential, executes the outbound request itself, returns the response. Audit-logged per call (tool, session, capability, target host).
 - **Credential kinds:** `bearer`, `basic`, `header`, `query`, `aws-sigv4` (stored AWS keys), `aws-role` and `raw` (no credential). `aws-role` stores no secret: the broker signs with the server's own AWS credentials (on the AWS reference host, the instance role), after assuming the credential's `role_arn` when it names one, and caches them until shortly before they expire. It is the way to give tools AWS API access without long-lived keys; the deployment must let the server assume the role ([`deploy/aws`](../deploy/aws/README.md) `brokerRoleArns`). It signs brokered requests only, so it cannot authenticate an MCP server.
 - MCP server auth configs reference broker capabilities the same way ([06](06-toolbox.md) §9).
+- **Repository mirrors** ([06](06-toolbox.md) §7.1) name a capability as well. The server runs git itself, directly rather than through the sandbox egress proxy, so `withRepoAuth` follows four rules:
+  - **Scope.** It checks the remote against the capability's hosts and path prefixes, and the methods must allow GET and POST.
+  - **Headers.** It turns the credential into an auth header. `aws-role` and `aws-sigv4` credentials with `service: codecommit` become CodeCommit's short-lived SigV4-derived git password, computed per fetch.
+  - **Delivery.** The header reaches git only through its environment, never argv, the repo's config or disk.
+  - **Audit.** Every authenticated fetch is audited with method `GIT`.
+
+  A mirror's remote changes only through a reviewed `breadboard.yaml` change. For CodeCommit, the role the credential assumes needs `codecommit:GitPull` on the repository.
 
 ## 6. Sandbox posture
 

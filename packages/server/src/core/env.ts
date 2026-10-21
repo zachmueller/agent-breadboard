@@ -21,6 +21,10 @@ const zEnv = z.object({
   CONFIG_REPO_DIR: z.string().default('./var/config-repo'),
   CONFIG_WORKTREE_CACHE_DIR: z.string().default('./var/config-trees'),
   CONFIG_SEED_DIR: z.string().default('./config-seed'),
+  /** Repository mirrors ([06] §7.1): bare clones the server keeps for `search_repo` / `read_repo_file`. A cache: no backup needed. */
+  MIRROR_DIR: z.string().default('./var/mirrors'),
+  /** Let mirrors fetch `file://` and loopback `http://` remotes (tests and local development only). */
+  MIRROR_ALLOW_FILE_URLS: bool.default(false),
   OBJECT_STORE: z.enum(['fs', 's3']).default('fs'),
   OBJECT_STORE_DIR: z.string().default('./var/objects'),
   OBJECT_STORE_S3_BUCKET: z.string().optional(),

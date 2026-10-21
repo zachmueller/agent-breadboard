@@ -74,6 +74,7 @@ export function aiPrincipal(f: Foundation, opts: { read: string[]; write?: strin
       circuits: { read: new Set(), execute: new Set() },
       knowledge: { read: new Set(opts.read), write: new Set(opts.write ?? []) },
       primitives: new Set(),
+      repos: new Set(),
       tools_override: null,
     },
     session_id,

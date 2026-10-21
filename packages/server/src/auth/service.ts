@@ -82,6 +82,7 @@ export interface SerializedGrants {
   circuits: { read: string[]; execute: string[] };
   knowledge: { read: string[]; write: string[] };
   primitives: string[];
+  repos?: string[];
   tools_override: string[] | null;
 }
 
@@ -93,6 +94,7 @@ export function serializeGrants(g: Grants): SerializedGrants {
     circuits: { read: [...g.circuits.read], execute: [...g.circuits.execute] },
     knowledge: { read: [...g.knowledge.read], write: [...g.knowledge.write] },
     primitives: [...g.primitives],
+    repos: [...g.repos],
     tools_override: g.tools_override ? [...g.tools_override] : null,
   };
 }
@@ -105,6 +107,7 @@ export function deserializeGrants(s: SerializedGrants): Grants {
     circuits: { read: new Set(s.circuits?.read ?? []), execute: new Set(s.circuits?.execute ?? []) },
     knowledge: { read: new Set(s.knowledge?.read ?? []), write: new Set(s.knowledge?.write ?? []) },
     primitives: new Set(s.primitives ?? []),
+    repos: new Set(s.repos ?? []),
     tools_override: s.tools_override ? new Set(s.tools_override) : null,
   };
 }

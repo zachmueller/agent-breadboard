@@ -121,3 +121,18 @@ sandbox:
 #       branch: main
 #       path_prefix: docs/
 connectors: []
+
+# Git repositories the server mirrors so Subagents can search and read them with `search_repo` /
+# `read_repo_file` ([06] §7.1); grant one to a Subagent with `repos: [<name>]`. Private remotes name a broker
+# capability that authenticates the fetch (a bearer/basic token, or for AWS CodeCommit an `aws-role` credential
+# with service `codecommit`). A search fetches first when the last fetch is older than `refresh_minutes`.
+# Example:
+# repos:
+#   - name: handbook
+#     description: Engineering handbook and past design docs
+#     url: https://git-codecommit.us-east-1.amazonaws.com/v1/repos/my-repo
+#     branch: main
+#     capability: git-handbook          # omit for a public repository
+#     refresh_minutes: 5
+#     exclude: [vendor/**]
+repos: []

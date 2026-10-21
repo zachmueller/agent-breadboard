@@ -35,6 +35,7 @@ import { createCredentialBroker } from '../toolbox/broker.js';
 import { createEgressProxy, createSandboxRunner } from '../toolbox/index.js';
 import { createToolbox } from '../toolbox/toolbox.js';
 import { createMcpClientManager } from '../toolbox/mcp-clients.js';
+import { createRepoMirrors } from '../mirrors/index.js';
 import { createPrimitives } from '../toolbox/primitives.js';
 import { createSubagentRuntime } from '../subagents/runtime.js';
 import { servicePrincipal } from './principal.js';
@@ -137,6 +138,7 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
   const sandbox = createSandboxRunner(env, { log, proxy, objects, publicUrl: sandboxApiUrl, settings });
   const toolbox = createToolbox({ config, sandbox, proxy, auth, objects, db, team_id, publicUrl: sandboxApiUrl, log, settings, pythonBin: env.PYTHON_BIN });
   const mcpClients = createMcpClientManager({ config, broker, log });
+  const mirrors = createRepoMirrors({ dir: path(env.MIRROR_DIR), settings, broker, log, team_id, allowFileUrls: env.MIRROR_ALLOW_FILE_URLS });
   const primitives = createPrimitives({
     content,
     knowledge,
@@ -157,6 +159,7 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
     conversations: () => conversations,
     dispatcher: () => dispatcher,
     connectors: () => connectors,
+    mirrors: () => mirrors,
     instance: { name: 'agent-breadboard', version: '0.1.0', db: db.kind, sandbox: sandbox.kind, public_url: env.PUBLIC_URL },
   });
   const subagents = createSubagentRuntime({ config, knowledge, toolbox, mcp: mcpClients, primitives, gateway, sessions, team_id, log });
@@ -198,6 +201,7 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
     knowledge,
     sync,
     connectors,
+    mirrors,
     tasks,
     content,
     evals,
@@ -226,6 +230,7 @@ export async function startBackground(s: BuiltServices): Promise<void> {
     s.dispatcher.start();
   }
   if (s.env.CONNECTORS_ENABLED) s.connectors.start();
+  s.mirrors.start();
   s.timers.push(setInterval(() => void s.configRepo.gcTrees().catch(() => {}), 10 * 60 * 1000));
   s.timers.push(setInterval(() => void s.tasks.archiveStaleDrafts().catch((e) => s.log.warn({ err: e }, 'draft archive failed')), 60 * 60 * 1000));
   for (const t of s.timers) t.unref?.();
@@ -236,6 +241,7 @@ export async function stopServices(s: BuiltServices): Promise<void> {
   s.evals.stop();
   await s.dispatcher.stop().catch(() => {});
   await s.connectors.stop().catch(() => {});
+  await s.mirrors.stop().catch(() => {});
   await s.events.stop().catch(() => {});
   await s.mcpClients.stop().catch(() => {});
   await s.sandbox.stop().catch(() => {});

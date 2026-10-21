@@ -36,6 +36,8 @@ export const zSubagent = z.object({
       write: z.array(z.string()).default([]),
     })
     .prefault({}),
+  /** Repository mirrors (`repos[].name` in breadboard.yaml) the subagent may search and read; non-empty implies `search_repo` and `read_repo_file`. */
+  repos: z.array(zSlug).default([]),
   /** Built-in primitive allowlist (names from the Breadboard MCP catalog). Default: content + knowledge-read primitives. */
   primitives: z.array(z.string()).optional(),
 });

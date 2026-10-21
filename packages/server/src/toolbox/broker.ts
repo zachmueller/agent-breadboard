@@ -8,6 +8,8 @@
  *   `{hosts (exact | *.wildcard), methods, path_prefixes, scopes}`.
  * - `fetch()` validates that the calling tool's manifest declares the capability ∧ the request is within scope,
  *   attaches the credential, executes the request itself, and audits every call (allowed or denied).
+ * - `withRepoAuth()` authenticates a repository mirror's git fetch ([06] §7.1): the server runs git itself, so the
+ *   broker only checks the remote against the capability, hands the auth headers to the fetch and audits it.
  */
 import { createHash, hkdfSync } from 'node:crypto';
 import sodium from 'libsodium-wrappers';
@@ -18,7 +20,7 @@ import { requireAdmin, type Principal } from '../core/principal.js';
 import type { CredentialBroker } from '../core/services.js';
 import { hostMatches, normalizeHost } from './egress-proxy.js';
 import { ROLE_ARN, SESSION_NAME, defaultAwsRoleResolver, type AwsRoleResolver } from './aws-role.js';
-import { signSigV4 } from './sigv4.js';
+import { codecommitGitCredentials, signSigV4, type SigV4Credentials } from './sigv4.js';
 
 export const CREDENTIAL_KINDS = ['bearer', 'header', 'basic', 'query', 'aws-sigv4', 'aws-role', 'raw'] as const;
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
@@ -135,6 +137,30 @@ export function checkScope(scope: CapabilityScope, toolScope: string, req: { met
   if (!(scope.hosts ?? []).some((p) => hostMatches(p, host))) return { ok: false, reason: `host ${host} not in capability scope` };
   if (scope.methods?.length && !scope.methods.map((m) => m.toUpperCase()).includes(method)) return { ok: false, reason: `method ${method} not in capability scope` };
   if (scope.path_prefixes?.length && !scope.path_prefixes.some((p) => req.url.pathname.startsWith(p))) return { ok: false, reason: `path ${req.url.pathname} not in capability scope` };
+  return { ok: true };
+}
+
+/** CodeCommit's git endpoint; group 1 is the region. */
+const CODECOMMIT_GIT_HOST = /^git-codecommit(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$/;
+/** A git fetch over smart HTTP makes `GET <repo>/info/refs` and `POST <repo>/git-upload-pack`. */
+const GIT_FETCH_METHODS = ['GET', 'POST'];
+
+/**
+ * Pure scope check for a mirror remote ([06] §7.1). Mirrors fetch under the tool scope `read`, but git needs POST
+ * as well as GET, so `checkScope`'s safe-method rule does not apply. Path prefixes match the repository URL with a
+ * trailing slash, so a prefix `/v1/repos/A/` admits `/v1/repos/A` and not `/v1/repos/A2`. Exported for tests.
+ */
+export function checkRepoScope(scope: CapabilityScope, url: URL): ScopeCheck {
+  const host = normalizeHost(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK.has(host))) return { ok: false, reason: `scheme ${url.protocol} not allowed (https only; http only for loopback)` };
+  if (url.username || url.password) return { ok: false, reason: 'credentials in URL are not allowed' };
+  if (scope.scopes?.length && !scope.scopes.includes('read')) return { ok: false, reason: `repository mirrors fetch under scope 'read' but capability allows ${scope.scopes.join(', ')}` };
+  if (!(scope.hosts ?? []).some((p) => hostMatches(p, host))) return { ok: false, reason: `host ${host} not in capability scope` };
+  const methods = scope.methods?.map((m) => m.toUpperCase());
+  const missing = methods?.length ? GIT_FETCH_METHODS.filter((m) => !methods.includes(m)) : [];
+  if (missing.length) return { ok: false, reason: `method ${missing.join(', ')} not in capability scope (a git fetch needs GET and POST)` };
+  const path = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+  if (scope.path_prefixes?.length && !scope.path_prefixes.some((p) => path.startsWith(p))) return { ok: false, reason: `path ${url.pathname} not in capability scope` };
   return { ok: true };
 }
 
@@ -374,6 +400,79 @@ export class CredentialBrokerImpl implements CredentialBroker {
     });
     await audit({ ok: true, status: res.status });
     return { status: res.status, headers: outHeaders, body: text };
+  }
+
+  async withRepoAuth<T>(input: { capability: string; url: string; principal: Principal }, fn: (headers: Record<string, string>) => Promise<T>): Promise<T> {
+    let url: URL | null = null;
+    const audit = (a: { ok: boolean; error?: string | null }) => this.audit_({ tool: null, principal: input.principal, capability: input.capability, method: 'GIT', url, ...a });
+    const deny = async (code: 'grant-denied' | 'validation-failed' | 'not-found', reason: string): Promise<never> => {
+      await audit({ ok: false, error: reason });
+      this.deps.log.warn({ capability: input.capability, reason }, 'broker repository auth denied');
+      throw new BreadboardError(code, `broker: ${reason}`, { capability: input.capability });
+    };
+    try {
+      url = new URL(input.url);
+    } catch {
+      return deny('validation-failed', `invalid repository URL ${String(input.url).slice(0, 200)}`);
+    }
+    const cap = await this.capability(input.capability);
+    if (!cap) return deny('not-found', `capability '${input.capability}' is not defined in the broker`);
+    const check = checkRepoScope(cap.scope, url);
+    if (!check.ok) return deny('grant-denied', check.reason!);
+
+    const headers: Record<string, string> = {};
+    if (cap.credential) {
+      const { kind, material } = cap.credential;
+      switch (kind) {
+        case 'bearer':
+          headers.Authorization = `Bearer ${material.token}`;
+          break;
+        case 'basic':
+          headers.Authorization = `Basic ${Buffer.from(`${material.username}:${material.password}`).toString('base64')}`;
+          break;
+        case 'header':
+          Object.assign(headers, material);
+          break;
+        case 'query':
+          return deny('validation-failed', `capability '${input.capability}' uses a query credential, which cannot authenticate git`);
+        case 'aws-sigv4':
+        case 'aws-role': {
+          // AWS credentials authenticate git only against CodeCommit, as its SigV4-derived password.
+          const host = normalizeHost(url.hostname);
+          const region = CODECOMMIT_GIT_HOST.exec(host)?.[1];
+          const path = url.pathname.replace(/\/+$/, '');
+          if (!region || !/^\/v1\/repos\/[^/]+$/.test(path)) return deny('validation-failed', `AWS credentials authenticate git only for CodeCommit repositories (https://git-codecommit.<region>.amazonaws.com/v1/repos/<name>), got ${host}${url.pathname}`);
+          if (material.service !== 'codecommit') return deny('validation-failed', `credential for capability '${input.capability}' signs for service '${material.service}', not 'codecommit'`);
+          if (material.region !== region) return deny('validation-failed', `credential region ${material.region} does not match the repository's region ${region}`);
+          let creds: SigV4Credentials;
+          if (kind === 'aws-sigv4') {
+            creds = { access_key_id: material.access_key_id!, secret_access_key: material.secret_access_key!, session_token: material.session_token };
+          } else {
+            try {
+              creds = await this.awsRole({ region, role_arn: material.role_arn, external_id: material.external_id, session_name: material.session_name });
+            } catch (e) {
+              const msg = `could not obtain AWS credentials${material.role_arn ? ` for ${material.role_arn}` : ''}: ${(e as Error).message}`;
+              await audit({ ok: false, error: msg });
+              throw new BreadboardError('internal', `broker: ${msg}`, { capability: input.capability });
+            }
+          }
+          const { username, password } = codecommitGitCredentials({ host, path, region, creds });
+          headers.Authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+          break;
+        }
+        case 'raw':
+          break;
+      }
+    }
+
+    try {
+      const out = await fn(headers);
+      await audit({ ok: true });
+      return out;
+    } catch (e) {
+      await audit({ ok: false, error: String((e as Error).message ?? e).slice(0, 500) });
+      throw e;
+    }
   }
 
   private async audit_(a: { tool: Tool | null; principal: Principal | null; capability: string; method: string; url: URL | null; ok: boolean; status?: number | null; error?: string | null }): Promise<void> {

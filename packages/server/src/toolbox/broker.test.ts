@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import { BreadboardError, type Tool } from '@breadboard/shared';
 import { createFoundation, type Foundation } from '../test/harness.js';
-import { checkScope, createCredentialBroker, deriveBrokerKey, type CredentialBrokerImpl } from './broker.js';
-import { signSigV4 } from './sigv4.js';
+import { checkRepoScope, checkScope, createCredentialBroker, deriveBrokerKey, type CredentialBrokerImpl } from './broker.js';
+import { codecommitGitCredentials, signSigV4 } from './sigv4.js';
 import { makeToolDir } from './test-helpers.js';
 
 let f: Foundation;
@@ -195,6 +195,21 @@ describe('signSigV4', () => {
   });
 });
 
+describe('codecommitGitCredentials', () => {
+  // Pinned from the AWS CLI's `aws codecommit credential-helper get` with AWS's documented example keys.
+  it('matches the AWS CLI credential helper', () => {
+    const c = codecommitGitCredentials({
+      host: 'git-codecommit.us-east-1.amazonaws.com',
+      path: '/v1/repos/my-repo',
+      region: 'us-east-1',
+      creds: { access_key_id: 'AKIDEXAMPLE', secret_access_key: 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY', session_token: 'EXAMPLETOKEN' },
+      now: new Date('2026-10-21T20:09:16Z'),
+    });
+    expect(c).toEqual({ username: 'AKIDEXAMPLE%EXAMPLETOKEN', password: '20261021T200916Zd922b53caa17d28519190abbec30ced32275b5cb2e6040d51e814ef81c4b67cd' });
+    expect(codecommitGitCredentials({ host: 'h', path: '/v1/repos/r', region: 'us-east-1', creds: { access_key_id: 'AKID', secret_access_key: 's' } }).username).toBe('AKID');
+  });
+});
+
 describe('aws-role credentials', () => {
   it('validates the material, which holds no keys', async () => {
     const by = f.adminPrincipal;
@@ -242,5 +257,67 @@ describe('aws-role credentials', () => {
 
     // Nothing to hand an MCP server: the kind stores no keys.
     await expectError(roleBroker.credentialFor('role'), 'validation-failed', /signs brokered requests only/);
+  });
+});
+
+describe('repository mirror auth', () => {
+  const CC = 'https://git-codecommit.us-east-1.amazonaws.com/v1/repos/my-repo';
+
+  it('checks a remote against the capability scope', () => {
+    const scope = { hosts: ['git-codecommit.us-east-1.amazonaws.com'], methods: ['GET', 'POST'], path_prefixes: ['/v1/repos/my-repo/'], scopes: ['read'] };
+    expect(checkRepoScope(scope, new URL(CC))).toEqual({ ok: true });
+    expect(checkRepoScope(scope, new URL(`${CC}/`))).toEqual({ ok: true });
+    expect(checkRepoScope(scope, new URL(`${CC}2`)).reason).toMatch(/path/);
+    expect(checkRepoScope(scope, new URL('https://git-codecommit.us-west-2.amazonaws.com/v1/repos/my-repo')).reason).toMatch(/host/);
+    expect(checkRepoScope({ ...scope, methods: ['GET'] }, new URL(CC)).reason).toMatch(/POST/);
+    expect(checkRepoScope({ ...scope, scopes: ['query'] }, new URL(CC)).reason).toMatch(/scope 'read'/);
+    expect(checkRepoScope(scope, new URL('http://git-codecommit.us-east-1.amazonaws.com/v1/repos/my-repo')).reason).toMatch(/scheme/);
+    expect(checkRepoScope({ hosts: ['127.0.0.1'] }, new URL('http://127.0.0.1:9/r.git'))).toEqual({ ok: true });
+  });
+
+  it('turns credentials into git auth headers, audits each use, and keeps secrets out of the audit', async () => {
+    const asked: string[] = [];
+    const b = await createCredentialBroker({
+      db: f.db,
+      team_id: f.team_id,
+      masterKey: MASTER,
+      log: f.log,
+      awsRoleResolver: async (m) => {
+        asked.push(m.region);
+        return { access_key_id: 'ASIAEXAMPLE', secret_access_key: 'cc-SECRET', session_token: 'cctok-SECRET' };
+      },
+    });
+    const by = f.adminPrincipal;
+    await b.registerCredential({ name: 'cc', kind: 'aws-role', secret: { region: 'us-east-1', service: 'codecommit', role_arn: 'arn:aws:iam::123456789012:role/git' }, by });
+    await b.registerCredential({ name: 'cc-athena', kind: 'aws-role', secret: { region: 'us-east-1', service: 'athena' }, by });
+    await b.registerCredential({ name: 'cc-west', kind: 'aws-role', secret: { region: 'us-west-2', service: 'codecommit' }, by });
+    await b.registerCredential({ name: 'gh-git', kind: 'bearer', secret: 'gh-git-SECRET', by });
+    const repoScope = { hosts: ['git-codecommit.us-east-1.amazonaws.com'], methods: ['GET', 'POST'], path_prefixes: ['/v1/repos/my-repo/'] };
+    await b.defineCapability({ name: 'git-cc', credential: 'cc', scope: repoScope, by });
+    await b.defineCapability({ name: 'git-cc-athena', credential: 'cc-athena', scope: repoScope, by });
+    await b.defineCapability({ name: 'git-cc-west', credential: 'cc-west', scope: repoScope, by });
+    await b.defineCapability({ name: 'git-gh', credential: 'gh-git', scope: { hosts: ['git.example.com'] }, by });
+    await b.defineCapability({ name: 'git-role-elsewhere', credential: 'cc', scope: { hosts: ['git.example.com'] }, by });
+    const auth = (capability: string, url = CC) => b.withRepoAuth({ capability, url, principal: by }, async (h) => h);
+
+    const h = await auth('git-cc');
+    const [user, pass] = Buffer.from(h.Authorization!.replace(/^Basic /, ''), 'base64').toString('utf8').split(':');
+    expect(user).toBe('ASIAEXAMPLE%cctok-SECRET');
+    expect(pass).toMatch(/^\d{8}T\d{6}Z[0-9a-f]{64}$/);
+    expect(asked).toEqual(['us-east-1']);
+    expect(await auth('git-gh', 'https://git.example.com/team/app.git')).toEqual({ Authorization: 'Bearer gh-git-SECRET' });
+
+    await expectError(auth('git-cc', `${CC}2`), 'grant-denied', /path/);
+    await expectError(auth('git-cc-athena'), 'validation-failed', /service 'athena'/);
+    await expectError(auth('git-cc-west'), 'validation-failed', /region us-west-2/);
+    await expectError(auth('git-role-elsewhere', 'https://git.example.com/team/app.git'), 'validation-failed', /only for CodeCommit/);
+    await expectError(auth('missing'), 'not-found');
+    await expect(b.withRepoAuth({ capability: 'git-cc', url: CC, principal: by }, async () => Promise.reject(new Error('fetch exploded')))).rejects.toThrow('fetch exploded');
+
+    const audit = (await b.audit(50)).filter((r) => r.method === 'GIT');
+    expect(audit.some((r) => r.capability === 'git-cc' && r.ok === true && r.target_host === 'git-codecommit.us-east-1.amazonaws.com' && r.target_path === '/v1/repos/my-repo')).toBe(true);
+    expect(audit.some((r) => r.capability === 'git-cc' && r.ok === false && r.error === 'fetch exploded')).toBe(true);
+    expect(audit.some((r) => r.capability === 'git-cc-athena' && r.ok === false)).toBe(true);
+    expect(JSON.stringify(audit)).not.toMatch(/SECRET/);
   });
 });

@@ -104,6 +104,7 @@ Any MCP client that supports Streamable HTTP will work. Point it at the endpoint
 | Sessions | `list_sessions`, `get_session_summary`, `read_session_transcript`, `read_session_events`, `list_session_executions` |
 | Content | `search_nodes`, `inspect_node`, `read_node`, `get_review_queue`, `find_similar_tasks` |
 | Knowledge | `list_knowledge_domains`, `query_knowledge`, `read_note` |
+| Repositories | `search_repo` (grep over a git repository the server mirrors; results cite the commit), `read_repo_file` (a file, line range or directory at that commit); the overview lists the mirrors under `repos` |
 | Configuration | `search_config` (by slug, title, path or description; several words rank by how many match; pages with `offset`), `read_config` (by UID, slug or path; at main or at any `commit`), `get_config_history`, `diff_config`, `list_proposals`, `read_proposal`, `validate_config` |
 | Evals | `list_eval_runs`, `read_eval_run`, `get_eval_analysis`, `get_rubric`, `get_fixture_output` |
 

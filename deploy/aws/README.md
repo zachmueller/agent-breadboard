@@ -181,6 +181,14 @@ Tools reach AWS APIs through the credential broker's `aws-role` kind ([12](../..
 2. Deploy with `-c brokerRoleArns=<role ARN>[,<role ARN>…]` (plus the usual `-c` set). This only changes the instance role's policy.
 3. In Admin → Credential broker, add a credential of kind `aws-role` per AWS service the tools call, e.g. `{"region": "us-east-1", "service": "athena", "role_arn": "<role ARN>"}`, and a capability per credential scoped to the service endpoint (e.g. `athena.us-east-1.amazonaws.com`, method `POST`). Most AWS APIs are POST, so tools declare a scope other than `read` for these capabilities.
 
+The same role can authenticate a repository mirror of an AWS CodeCommit repository ([06](../../specs/06-toolbox.md) §7.1):
+1. Grant the role `codecommit:GitPull` on the repository.
+2. Add an `aws-role` credential with `service: codecommit` in the repository's region.
+3. Add a capability with host `git-codecommit.<region>.amazonaws.com`, methods `GET` and `POST`, and path prefix `/v1/repos/<name>/`.
+4. Name that capability in `breadboard.yaml` `repos[].capability`.
+
+The server fetches directly, not through the sandbox egress proxy, so the host needs outbound HTTPS to that endpoint. Mirrors live under `/var/breadboard/mirrors` on the root volume.
+
 ## Outputs
 
 | Output | |

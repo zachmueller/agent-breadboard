@@ -58,6 +58,7 @@ The authoritative in/out lists live in each spec's cutline section; this is the 
 | Breadboard-to-breadboard federation (incoming access permissions — blanket or scoped by circuit list/tags; connected-Breadboards UI) | [11](11-api-mcp.md) §7, §5 below |
 | Purely-local Breadboards (local storage + orchestration, user-chosen LLM incl. local models) wiring into team Breadboards | §5 below |
 | Gate escalation policies (v1: indefinite wait, pull-based queue) | [02](02-sessions-orchestrator.md) §9 |
+| Repository mirrors beyond v1 (several branches per mirror, history and blame, `ctx` helpers for tool code, pruning the notebook render cache, an admin refresh button) | [06](06-toolbox.md) §7.1 |
 | Dedicated graph store (seam behind `GraphQueries`) | [01](01-data-model.md) §9 |
 | Write-back knowledge connectors; additional connector adapters | [07](07-knowledge.md) §11 |
 | Multi-worker orchestrator & multi-node CRDT authority | [02](02-sessions-orchestrator.md) §9, [07](07-knowledge.md) §11 |

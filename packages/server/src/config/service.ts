@@ -10,6 +10,7 @@
  * change set applied over it — so `validateTree` and `validateChanges` share one rule set ([01] §6.2,
  * [03] §2, [05] §2.1/§4/§5, [06] §2, [04] §2–3).
  */
+import { glob as mirrorGlob } from '../mirrors/pathspec.js';
 import {
   BreadboardError,
   CONFIG_PATHS,
@@ -380,6 +381,15 @@ function validateModel(model: TreeModel, opts: ValidateOptions, providers: strin
     }
     if (model.presets.embeddings && !providers.includes(model.presets.embeddings.provider)) rep.error(CONFIG_PATHS.presets, `embeddings: provider '${model.presets.embeddings.provider}' has no installed adapter`);
   }
+  for (const r of model.settings.repos) {
+    for (const g of r.exclude) {
+      try {
+        mirrorGlob(g);
+      } catch (e) {
+        rep.error(CONFIG_PATHS.breadboard, `repos '${r.name}' exclude: ${(e as Error).message}`);
+      }
+    }
+  }
   if (model.tenets !== null) {
     const max = model.settings.tenets.max_chars;
     if (model.tenets.length > max) rep.error(CONFIG_PATHS.tenets, `tenets are ${model.tenets.length} characters; the cap is ${max} ([05] §5)`);
@@ -554,6 +564,8 @@ function validateSubagent(model: TreeModel, def: DefEntry, s: Subagent, rep: Rep
     else valid.push(uid);
   }
   if (valid.length) rep.warn(def.path, `knowledge token(s) ${valid.join(', ')} are not verified against readable domains at commit time (checked by the knowledge service at resolution)`);
+  const repos = new Set(model.settings.repos.map((r) => r.name));
+  for (const r of s.repos) if (!repos.has(r)) rep.error(def.path, `repository '${r}' is not declared under repos in ${CONFIG_PATHS.breadboard}`);
   const domains = new Set(model.settings.knowledge.domains.map((d) => d.slug));
   if (domains.size) {
     for (const d of [...s.knowledge.read, ...s.knowledge.write]) if (!domains.has(d)) rep.warn(def.path, `knowledge domain '${d}' is not declared in ${CONFIG_PATHS.breadboard}`);

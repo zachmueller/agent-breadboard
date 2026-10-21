@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseConfigYaml, parseConfigPath, definitionPath, owningDefinition, knowledgeTokens } from './config/index.js';
+import { parseConfigYaml, parseConfigPath, definitionPath, owningDefinition, knowledgeTokens, zBreadboardConfig, MIRROR_BRANCH_RE } from './config/index.js';
 import { validateAgainst, schemaRequiredSubset } from './json-schema.js';
 import { needInputTags, requestTargetsUser } from './need-input.js';
 
@@ -58,6 +58,27 @@ describe('config parsing', () => {
   });
   it('extracts knowledge tokens', () => {
     expect(knowledgeTokens('a {{knowledge:01J8FQ2ZK7XW9MBT4PVN}} b {{ knowledge:01J8FQ2ZK7XW9MBT4PVM }}')).toEqual(['01J8FQ2ZK7XW9MBT4PVN', '01J8FQ2ZK7XW9MBT4PVM']);
+  });
+});
+
+describe('repository mirrors in breadboard.yaml', () => {
+  const parse = (repos: unknown[]) => zBreadboardConfig.safeParse({ schema: 'breadboard/breadboard@v1', repos });
+
+  it('applies defaults', () => {
+    const r = parse([{ name: 'docs', url: 'https://git.example.com/team/docs.git' }]);
+    expect(r.success).toBe(true);
+    expect(r.data!.repos[0]).toEqual({ name: 'docs', description: '', url: 'https://git.example.com/team/docs.git', branch: 'main', refresh_minutes: 5, max_file_bytes: 1_048_576, max_notebook_bytes: 52_428_800, exclude: [], fetch_timeout_s: 600, enabled: true });
+    expect(zBreadboardConfig.parse({ schema: 'breadboard/breadboard@v1' }).repos).toEqual([]);
+  });
+
+  it('rejects duplicate names, embedded credentials, odd schemes and bad branches', () => {
+    expect(parse([{ name: 'a', url: 'https://x.example/a.git' }, { name: 'a', url: 'https://x.example/b.git' }]).success).toBe(false);
+    expect(parse([{ name: 'a', url: 'https://user:pw@x.example/a.git' }]).success).toBe(false);
+    expect(parse([{ name: 'a', url: 'ssh://x.example/a.git' }]).success).toBe(false);
+    expect(parse([{ name: 'a', url: 'not a url' }]).success).toBe(false);
+    expect(parse([{ name: 'A b', url: 'https://x.example/a.git' }]).success).toBe(false);
+    for (const b of ['main', 'release/2026.10', 'feature-x']) expect(MIRROR_BRANCH_RE.test(b)).toBe(true);
+    for (const b of ['-x', 'a..b', 'a//b', 'x.lock', 'x/', 'a@{1}', 'a b']) expect(MIRROR_BRANCH_RE.test(b)).toBe(false);
   });
 });
 

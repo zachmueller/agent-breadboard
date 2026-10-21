@@ -14,6 +14,7 @@ import type { ChatMessage, Primitives, SessionStore, ToolSpec } from '../core/se
 import { usageColumns } from '../gateway/pricing.js';
 import { obj, sessionVisible, STRING_ARRAY, UID, type PrimitiveCallCtx, type PrimitiveDef, type PrimitivesDeps } from './primitive-defs.js';
 import { inspectionCatalog } from './inspection.js';
+import { repoCatalog } from './repo-primitives.js';
 import { normalizePath } from '../config/repo.js';
 
 export type { PrimitiveCallCtx, PrimitiveDef, PrimitivesDeps } from './primitive-defs.js';
@@ -670,6 +671,7 @@ export class PrimitivesImpl implements Primitives {
 
       // ---------------- Inspection ([11] §4) ----------------
       ...inspectionCatalog(d),
+      ...repoCatalog(d),
     ];
     return defs;
   }

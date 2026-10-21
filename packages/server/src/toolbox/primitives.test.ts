@@ -30,7 +30,7 @@ const MODEL_TOOL = '01J8FQ2ZK7XW9MBT4PVH';
 let spentUsd = 0;
 const SUBAGENT = '01J8FQ2ZK7XW9MBT4PVS';
 
-function grants(over: Partial<{ primitives: string[]; execute: string[]; read: string[]; override: string[] | null }> = {}): Grants {
+function grants(over: Partial<{ primitives: string[]; execute: string[]; read: string[]; repos: string[]; override: string[] | null }> = {}): Grants {
   return {
     subagent_uid: SUBAGENT,
     tools: new Map(),
@@ -38,6 +38,7 @@ function grants(over: Partial<{ primitives: string[]; execute: string[]; read: s
     circuits: { read: new Set(over.read ?? []), execute: new Set(over.execute ?? []) },
     knowledge: { read: new Set(['eng']), write: new Set() },
     primitives: new Set(over.primitives ?? []),
+    repos: new Set(over.repos ?? []),
     tools_override: over.override ? new Set(over.override) : null,
   };
 }
@@ -168,6 +169,7 @@ function build(): PrimitivesImpl {
     conversations: () => fake('conversations', calls, { proposals: () => ['prp_1'], busy: () => false, draftTask: () => null }),
     dispatcher: () => fake('dispatcher', calls, { capacity: () => ({ running: 1, max_concurrent_runs: 4, spend_last_hour_usd: 0.5, max_spend_usd_per_hour: 25, queued: 2 }) }),
     connectors: () => fake('connectors', calls, { status: () => [] }),
+    mirrors: () => fake('mirrors', calls, { status: async () => [], search: async (a: unknown) => ({ searched: a }), read: async (a: unknown) => ({ read: a }) }),
     instance: { name: 'agent-breadboard', version: 'test', db: 'pglite', sandbox: 'process', public_url: 'http://localhost:4000' },
   };
   return createPrimitives(deps);
@@ -318,6 +320,29 @@ describe('get_session_summary visibility', () => {
     expect(await codeOf(prims.call('get_session_summary', { session_id: 'sess_child' }, p))).toBe('ok');
     expect(await codeOf(prims.call('get_session_summary', { session_id: 'sess_other' }, p))).toBe('grant-denied');
     expect(await codeOf(prims.call('get_session_summary', { session_id: 'sess_other' }, f.memberPrincipal))).toBe('ok');
+  });
+});
+
+describe('repository primitives', () => {
+  it('are offered to subagents with the primitive grant and pass the caller through to the mirrors', async () => {
+    const without = subagentPrincipal(f, grants({ primitives: ['create_artifact'] }));
+    expect(await codeOf(prims.call('search_repo', { pattern: 'x' }, without))).toBe('grant-denied');
+    expect(prims.specsFor(without).map((s) => s.name)).not.toContain('search_repo');
+    const granted = subagentPrincipal(f, grants({ primitives: ['search_repo', 'read_repo_file'], repos: ['demo'] }));
+    expect(prims.specsFor(granted).map((s) => s.name)).toEqual(expect.arrayContaining(['search_repo', 'read_repo_file']));
+    expect(await prims.call('search_repo', { repo: 'demo', pattern: 'x', paths: ['src'] }, granted)).toEqual({ searched: { repo: 'demo', pattern: 'x', paths: ['src'] } });
+    expect(await prims.call('read_repo_file', { repo: 'demo', path: 'a.md' }, granted)).toEqual({ read: { repo: 'demo', path: 'a.md' } });
+    const call = callsTo('mirrors', 'search')[0]!;
+    expect(call.args[1]).toBe(granted);
+    expect(await codeOf(prims.call('search_repo', { pattern: 'x', bogus: 1 }, granted))).toBe('validation-failed');
+  });
+
+  it('need knowledge:read on scoped tokens; members can call them', async () => {
+    const svc: Principal = { ...f.servicePrincipal, scopes: ['tasks:write'], token_kind: 'service' };
+    expect(await codeOf(prims.call('search_repo', { pattern: 'x' }, svc))).toBe('forbidden');
+    const reader: Principal = { ...f.servicePrincipal, scopes: ['knowledge:read'], token_kind: 'service' };
+    expect(await codeOf(prims.call('search_repo', { pattern: 'x' }, reader))).toBe('ok');
+    expect(await codeOf(prims.call('read_repo_file', {}, f.memberPrincipal))).toBe('ok');
   });
 });
 
@@ -492,6 +517,8 @@ describe('inspection primitives', () => {
     // Panels that fail (the fakes lack these methods) degrade to null instead of failing the call.
     expect(r.open_proposals).toBeNull();
     expect(r.sessions).toEqual({ gated: 0, suspended_error: 0, running: 0, queued: 0 });
+    expect(r.repos).toEqual([]);
+    expect(callsTo('mirrors', 'status')[0]!.args[0]).toBe(f.memberPrincipal);
   });
 
   it('list_sessions maps `me`, filters by visibility and adds cost including children', async () => {

@@ -41,6 +41,7 @@ export const INSTRUCTIONS = [
   'To investigate a run: `list_sessions` (filter by state, kind, circuit, task) → `get_session_summary` (steps, exits, cost, children) → `read_session_transcript` (every LLM turn with tool calls and results; `step` focuses on one step, `turn_id` with `max_chars: 0` reads one turn in full) → `read_session_events` (the orchestrator log: retries, gates, resolved config commits) → `list_session_executions` (sandboxed tool runs with their logs).',
   'Read the configuration a run actually used with `read_config {ref, commit: <session.config_commit>}`; find definitions with `search_config`; `get_config_history`, `list_proposals`, `read_proposal` and `diff_config` cover how it changed.',
   'Content: `search_nodes` to find tasks, artifacts, comments and notes; `inspect_node` for revisions, edges, comments and lineage; `read_node` for a body. Knowledge: `query_knowledge`, `read_note`, `list_knowledge_domains`.',
+  'Repositories: `search_repo` (grep over a mirrored git repository; results cite the commit) and `read_repo_file` (a file, line range or directory at that commit); `get_breadboard_overview` lists the mirrors under `repos`.',
   'Long values are clipped by default and carry `truncated: true` with `total_chars`; raise `max_chars` (0 = unlimited) to read them in full. List tools page with `cursor`, `offset` or `after_seq`.',
   'Every call is recorded on a Breadboard session under your identity.',
 ].join('\n');

@@ -9,6 +9,46 @@ export const zKnowledgeInjectionRule = z.object({
 });
 export type KnowledgeInjectionRule = z.infer<typeof zKnowledgeInjectionRule>;
 
+/** A git branch name a mirror may track: refname rules, minus anything git would reject or read as an option. */
+export const MIRROR_BRANCH_RE = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)(?!.*\.lock$)[A-Za-z0-9._/-]{1,200}(?<![/.])$/;
+
+function mirrorUrlProblem(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return 'must be an absolute URL';
+  }
+  if (!['https:', 'http:', 'file:'].includes(u.protocol)) return 'must use https (http and file only for local testing)';
+  if (u.username || u.password) return 'must not embed credentials: name a broker capability instead';
+  return null;
+}
+
+/** A git repository the server mirrors for `search_repo` / `read_repo_file` ([06] §7.1). */
+export const zRepoMirror = z.object({
+  /** Slug; subagents grant it as `repos: [<name>]` and callers pass it as `repo`. */
+  name: zSlug,
+  description: z.string().default(''),
+  url: z.string().min(1).superRefine((v, ctx) => {
+    const problem = mirrorUrlProblem(v);
+    if (problem) ctx.addIssue({ code: 'custom', message: `repository url ${problem}` });
+  }),
+  branch: z.string().regex(MIRROR_BRANCH_RE, 'branch must be a valid git branch name').default('main'),
+  /** Broker capability that authenticates the fetch; omit for a public repository. */
+  capability: z.string().min(1).optional(),
+  /** A search or read fetches first when the last fetch attempt is at least this old. */
+  refresh_minutes: z.number().min(1).default(5),
+  /** Files larger than this are not searched (for notebooks: the rendered cell sources). */
+  max_file_bytes: z.number().int().positive().default(1_048_576),
+  /** Raw `.ipynb` files larger than this are not rendered or searched. */
+  max_notebook_bytes: z.number().int().positive().default(52_428_800),
+  /** Git glob pathspecs never searched (still readable). */
+  exclude: z.array(z.string().min(1)).default([]),
+  fetch_timeout_s: z.number().int().positive().max(86_400).default(600),
+  enabled: z.boolean().default(true),
+});
+export type RepoMirrorConfig = z.infer<typeof zRepoMirror>;
+
 export const zBreadboardConfig = z.object({
   schema: z.literal(SCHEMA_TAGS.breadboard),
   team: z.object({ name: z.string().min(1).default("Breadboard") }).prefault({}),
@@ -112,5 +152,15 @@ export const zBreadboardConfig = z.object({
       }),
     )
     .default([]),
+  repos: z
+    .array(zRepoMirror)
+    .default([])
+    .superRefine((repos, ctx) => {
+      const seen = new Set<string>();
+      repos.forEach((r, i) => {
+        if (seen.has(r.name)) ctx.addIssue({ code: 'custom', path: [i, 'name'], message: `duplicate repository name '${r.name}'` });
+        seen.add(r.name);
+      });
+    }),
 });
 export type BreadboardConfig = z.infer<typeof zBreadboardConfig>;

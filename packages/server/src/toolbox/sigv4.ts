@@ -2,7 +2,8 @@
  * AWS Signature Version 4 request signing with Node crypto (header-based auth), used by the broker's
  * `aws-sigv4` credential kind. Implements the canonical-request / string-to-sign / derived-key algorithm from
  * the AWS SigV4 spec; S3 uses single-encoded paths and an `x-amz-content-sha256` header, other services
- * double-encode path segments.
+ * double-encode path segments. Also derives the SigV4-based password CodeCommit accepts for git over HTTPS
+ * (repository mirrors, [06] §7.1).
  */
 import { createHash, createHmac } from 'node:crypto';
 
@@ -53,6 +54,11 @@ export function amzDate(d: Date): string {
   return d.toISOString().replace(/[:-]/g, '').replace(/\.\d{3}/, '');
 }
 
+/** The SigV4 derived signing key for one day, region and service. */
+export function signingKey(secret: string, day: string, region: string, service: string): Buffer {
+  return hmac(hmac(hmac(hmac('AWS4' + secret, day), region), service), 'aws4_request');
+}
+
 /** Returns the headers to add (`authorization`, `x-amz-date`, optional token / content hash). */
 export function signSigV4(
   req: SigV4Request,
@@ -79,11 +85,24 @@ export function signSigV4(
   const canonicalRequest = [req.method.toUpperCase(), canonicalPath(url.pathname, opts.service), canonicalQuery(url.searchParams), canonicalHeaders, signedHeaders, payloadHash].join('\n');
   const scope = `${day}/${opts.region}/${opts.service}/aws4_request`;
   const stringToSign = ['AWS4-HMAC-SHA256', date, scope, sha256(canonicalRequest)].join('\n');
-  const kDate = hmac('AWS4' + creds.secret_access_key, day);
-  const kRegion = hmac(kDate, opts.region);
-  const kService = hmac(kRegion, opts.service);
-  const kSigning = hmac(kService, 'aws4_request');
-  const signature = createHmac('sha256', kSigning).update(stringToSign).digest('hex');
+  const signature = createHmac('sha256', signingKey(creds.secret_access_key, day, opts.region, opts.service)).update(stringToSign).digest('hex');
   add.authorization = `AWS4-HMAC-SHA256 Credential=${creds.access_key_id}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
   return add;
+}
+
+/**
+ * Git-over-HTTPS credentials for CodeCommit, as the AWS CLI credential helper computes them: the username is the
+ * access key id (plus `%` and the session token), the password a timestamp and a SigV4 signature over a `GIT`
+ * pseudo-request for the repository path. Valid for about 15 minutes, so compute one per git invocation.
+ */
+export function codecommitGitCredentials(args: { host: string; path: string; region: string; creds: SigV4Credentials; now?: Date }): { username: string; password: string } {
+  // `YYYYMMDDTHHMMSS` without the usual trailing `Z`: the helper signs that form and joins it to the signature with `Z`.
+  const date = amzDate(args.now ?? new Date()).replace(/Z$/, '');
+  const day = date.slice(0, 8);
+  const canonicalRequest = `GIT\n${args.path}\n\nhost:${args.host}\n\nhost\n`;
+  const scope = `${day}/${args.region}/codecommit/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', date, scope, sha256(canonicalRequest)].join('\n');
+  const signature = createHmac('sha256', signingKey(args.creds.secret_access_key, day, args.region, 'codecommit')).update(stringToSign).digest('hex');
+  const username = args.creds.session_token ? `${args.creds.access_key_id}%${args.creds.session_token}` : args.creds.access_key_id;
+  return { username, password: `${date}Z${signature}` };
 }

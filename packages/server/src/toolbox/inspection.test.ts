@@ -42,6 +42,7 @@ beforeAll(async () => {
     conversations: () => ({ proposals: async () => ['prp_1'], busy: () => false, draftTask: async () => null }),
     dispatcher: () => proxy,
     connectors: () => proxy,
+    mirrors: () => proxy,
     instance: { name: 'agent-breadboard', version: 'test', db: 'pglite', sandbox: 'process', public_url: 'http://localhost:4000' },
   });
 

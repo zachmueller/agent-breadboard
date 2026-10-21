@@ -59,7 +59,7 @@ Then switch auth to OIDC in `breadboard.yaml` (`auth.mode: oidc`, issuer, client
 
 ## 5. Backup & restore runbook
 
-Three things hold state: Postgres, the config repo, object storage.
+Three things hold state: Postgres, the config repo, object storage. Repository mirrors (`MIRROR_DIR`, `breadboard.yaml` `repos:`) are a cache and need no backup: a missing mirror is re-cloned on startup or first use. Size the volume for them, since each is a full single-branch clone.
 
 Backup:
 1. Postgres: RDS automated snapshots + PITR, or `pg_dump -Fc` on a schedule for self-managed.

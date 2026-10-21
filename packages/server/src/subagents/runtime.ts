@@ -39,6 +39,8 @@ export const DEFAULT_PRIMITIVES: readonly string[] = Object.freeze([
   'find_similar_tasks',
   'get_session_summary',
 ]);
+/** Primitives a non-empty `repos` grant implies ([06] §7.1). */
+export const REPO_PRIMITIVES: readonly string[] = Object.freeze(['search_repo', 'read_repo_file']);
 /** Finds the note UIDs of knowledge already injected into a conversation (see `injectKnowledge`). */
 const INJECTED_MARKER = /^\[Injected knowledge: .*?\(\[\[([0-9A-HJKMNP-TV-Z]{20})\|/gm;
 export const DEFAULT_MAX_TURNS = 60;
@@ -102,6 +104,9 @@ export function grantsFor(def: Subagent, extraReadDomains: string[] = []): Grant
     if (knowledgeWrite.size) primitives.add('propose_note_edit');
     if (execute.size) primitives.add('run_circuit');
   }
+  // A repository grant is useless without the primitives that read it, so it adds them even to an explicit list.
+  const repos = new Set(def.repos);
+  if (repos.size) for (const n of REPO_PRIMITIVES) primitives.add(n);
   return {
     subagent_uid: def.uid,
     tools,
@@ -109,6 +114,7 @@ export function grantsFor(def: Subagent, extraReadDomains: string[] = []): Grant
     circuits: { read, execute },
     knowledge: { read: knowledgeRead, write: knowledgeWrite },
     primitives,
+    repos,
     tools_override: null,
   };
 }

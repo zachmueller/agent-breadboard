@@ -532,7 +532,64 @@ export interface CredentialBroker {
   fetch(input: { capability: string; request: { url: string; method?: string; headers?: Record<string, string>; body?: string | null }; tool: Tool; principal: Principal; execution_key?: string | null }): Promise<{ status: number; headers: Record<string, string>; body: string }>;
   /** Credential material for MCP server auth ([06] §9) — internal use only, never over the API. */
   credentialFor(capability: string): Promise<Record<string, string> | null>;
+  /**
+   * Authenticate a repository mirror's git fetch ([06] §7.1): check `url` against the capability's scope, pass the
+   * auth headers (CodeCommit's SigV4 password for AWS credentials) to `fn`, and audit the outcome. Internal only.
+   */
+  withRepoAuth<T>(input: { capability: string; url: string; principal: Principal }, fn: (headers: Record<string, string>) => Promise<T>): Promise<T>;
   audit(limit?: number): Promise<Array<Record<string, unknown>>>;
+}
+
+/** A repository mirror's state ([06] §7.1). */
+export interface RepoMirrorStatus {
+  name: string;
+  description: string;
+  url: string;
+  branch: string;
+  phase: 'absent' | 'cloning' | 'ready' | 'failed';
+  commit: string | null;
+  fetched_at: string | null;
+  last_attempt_at: string | null;
+  fetching: boolean;
+  /** The last fetch failed; searches answer from `commit`. */
+  stale: boolean;
+  last_error: string | null;
+}
+
+export interface RepoSearchInput {
+  repo?: string;
+  pattern: string;
+  regex?: boolean;
+  ignore_case?: boolean;
+  word?: boolean;
+  paths?: string[];
+  exclude?: string[];
+  context?: number;
+  max_results?: number;
+  max_per_file?: number;
+  files_only?: boolean;
+  commit?: string;
+  max_chars?: number;
+}
+
+export interface RepoReadInput {
+  repo?: string;
+  path?: string;
+  commit?: string;
+  start_line?: number;
+  end_line?: number;
+  raw?: boolean;
+  max_chars?: number;
+}
+
+/** Server-side git mirrors behind `search_repo` / `read_repo_file` ([06] §7.1). */
+export interface RepoMirrors {
+  start(): void;
+  stop(): Promise<void>;
+  /** Mirrors `by` may read (all of them when omitted). */
+  status(by?: Principal): Promise<RepoMirrorStatus[]>;
+  search(input: RepoSearchInput, by: Principal): Promise<Record<string, unknown>>;
+  read(input: RepoReadInput, by: Principal): Promise<Record<string, unknown>>;
 }
 
 export interface McpClientManager {
@@ -772,6 +829,7 @@ export interface Services {
   knowledge: KnowledgeService;
   sync: SyncServer;
   connectors: ConnectorScheduler;
+  mirrors: RepoMirrors;
   tasks: TaskService;
   content: ContentService;
   evals: EvalService;

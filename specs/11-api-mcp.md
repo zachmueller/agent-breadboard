@@ -117,6 +117,7 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 | `emit_edge` | Explicit lineage ([01](01-data-model.md) §4.3) |
 | `tag_need_input`, `resolve_need_input` | Review signaling (per-request IDs, [09](09-content.md) §3) |
 | `query_knowledge`, `read_note`, `propose_note_edit` | Knowledge incl. the reconcile path ([07](07-knowledge.md) §5) |
+| `search_repo`, `read_repo_file` | Repository mirrors: grep and read over git repositories the server mirrors, citing the commit; a subagent needs a `repos` grant ([06](06-toolbox.md) §7.1) |
 | `run_circuit`, `get_session_summary` | Session composition (grant-gated) |
 | `record_score`, `get_rubric` | Evals MCP ([04](04-evals.md) §5) |
 | `propose_config_change`, `read_config`, `search_config`, `validate_config` | Designer chats / meta-operation (lookup by UID, slug, or path; `read_config` and `search_config` take an optional `commit`) |
@@ -125,7 +126,7 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 
 | Tool | Reads |
 |---|---|
-| `whoami`, `get_breadboard_overview`, `list_users`, `list_recent_events` | The connection's identity; instance health, capacity, spend, counts (the dashboard, plus config and knowledge facts); the roster; the event stream's recent events |
+| `whoami`, `get_breadboard_overview`, `list_users`, `list_recent_events` | The connection's identity; instance health, capacity, spend, counts (the dashboard, plus config and knowledge facts, and the repository mirrors the caller can read); the roster; the event stream's recent events |
 | `list_sessions`, `read_session_transcript`, `read_session_events`, `list_session_executions` | Sessions by state/kind/circuit/task/creator/definition; every turn with tool calls, results, model, tokens and cost; the orchestrator event log; the tool journal. `get_session_summary` adds `proposals`, `busy`, `last_error`, `draft_task` for chats |
 | `search_nodes`, `inspect_node`, `get_review_queue` | Nodes by type, text, tags, status, need-input and time (bodies via `read_node`); revisions, edges, comments and lineage of one node; the caller's review queue |
 | `get_config_history`, `list_proposals`, `read_proposal`, `diff_config` | Commits touching a definition or path; proposals with diff, validation and tool checks; the patch between two refs |
