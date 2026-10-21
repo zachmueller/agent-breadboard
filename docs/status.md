@@ -158,7 +158,7 @@ Deployed to the instance behind a load balancer as server `8cb5f5b` (then `7e958
 
 ## Fixed 2026-10-21: long MCP tool calls lost their result
 
-The MCP transport's idle sweep closes a connection 30 minutes after its last request. A tool call's request is the last one while the call runs, so a call of about 30 minutes (an Athena query at Athena's own DML timeout) had its connection closed under it: the tool finished, and the result was lost. The MCP server now reports each tool call's start and end to the transport (`on_call`). A connection with a call in flight is never idle, and its idle clock restarts when the call returns. A new transport test covers this (it hangs on the old code). Deployed to the instance behind a load balancer as server `55308cf` (a metadata-only change: same host, health ok, no migrations). That instance's Athena tool now waits up to 30 minutes per query.
+The MCP transport's idle sweep closes a connection 30 minutes after its last request. A tool call's request is the last one while the call runs, so a call of about 30 minutes (an Athena query at Athena's own DML timeout) had its connection closed under it: the tool finished, and the result was lost. The MCP server now reports each tool call's start and end to the transport (`on_call`). A connection with a call in flight is never idle, and its idle clock restarts when the call returns. A new transport test covers this (it hangs on the old code). Deployed to the instance behind a load balancer as server `55308cf` (a metadata-only change: same host, health ok, no migrations).
 
 ## Next steps (in priority order)
 
