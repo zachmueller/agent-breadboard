@@ -1,6 +1,6 @@
 # 01 — Data Model
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md)
 **Depended on by:** every other spec. This is the canonical definition of nodes, edges, revisions, and the two planes. Where any other spec appears to conflict with this one, this one wins.
 

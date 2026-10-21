@@ -1,6 +1,6 @@
 # 11 — API & MCP
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md), [01 — Data Model](01-data-model.md)
 **Related:** every component spec (this is the programmatic surface over all of them), [12 — Security & Deployment](12-security-deployment.md) (auth)
 

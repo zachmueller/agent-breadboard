@@ -1,6 +1,6 @@
 # 06 — Toolbox
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md), [01 — Data Model](01-data-model.md)
 **Related:** [05 — Subagents](05-subagents.md) (access config), [03 — Circuits](03-circuits.md) (code steps), [12 — Security & Deployment](12-security-deployment.md) (broker, sandbox posture)
 

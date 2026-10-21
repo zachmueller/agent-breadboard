@@ -1,6 +1,6 @@
 # 02 — Sessions & Orchestrator
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md), [01 — Data Model](01-data-model.md)
 **Related:** [03 — Circuits](03-circuits.md) (what gets executed), [09 — Content](09-content.md) (need-input vs gates), [04 — Evals](04-evals.md) (eval runs are Sessions)
 

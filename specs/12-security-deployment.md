@@ -1,6 +1,6 @@
 # 12 — Security & Deployment
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md)
 **Related:** [06 — Toolbox](06-toolbox.md) (sandbox, broker usage), [11 — API & MCP](11-api-mcp.md) (auth surface)
 

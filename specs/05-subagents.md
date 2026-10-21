@@ -1,6 +1,6 @@
 # 05 — Subagents
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md), [01 — Data Model](01-data-model.md)
 **Related:** [03 — Circuits](03-circuits.md) (LLM steps run Subagents), [06 — Toolbox](06-toolbox.md), [07 — Knowledge](07-knowledge.md)
 

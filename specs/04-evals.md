@@ -1,6 +1,6 @@
 # 04 — Evals
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md), [01 — Data Model](01-data-model.md), [02 — Sessions & Orchestrator](02-sessions-orchestrator.md), [03 — Circuits](03-circuits.md)
 
 ---

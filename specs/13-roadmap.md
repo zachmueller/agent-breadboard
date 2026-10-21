@@ -1,6 +1,6 @@
 # 13 — Roadmap
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** all component specs. This spec sequences them into buildable phases with acceptance criteria and records everything deliberately deferred.
 
 ---

@@ -1,6 +1,6 @@
 # 09 — Content
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md), [01 — Data Model](01-data-model.md)
 **Related:** [02 — Sessions & Orchestrator](02-sessions-orchestrator.md) (gates), [07 — Knowledge](07-knowledge.md), [08 — Intake](08-intake.md), [10 — UI](10-ui.md)
 
@@ -30,10 +30,10 @@ Markdown (CRDT treatment when collaboratively editable) or structured JSON (plai
 
 ## 3. `need-input` tagging
 
-How an agent signals it wants direction or review — attached to a **specific Artifact**, optionally with context or questions for what the review should focus on.
+How an agent signals it wants direction or review — attached to a **specific content node**, optionally with context or questions for what the review should focus on. The node is usually an Artifact; a Knowledge Note an AI creates gets one too, so it reaches the Review queue ([07](07-knowledge.md) §5.5).
 
 - **Lightweight and non-blocking:** users get to their review items when they want. This is entirely distinct from hard gates in [Circuits](03-circuits.md), which are an orchestrator-level mechanism — though gates create `need-input` requests on their gating Artifacts (one per targeted reviewer), and those requests resolve via **gate verdicts** ([02](02-sessions-orchestrator.md) §5.4): when every gating request has a verdict, the gate auto-resolves.
-- **Multi-request:** an Artifact may carry **several concurrent `need-input` requests** (e.g., a scientist reviewing methodology while legal reviews claims). Each request gets a **server-minted request ID** and its own target and note. Structure (stored as a structured tag + a `need-input` properties array):
+- **Multi-request:** a node may carry **several concurrent `need-input` requests** (e.g., a scientist reviewing methodology while legal reviews claims). Each request gets a **server-minted request ID** and its own target and note. Structure (stored as a structured tag + a `need-input` properties array):
   ```json
   {
     "need-input": [

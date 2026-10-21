@@ -1,6 +1,6 @@
 # 08 — Intake
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md), [01 — Data Model](01-data-model.md), [02 — Sessions & Orchestrator](02-sessions-orchestrator.md)
 **Related:** [03 — Circuits](03-circuits.md) (triage circuits), [05 — Subagents](05-subagents.md) (Intake Subagent), [09 — Content](09-content.md) (Tasks are content nodes)
 

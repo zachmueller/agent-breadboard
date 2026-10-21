@@ -1,6 +1,6 @@
 # 07 — Knowledge
 
-**Status:** Draft v1
+**Status:** v1, implemented ([00](00-overview.md)).
 **Depends on:** [00 — Overview](00-overview.md), [01 — Data Model](01-data-model.md)
 **Related:** [05 — Subagents](05-subagents.md) (access + dynamic injection), [06 — Toolbox](06-toolbox.md) (knowledge primitives), [10 — UI](10-ui.md) (shared editor)
 
