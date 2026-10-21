@@ -217,7 +217,13 @@ Prompted by subagents being able to edit Knowledge Notes but not add one: `Knowl
    - From a session step, `createNote` cuts a `step-completion` revision and emits `produces`.
    - An applied `proposeEdit` that changes blocks emits `updates`. AI note work now appears in session artifacts and lineage.
 
-The seed knowledge-editor and its circuit prompt use `create_note`. Existing config repos need `create_note` added to any explicit `primitives` list by hand, after the server is upgraded (an older server silently drops a primitive it does not know). Not yet deployed or exercised in a live circuit run.
+The seed knowledge-editor and its circuit prompt use `create_note`. Existing config repos need `create_note` added to any explicit `primitives` list by hand, after the server is upgraded (an older server silently drops a primitive it does not know).
+
+Deployed to the instance behind a load balancer as server `2df98be`. It was a metadata-only change, with no migration: the same host, health ok, 2+2 warm sandboxes, and `create_note` in the served catalog.
+
+Not yet exercised:
+- a subagent calling `create_note` in a live circuit run (the instance's knowledge-editor still needs `create_note` in its config repo);
+- the dedup threshold against real embeddings.
 
 ## Next steps (in priority order)
 
