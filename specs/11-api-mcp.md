@@ -49,6 +49,7 @@ GET    /review-queue                 current user's queue (open need-input reque
 ### Knowledge ([07](07-knowledge.md))
 ```
 GET    /knowledge/search             ?q=&mode=text|semantic|hybrid&domain=…   (grant-filtered)
+POST   /knowledge                    create a Note: {title, markdown, domains, tags?, properties?}
 GET    /knowledge/:uid               rendered markdown + base_revision   (the read_note contract)
 POST   /knowledge/:uid/edits         the propose_note_edit reconcile path: {base_revision, markdown}
                                      → {applied, had_concurrent_edits, merged_markdown, new_head_revision}
@@ -116,7 +117,7 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 | `add_comment` | Comments w/ anchor resolution (typed failures) |
 | `emit_edge` | Explicit lineage ([01](01-data-model.md) §4.3) |
 | `tag_need_input`, `resolve_need_input` | Review signaling (per-request IDs, [09](09-content.md) §3) |
-| `query_knowledge`, `read_note`, `propose_note_edit` | Knowledge incl. the reconcile path ([07](07-knowledge.md) §5) |
+| `query_knowledge`, `read_note`, `propose_note_edit`, `create_note` | Knowledge incl. the reconcile path and AI note creation ([07](07-knowledge.md) §5) |
 | `search_repo`, `read_repo_file` | Repository mirrors: grep and read over git repositories the server mirrors, citing the commit; a subagent needs a `repos` grant ([06](06-toolbox.md) §7.1) |
 | `run_circuit`, `get_session_summary` | Session composition (grant-gated) |
 | `record_score`, `get_rubric` | Evals MCP ([04](04-evals.md) §5) |

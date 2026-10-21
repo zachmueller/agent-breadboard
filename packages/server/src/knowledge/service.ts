@@ -4,13 +4,14 @@
  * rules, domains, embeddings, compaction. Grants are enforced here, not only at the routes.
  */
 import * as Y from 'yjs';
-import { BreadboardError, TAG, grantDenied, validationFailed, type Actor, type NodeRecord, type RevisionLabel, type Scope } from '@breadboard/shared';
+import { BreadboardError, SERVICE_ACTOR, TAG, grantDenied, validationFailed, type Actor, type NodeRecord, type RevisionLabel, type Scope } from '@breadboard/shared';
 import type { Db } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
-import type { EventBus, KnowledgeSearchHit, KnowledgeService, ModelGateway, NoteEditResult, NoteRead, SyncServer } from '../core/services.js';
+import type { CreatedNote, EventBus, KnowledgeSearchHit, KnowledgeService, ModelGateway, NoteEditResult, NoteRead, SyncServer } from '../core/services.js';
 import type { NodeStore } from '../content/nodes.js';
+import type { EdgeStore } from '../content/edges.js';
 import type { LinkIndexer } from '../content/link-indexer.js';
-import { canReadDomains, canSeeSession, canWriteDomains, requireScope, type Principal } from '../core/principal.js';
+import { canReadDomains, canSeeSession, canWriteAllDomains, canWriteDomains, requireScope, type Principal } from '../core/principal.js';
 import { MarkdownParseError, attributionOf, cloneDoc, countDeletedChars, docCharCount, docFromRevisionState, docToMarkdown, encodeVector, plainActor, sameVector, splitMarkdownIntoBlocks } from './ydoc.js';
 import { reconcile, type ReconcileResult } from './reconcile.js';
 import { cutSnapshot } from './snapshot.js';
@@ -23,6 +24,8 @@ export interface KnowledgeServiceDeps {
   db: Db;
   team_id: string;
   nodes: NodeStore;
+  /** Lineage (`produces` / `updates` from a session step) and possible-duplicate `references`. */
+  edges: EdgeStore;
   linkIndexer: LinkIndexer;
   sync: KnowledgeSync;
   gateway: Pick<ModelGateway, 'embed'>;
@@ -37,6 +40,8 @@ export interface KnowledgeServiceDeps {
 export const CHUNK_CHARS = 800;
 export const SNIPPET_CHARS = 240;
 const RRF_K = 60;
+/** Cosine similarity at which an AI-created note is flagged as a possible duplicate of an existing one. */
+export const NOTE_DUP_THRESHOLD = 0.85;
 
 type KNode = NodeRecord & { session_id: string | null };
 
@@ -198,7 +203,17 @@ export class KnowledgeServiceImpl implements KnowledgeService {
 
   // --- Notes --------------------------------------------------------------------------------------
 
-  async createNote(input: { title: string; markdown: string; domains?: string[]; tags?: string[]; properties?: Record<string, unknown>; by: Principal; scope?: Scope }): Promise<NodeRecord> {
+  async createNote(input: {
+    title: string;
+    markdown: string;
+    domains?: string[];
+    tags?: string[];
+    properties?: Record<string, unknown>;
+    by: Principal;
+    scope?: Scope;
+    session_id?: string | null;
+    step_id?: string | null;
+  }): Promise<CreatedNote> {
     const { by } = input;
     requireScope(by, 'knowledge:write');
     if (typeof input.title !== 'string' || !input.title.trim()) throw validationFailed('title is required');
@@ -208,12 +223,18 @@ export class KnowledgeServiceImpl implements KnowledgeService {
     const domains = [...new Set(input.domains ?? (Array.isArray(input.properties?.domains) ? (input.properties!.domains as string[]) : []))];
     const unknown = domains.filter((d) => !declared.has(d));
     if (unknown.length) throw validationFailed(`unknown knowledge domain(s): ${unknown.join(', ')}`, { unknown, declared: [...declared] });
-    if (isAi(by)) {
+    const ai = isAi(by);
+    if (ai) {
       if (!domains.length) throw grantDenied('AI-created notes must be placed in a knowledge domain you can write');
-      if (!canWriteDomains(by, domains)) throw grantDenied(`no write grant for knowledge domains [${domains.join(', ')}]`, { domains });
+      // Creating places the note in every listed domain, so each must be writable (editing needs only one).
+      if (!canWriteAllDomains(by, domains)) throw grantDenied(`no write grant for knowledge domains [${domains.join(', ')}]`, { domains });
     }
     const tags = (input.tags ?? []).filter((t) => t !== TAG.readOnly && !t.startsWith('connector:'));
+    if (ai && !tags.includes(TAG.origin(by.actor.kind))) tags.push(TAG.origin(by.actor.kind));
     const md = input.markdown.replace(/\r\n?/g, '\n');
+    const session_id = input.session_id ?? by.session_id ?? null;
+    const step_id = input.step_id ?? by.actor.step_id ?? null;
+    const orchestrated = !!(session_id && step_id);
     const node = await this.deps.nodes.create({
       type: 'knowledge',
       title: input.title.trim(),
@@ -226,11 +247,34 @@ export class KnowledgeServiceImpl implements KnowledgeService {
       session_id: by.session_id ?? null,
     });
     const doc = await this.liveDoc(node.uid);
-    await this.snapshot(node.uid, doc, ['publish'], by.actor);
+    const snap = await this.snapshot(node.uid, doc, [orchestrated ? 'step-completion' : 'publish'], by.actor);
+    const revision_id = snap.revision.revision_id;
+    if (orchestrated) {
+      await this.deps.edges.emit({ type: 'produces', src_session_id: session_id!, src_step_id: step_id!, dst_uid: node.uid, dst_revision: revision_id, created_by: plainActor(by.actor) });
+    }
+    const possible_duplicates = ai ? await this.flagDuplicates(node.uid, `${node.title}\n${md}`, domains, by) : [];
     // Seeding the live doc is an internal change, so no sync listener fires for a new note.
     this.autoReindex(node.uid);
     await this.deps.events.publish('node.updated', { uid: node.uid, type: 'knowledge', title: node.title, created: true }, nodeVisibility({ ...node, session_id: by.session_id ?? null })).catch(() => undefined);
-    return this.deps.nodes.mustGet(node.uid);
+    return { ...(await this.deps.nodes.mustGet(node.uid)), revision_id, possible_duplicates };
+  }
+
+  /** Dedup for AI-created notes, like task dedup ([08] §4): flag and link near-duplicates, never block. */
+  private async flagDuplicates(uid: string, text: string, domains: string[], by: Principal): Promise<CreatedNote['possible_duplicates']> {
+    try {
+      const hits = (await this.search({ q: text, mode: 'semantic', domains, limit: 5, by })).filter((h) => h.uid !== uid && h.score >= NOTE_DUP_THRESHOLD);
+      if (!hits.length) return [];
+      await this.deps.nodes.patch(uid, { tags_add: hits.map((h) => TAG.possibleDupOf(h.uid)) });
+      for (const h of hits) {
+        if (!(await this.deps.edges.exists('references', uid, h.uid))) {
+          await this.deps.edges.emit({ type: 'references', src_uid: uid, dst_uid: h.uid, properties: { reason: 'possible-duplicate', score: h.score }, created_by: SERVICE_ACTOR('knowledge-dedup') });
+        }
+      }
+      return hits.map((h) => ({ uid: h.uid, title: h.title, score: h.score }));
+    } catch (err) {
+      this.deps.log.warn({ err, uid }, 'note dedup failed (non-blocking)');
+      return [];
+    }
   }
 
   async readNote(uid: string, by: Principal): Promise<NoteRead> {
@@ -254,7 +298,7 @@ export class KnowledgeServiceImpl implements KnowledgeService {
     });
   }
 
-  async proposeEdit(input: { uid: string; base_revision: number; markdown: string; by: Principal }): Promise<NoteEditResult> {
+  async proposeEdit(input: { uid: string; base_revision: number; markdown: string; by: Principal; session_id?: string | null; step_id?: string | null }): Promise<NoteEditResult> {
     const { uid, by } = input;
     const node = await this.deps.nodes.get(uid);
     assertCanRead(node, by);
@@ -297,6 +341,11 @@ export class KnowledgeServiceImpl implements KnowledgeService {
       const pre = await this.snapshot(uid, live, ['pre-ai-edit'], actor);
       await this.deps.sync.transact(uid, actor, (doc) => Y.applyUpdate(doc, r.update));
       const post = await this.snapshot(uid, live, ['compaction'], actor);
+      const session_id = input.session_id ?? actor.session_id ?? null;
+      const step_id = input.step_id ?? actor.step_id ?? null;
+      if (session_id && step_id) {
+        await this.deps.edges.emit({ type: 'updates', src_session_id: session_id, src_step_id: step_id, dst_uid: uid, dst_revision: post.revision.revision_id, created_by: actor });
+      }
       await this.deps.events
         .publish('node.updated', { uid, type: 'knowledge', actor, session_id: actor.session_id ?? null, step_id: actor.step_id ?? null, revision_id: post.revision.revision_id, pre_ai_edit_revision: pre.revision.revision_id }, nodeVisibility(node))
         .catch(() => undefined);

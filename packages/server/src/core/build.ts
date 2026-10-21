@@ -121,7 +121,7 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
 
   // --- knowledge -----------------------------------------------------------------------------------
   const sync = createSyncServer({ db, team_id, nodes, linkIndexer, auth, events, settings, log, onHeadChanged: (uid) => void knowledge.reindexEmbeddings(uid).catch((e) => log.warn({ err: e, uid }, 'embedding reindex failed')) });
-  const knowledge = createKnowledgeService({ db, team_id, nodes, linkIndexer, sync, gateway, settings, events, log });
+  const knowledge = createKnowledgeService({ db, team_id, nodes, edges, linkIndexer, sync, gateway, settings, events, log });
 
   // --- content + intake ----------------------------------------------------------------------------
   const orchestratorLazy = lazy<Orchestrator>('orchestrator');

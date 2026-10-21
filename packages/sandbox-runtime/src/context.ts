@@ -43,6 +43,7 @@ export function createContext(args: { ambient: BreadboardAmbient; baseUrl: strin
     queryKnowledge: (a) => call('query_knowledge', a),
     readNote: (uid) => call('read_note', { uid }),
     proposeNoteEdit: (a) => call('propose_note_edit', a),
+    createNote: (a) => call('create_note', a),
     createTask: (a) => call('create_task', a),
     findSimilarTasks: (a) => call('find_similar_tasks', a),
     runCircuit: (uid, input, opts) => call('run_circuit', { circuit: uid, input, wait: opts?.wait ?? true }),

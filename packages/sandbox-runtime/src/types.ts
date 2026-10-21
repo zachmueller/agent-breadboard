@@ -86,6 +86,14 @@ export interface BreadboardContext {
   queryKnowledge(args: { q: string; mode?: 'text' | 'semantic' | 'hybrid'; domains?: string[]; limit?: number }): Promise<Array<{ uid: string; title: string; snippet: string; score: number; domains: string[] }>>;
   readNote(uid: string): Promise<{ uid: string; title: string; markdown: string; base_revision: number; domains: string[]; read_only: boolean }>;
   proposeNoteEdit(args: { uid: string; base_revision: number; markdown: string }): Promise<{ applied: boolean; had_concurrent_edits: boolean; merged_markdown: string; new_head_revision: number }>;
+  createNote(args: { title: string; markdown: string; domains: string[]; tags?: string[]; review?: { role?: string; username?: string; prompt?: string } }): Promise<{
+    uid: string;
+    base_revision: number;
+    domains: string[];
+    review_request_id: string;
+    possible_duplicates: Array<{ uid: string; title: string; score: number }>;
+    review_warning?: string;
+  }>;
 
   // Intake primitives
   createTask(args: { title: string; body: string; priority?: 'p0' | 'p1' | 'p2' | 'p3'; target_circuit?: string; draft?: boolean; tags?: string[] }): Promise<{ uid: string; status: string }>;

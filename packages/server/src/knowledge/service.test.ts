@@ -163,6 +163,66 @@ describe('KnowledgeService', () => {
     expect((await kit.f.nodes.get(node.uid))?.body_text).toBe('one\n\ntwo');
   });
 
+  it('AI create: every domain must be writable; tagged with its origin; the returned revision is an edit base', async () => {
+    const ai = aiPrincipal(kit.f, { read: ['ops'], write: ['ops'] });
+    expect(await code(kit.knowledge.createNote({ title: 'n', markdown: 'n', domains: ['ops', 'secret'], by: ai }))).toBe('grant-denied');
+    const n = await kit.knowledge.createNote({ title: 'Pager rota', markdown: 'Rotate the pager weekly.', domains: ['ops'], tags: [TAG.readOnly, 'rota'], by: ai });
+    expect(n.tags).toEqual(['rota', TAG.origin('subagent')]);
+    expect(n.possible_duplicates).toEqual([]);
+    const edit = await kit.knowledge.proposeEdit({ uid: n.uid, base_revision: n.revision_id, markdown: 'Rotate the pager weekly.\n\nHand over on Mondays.', by: ai });
+    expect(edit.merged_markdown).toBe('Rotate the pager weekly.\n\nHand over on Mondays.');
+    // Humans are not tagged or deduped.
+    const human = await kit.knowledge.createNote({ title: 'Pager rota', markdown: 'Rotate the pager weekly.', domains: ['ops'], by: kit.f.memberPrincipal });
+    expect(human.tags).toEqual([]);
+  });
+
+  it('AI create flags and links near-duplicates without blocking', async () => {
+    const original = await kit.knowledge.createNote({ title: 'Payment latency runbook', markdown: 'Restart the payment service when latency alarms fire.', domains: ['ops'], by: kit.f.memberPrincipal });
+    const other = await kit.knowledge.createNote({ title: 'Orders table', markdown: 'The orders table stores customer purchases with totals.', domains: ['ops'], by: kit.f.memberPrincipal });
+    for (const n of [original, other]) await kit.knowledge.reindexEmbeddings(n.uid);
+    const ai = aiPrincipal(kit.f, { read: ['ops'], write: ['ops'] });
+
+    const dup = await kit.knowledge.createNote({ title: 'Payment latency runbook', markdown: 'Restart the payment service when latency alarms fire.', domains: ['ops'], by: ai });
+    expect(dup.possible_duplicates.map((h) => h.uid)).toEqual([original.uid]);
+    expect(dup.tags).toContain(TAG.possibleDupOf(original.uid));
+    const refs = await kit.f.edges.listForNode(dup.uid, { direction: 'out', type: ['references'] });
+    expect(refs.map((e) => [e.dst_uid, e.properties.reason])).toEqual([[original.uid, 'possible-duplicate']]);
+
+    const distinct = await kit.knowledge.createNote({ title: 'Freezer inventory', markdown: 'Count the freezer racks every Friday.', domains: ['ops'], by: ai });
+    expect(distinct.possible_duplicates).toEqual([]);
+    expect(distinct.tags.some((t) => t.startsWith('possible-dup-of:'))).toBe(false);
+  });
+
+  it('AI create still succeeds when dedup search is unavailable', async () => {
+    await kit.close();
+    kit = await createKnowledgeKit({ gatewayFail: true });
+    const ai = aiPrincipal(kit.f, { read: ['ops'], write: ['ops'] });
+    const n = await kit.knowledge.createNote({ title: 'Pager rota', markdown: 'Rotate the pager weekly.', domains: ['ops'], by: ai });
+    expect(n.possible_duplicates).toEqual([]);
+  });
+
+  it('lineage: create emits produces and an applied edit emits updates, only from a session step', async () => {
+    const sid = 'ses_00000000000000000001';
+    await kit.f.db.query(`INSERT INTO sessions (session_id, team_id, kind, budget) VALUES ($1, $2, 'circuit-run', '{}')`, [sid, kit.f.team_id]);
+    const ai = aiPrincipal(kit.f, { read: ['ops'], write: ['ops'], session_id: sid });
+    const lineage = async (uid: string, type: 'produces' | 'updates') => (await kit.f.edges.listForNode(uid, { direction: 'in', type: [type] })).map((e) => [e.src_session_id, e.src_step_id, e.dst_revision]);
+
+    const n = await kit.knowledge.createNote({ title: 'Pager rota', markdown: 'Rotate the pager weekly.', domains: ['ops'], by: ai, step_id: 'write' });
+    expect(await lineage(n.uid, 'produces')).toEqual([[sid, 'write', n.revision_id]]);
+    expect((await kit.f.nodes.getRevision(n.uid, n.revision_id))?.labels).toEqual(['step-completion']);
+
+    const same = await kit.knowledge.proposeEdit({ uid: n.uid, base_revision: n.revision_id, markdown: 'Rotate the pager weekly.', by: ai, step_id: 'edit' });
+    expect(same.blocks_changed).toBe(0);
+    expect(await lineage(n.uid, 'updates')).toEqual([]);
+    const edit = await kit.knowledge.proposeEdit({ uid: n.uid, base_revision: n.revision_id, markdown: 'Rotate the pager every week.', by: ai, step_id: 'edit' });
+    expect(await lineage(n.uid, 'updates')).toEqual([[sid, 'edit', edit.new_head_revision]]);
+
+    // No step (e.g. an MCP call) means no provenance edge.
+    const loose = await kit.knowledge.createNote({ title: 'Loose', markdown: 'No step here.', domains: ['ops'], by: ai });
+    expect(await lineage(loose.uid, 'produces')).toEqual([]);
+    expect((await kit.f.nodes.getRevision(loose.uid, loose.revision_id))?.labels).toEqual(['publish']);
+  });
+
   it('searches text vs semantic with AI domain filtering', async () => {
     const ops = await kit.knowledge.createNote({ title: 'Payment latency', markdown: 'Restart the payment service when latency alarms fire.', domains: ['ops'], by: kit.f.memberPrincipal });
     const data = await kit.knowledge.createNote({ title: 'Orders table', markdown: 'The orders table stores customer purchases with totals.', domains: ['data'], by: kit.f.memberPrincipal });

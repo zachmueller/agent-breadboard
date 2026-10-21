@@ -72,7 +72,7 @@ Controls which circuits the Subagent can **read** (inspect definitions) or **exe
 
 ### 2.4 Knowledge access
 
-Read/write lists of Knowledge Domain slugs ([07 — Knowledge](07-knowledge.md) §3). Read scopes search/RAG and deterministic injection; write gates the AI-edit path.
+Read/write lists of Knowledge Domain slugs ([07 — Knowledge](07-knowledge.md) §3). Read scopes search/RAG and deterministic injection; write gates the AI-edit and AI-create paths (`propose_note_edit`, `create_note`, both added to the default primitives when a write grant exists).
 
 ### 2.5 Repository access
 

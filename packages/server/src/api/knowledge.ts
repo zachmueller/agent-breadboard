@@ -72,7 +72,7 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const title = requireField<string>(body, 'title');
     const markdown = typeof body.markdown === 'string' ? body.markdown : typeof body.body === 'string' ? body.body : '';
     return withIdempotency(req, reply, services, async () => {
-      const node = await knowledge.createNote({
+      const { revision_id: _rev, possible_duplicates: _dups, ...node } = await knowledge.createNote({
         title,
         markdown,
         domains: arrayParam(body.domains),

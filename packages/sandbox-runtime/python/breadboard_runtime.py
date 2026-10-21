@@ -89,6 +89,9 @@ class BreadboardContext:
     def propose_note_edit(self, **a):
         return self._call("propose_note_edit", a)
 
+    def create_note(self, **a):
+        return self._call("create_note", a)
+
     # -- intake ----------------------------------------------------------
     def create_task(self, **a):
         return self._call("create_task", a)

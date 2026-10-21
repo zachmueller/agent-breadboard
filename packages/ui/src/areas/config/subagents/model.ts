@@ -18,6 +18,7 @@ export const PRIMITIVES: PrimitiveInfo[] = [
   { name: 'query_knowledge', group: 'Knowledge', description: 'Search readable Knowledge Notes (text, semantic, hybrid).' },
   { name: 'read_note', group: 'Knowledge', description: 'Read a Note as Markdown plus its base revision.' },
   { name: 'propose_note_edit', group: 'Knowledge', description: 'Propose an edit to a Note in a writable domain (reconcile path).' },
+  { name: 'create_note', group: 'Knowledge', description: 'Create a new Note in writable domains; queued for human review.' },
   { name: 'search_repo', group: 'Repositories', description: 'Search a granted repository mirror like grep (implied by a repos grant).' },
   { name: 'read_repo_file', group: 'Repositories', description: 'Read a file or directory of a granted repository mirror (implied by a repos grant).' },
   { name: 'create_task', group: 'Intake', description: 'Create a Task in the Intake queue.' },
@@ -54,6 +55,7 @@ export function grantHints(s: any): string[] {
   if (prim.has('run_circuit') && !circuits.some((c) => c?.access === 'execute')) out.push('run_circuit is allowed but no circuit has an execute grant.');
   if (!prim.has('run_circuit') && circuits.some((c) => c?.access === 'execute')) out.push('Execute grants need the run_circuit primitive to be usable.');
   if (prim.has('propose_note_edit') && !write.length) out.push('propose_note_edit is allowed but no knowledge domain is writable.');
+  if (prim.has('create_note') && !write.length) out.push('create_note is allowed but no knowledge domain is writable.');
   if (write.length && !prim.has('propose_note_edit')) out.push('Writable domains need the propose_note_edit primitive to be usable.');
   if ((prim.has('query_knowledge') || prim.has('read_note')) && !read.length) out.push('Knowledge primitives are allowed but no domain is readable.');
   const repos: string[] = Array.isArray(s?.repos) ? s.repos : [];

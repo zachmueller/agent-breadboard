@@ -15,6 +15,7 @@ import { testDatabaseUrl } from '../src/test/harness.js';
 import { silentLogger } from '../src/core/logger.js';
 import { buildServices, startBackground, stopServices, type BuiltServices } from '../src/core/build.js';
 import { buildApp } from '../src/app.js';
+import type { MockProvider } from '../src/gateway/mock.js';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
 const ADMIN = 'dev-admin-token-change-me';
@@ -189,7 +190,45 @@ describe('end-to-end against the shipped seed', () => {
     const names = (prim.json.items ?? prim.json).map((p: any) => p.name);
     expect(names).toContain('create_task');
     expect(names).toContain('propose_note_edit');
+    expect(names).toContain('create_note');
   }, 60_000);
+
+  it('knowledge: a subagent creates a note from a circuit step, queued for review with produces lineage', async () => {
+    const mock = (services.gateway as any).byName.get('mock') as MockProvider;
+    // The knowledge editor calls create_note once; the default mock behaviour then finishes the step.
+    mock.script((req) => {
+      if (!req.tools?.some((t) => t.name === 'create_note') || JSON.stringify(req.messages).includes('"name":"create_note"')) return null;
+      return { tool_calls: [{ name: 'create_note', input: { title: 'Fencing token', markdown: '# Fencing token\n\nA number that increases with every lock grant, so stale holders are rejected.\n', domains: ['glossary'], review: { role: 'scientist' } } }] };
+    });
+    try {
+      const run = await api('POST', '/primitives/run_circuit', ADMIN, { circuit: '01J8CRKN0WVPDATE0000', input: { title: 'Add a glossary entry for fencing token' }, wait: false });
+      expect(run.status, JSON.stringify(run.json)).toBeLessThan(300);
+      const sid = run.json.session_id;
+      await waitUntil(async () => {
+        const s = (await api('GET', `/sessions/${sid}`)).json;
+        if (s.state === 'suspended-error') throw new Error('session suspended with error: ' + JSON.stringify(s.state_detail));
+        return s.state === 'completed';
+      }, 90_000);
+
+      const produced = (await services.edges.listForSession(sid)).filter((e) => e.type === 'produces');
+      const notes = [];
+      for (const e of produced) {
+        const n = (await api('GET', `/nodes/${e.dst_uid}`)).json;
+        if (n.type === 'knowledge') notes.push({ node: n, edge: e });
+      }
+      expect(notes).toHaveLength(1);
+      const { node, edge } = notes[0]!;
+      expect(node.title).toBe('Fencing token');
+      expect(node.scope).toBe('team');
+      expect(node.tags).toEqual(expect.arrayContaining(['origin:subagent', 'need-input']));
+      expect(edge.src_step_id).toBe('edit');
+      const queue = await api('GET', '/review-queue', MEMBER);
+      const item = (queue.json.items ?? queue.json).find((i: any) => i.node.uid === node.uid);
+      expect(item?.requests.map((r: any) => r.role)).toEqual(['scientist']);
+    } finally {
+      mock.script(null);
+    }
+  }, 120_000);
 
   it('config plane: propose, validate, merge a subagent change through the API', async () => {
     const def = await api('GET', '/config/definitions/01J8SATR1AGEC1ASS000');

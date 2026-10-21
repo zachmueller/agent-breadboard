@@ -41,7 +41,7 @@ const QUIET = args.has('--quiet');
 /** Breadboard MCP primitive catalog ([11] §3; server: packages/server/src/toolbox/primitives.ts). */
 const PRIMITIVES = new Set([
   'create_artifact', 'update_artifact', 'read_node', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input',
-  'query_knowledge', 'read_note', 'propose_note_edit', 'create_task', 'find_similar_tasks', 'run_circuit',
+  'query_knowledge', 'read_note', 'propose_note_edit', 'create_note', 'create_task', 'find_similar_tasks', 'run_circuit',
   'get_session_summary', 'run_tool', 'broker_fetch', 'record_score', 'get_rubric', 'get_fixture_output', 'read_config',
   'search_config', 'validate_config', 'propose_config_change',
 ]);
@@ -319,6 +319,7 @@ for (const [, { path, def: s }] of defs.subagent) {
   if (s.circuits.some((g) => g.access === 'execute') && s.primitives && !prims.has('run_circuit')) err(path, 'has execute circuit grants but not the run_circuit primitive');
   if (s.knowledge.write.length && s.primitives && !prims.has('propose_note_edit')) warn(path, 'has knowledge write access but not the propose_note_edit primitive');
   if (prims.has('propose_note_edit') && !s.knowledge.write.length) warn(path, 'has propose_note_edit but no knowledge.write domains');
+  if (prims.has('create_note') && !s.knowledge.write.length) warn(path, 'has create_note but no knowledge.write domains');
 }
 
 // ---------------------------------------------------------------------------------------------------------------

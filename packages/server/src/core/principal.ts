@@ -125,3 +125,9 @@ export function canWriteDomains(p: Principal, domains: string[]): boolean {
   if (!p.grants) return true;
   return domains.some((d) => p.grants!.knowledge.write.has(d));
 }
+
+/** Placing a note (AI create): every domain must be writable, else it would land where the caller can't write. */
+export function canWriteAllDomains(p: Principal, domains: string[]): boolean {
+  if (!p.grants) return true;
+  return domains.every((d) => p.grants!.knowledge.write.has(d));
+}

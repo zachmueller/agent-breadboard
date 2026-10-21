@@ -81,13 +81,17 @@ function build(): PrimitivesImpl {
         if (i.anchor?.quote === 'missing') throw new BreadboardError('anchor-not-found', 'quote not found');
         return { uid: 'CMT00000000000000001', anchor_status: i.anchor ? 'resolved' : 'none' };
       },
-      tagNeedInput: () => ({ request_id: 'nir_1' }),
+      tagNeedInput: (i: any) => {
+        if (i.role === 'nope') throw new BreadboardError('validation-failed', "unknown review role 'nope'");
+        return { request_id: 'nir_1' };
+      },
       resolveNeedInput: () => ({ resolved: {}, remaining_open: 0 }),
     }),
     knowledge: fake('knowledge', calls, {
       search: () => [{ uid: 'N1', title: 'n', snippet: 's', score: 1, domains: ['eng'], tags: [], source: 'text' }],
       readNote: (uid: string) => ({ uid, title: 'n', markdown: '# n', base_revision: 3, domains: ['eng'], read_only: false, tags: [], properties: {} }),
       proposeEdit: () => ({ applied: true, had_concurrent_edits: false, merged_markdown: '# m', new_head_revision: 5, pre_ai_edit_revision: 4, blocks_changed: 1 }),
+      createNote: (i: any) => ({ uid: 'NTE00000000000000001', title: i.title, revision_id: 1, possible_duplicates: [{ uid: 'NTE00000000000000002', title: 'Old', score: 0.9 }] }),
     }),
     tasks: fake('tasks', calls, {
       create: (i: any) => ({ uid: 'TSK00000000000000001', properties: { status: i.draft ? 'draft' : 'queued' } }),
@@ -204,7 +208,7 @@ describe('primitives catalog', () => {
   });
 
   it('covers the [11] §4 MCP core catalog', () => {
-    const mcpCatalog = ['create_task', 'find_similar_tasks', 'create_artifact', 'update_artifact', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input', 'query_knowledge', 'read_note', 'propose_note_edit', 'run_circuit', 'get_session_summary', 'record_score', 'get_rubric', 'propose_config_change', 'read_config', 'search_config', 'validate_config', 'get_fixture_output'];
+    const mcpCatalog = ['create_task', 'find_similar_tasks', 'create_artifact', 'update_artifact', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input', 'query_knowledge', 'read_note', 'propose_note_edit', 'create_note', 'run_circuit', 'get_session_summary', 'record_score', 'get_rubric', 'propose_config_change', 'read_config', 'search_config', 'validate_config', 'get_fixture_output'];
     for (const n of mcpCatalog) expect(prims.names).toContain(n);
   });
 
@@ -239,6 +243,34 @@ describe('call: dispatch, validation, gating', () => {
     expect(out).toEqual({ uid: 'ART00000000000000001', revision_id: 1 });
     const c = callsTo('content', 'createArtifact')[0]!.args[0];
     expect(c).toMatchObject({ title: 'Report', session_id: 'S1', step_id: 'write', by: f.memberPrincipal });
+  });
+
+  it('create_note passes session/step context, queues the note for review and returns its base revision', async () => {
+    const p = subagentPrincipal(f, grants({ primitives: ['create_note'] }));
+    const out = await prims.call('create_note', { title: 'Runbook', markdown: '# r', domains: ['eng'], review: { role: 'scientist' } }, p, { session_id: 'S1', step_id: 'write' });
+    expect(out).toEqual({ uid: 'NTE00000000000000001', base_revision: 1, domains: ['eng'], review_request_id: 'nir_1', possible_duplicates: [{ uid: 'NTE00000000000000002', title: 'Old', score: 0.9 }] });
+    expect(callsTo('knowledge', 'createNote')[0]!.args[0]).toMatchObject({ title: 'Runbook', domains: ['eng'], session_id: 'S1', step_id: 'write', by: p });
+    expect(callsTo('content', 'tagNeedInput')[0]!.args[0]).toMatchObject({ uid: 'NTE00000000000000001', role: 'scientist', username: null, by: p });
+  });
+
+  it('create_note falls back to an untargeted review request when the target is invalid', async () => {
+    const out = (await prims.call('create_note', { title: 'R', markdown: '# r', domains: ['eng'], review: { role: 'nope' } }, f.memberPrincipal)) as any;
+    expect(out.review_request_id).toBe('nir_1');
+    expect(out.review_warning).toMatch(/unknown review role 'nope'.*untargeted/);
+    expect(callsTo('content', 'tagNeedInput').map((c) => c.args[0].role)).toEqual(['nope', null]);
+    expect(callsTo('knowledge', 'createNote')).toHaveLength(1);
+  });
+
+  it('create_note needs at least one domain and the primitive grant', async () => {
+    expect(await codeOf(prims.call('create_note', { title: 'R', markdown: '# r', domains: [] }, f.memberPrincipal))).toBe('validation-failed');
+    expect(await codeOf(prims.call('create_note', { title: 'R', markdown: '# r', domains: ['eng'] }, subagentPrincipal(f, grants({ primitives: ['propose_note_edit'] }))))).toBe('grant-denied');
+    expect(callsTo('knowledge', 'createNote')).toHaveLength(0);
+  });
+
+  it('propose_note_edit passes session/step context for lineage', async () => {
+    const p = subagentPrincipal(f, grants({ primitives: ['propose_note_edit'] }));
+    await prims.call('propose_note_edit', { uid: 'N', base_revision: 3, markdown: '# m' }, p, { session_id: 'S1', step_id: 'edit' });
+    expect(callsTo('knowledge', 'proposeEdit')[0]!.args[0]).toMatchObject({ uid: 'N', session_id: 'S1', step_id: 'edit' });
   });
 
   it('read_node returns head or a pinned revision', async () => {

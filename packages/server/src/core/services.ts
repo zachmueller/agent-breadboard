@@ -629,6 +629,8 @@ export interface NoteEditResult {
   pre_ai_edit_revision: number;
   blocks_changed: number;
 }
+/** `createNote` result: the stored node plus its first revision (a `propose_note_edit` base) and AI-create dedup hits. */
+export type CreatedNote = NodeRecord & { revision_id: number; possible_duplicates: Array<{ uid: string; title: string; score: number }> };
 export interface KnowledgeSearchHit {
   uid: string;
   title: string;
@@ -640,11 +642,12 @@ export interface KnowledgeSearchHit {
 }
 
 export interface KnowledgeService {
-  createNote(input: { title: string; markdown: string; domains?: string[]; tags?: string[]; properties?: Record<string, unknown>; by: Principal; scope?: Scope }): Promise<NodeRecord>;
+  /** AI callers must write every listed domain; the note is tagged `origin:<kind>`, deduped ([08] §4 style) and, from a session step, linked by a `produces` edge. */
+  createNote(input: { title: string; markdown: string; domains?: string[]; tags?: string[]; properties?: Record<string, unknown>; by: Principal; scope?: Scope; session_id?: string | null; step_id?: string | null }): Promise<CreatedNote>;
   /** `read_note` contract ([07] §5.2 step 1): rendered markdown + base_revision (cut on demand). */
   readNote(uid: string, by: Principal): Promise<NoteRead>;
   /** `propose_note_edit`: the three-way reconcile path ([07] §5.2). */
-  proposeEdit(input: { uid: string; base_revision: number; markdown: string; by: Principal }): Promise<NoteEditResult>;
+  proposeEdit(input: { uid: string; base_revision: number; markdown: string; by: Principal; session_id?: string | null; step_id?: string | null }): Promise<NoteEditResult>;
   revertAiEdit(input: { uid: string; pre_ai_edit_revision: number; by: Principal }): Promise<{ new_head_revision: number }>;
   search(input: { q: string; mode?: 'text' | 'semantic' | 'hybrid'; domains?: string[]; limit?: number; by: Principal; types?: string[] }): Promise<KnowledgeSearchHit[]>;
   /** Current markdown of any CRDT node's head (used by body_text mirror, viewers, templates). */

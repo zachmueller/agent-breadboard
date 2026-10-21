@@ -101,7 +101,10 @@ export function grantsFor(def: Subagent, extraReadDomains: string[] = []): Grant
     primitives = new Set(def.primitives); // explicit list honoured literally
   } else {
     primitives = new Set(DEFAULT_PRIMITIVES);
-    if (knowledgeWrite.size) primitives.add('propose_note_edit');
+    if (knowledgeWrite.size) {
+      primitives.add('propose_note_edit');
+      primitives.add('create_note');
+    }
     if (execute.size) primitives.add('run_circuit');
   }
   // A repository grant is useless without the primitives that read it, so it adds them even to an explicit list.

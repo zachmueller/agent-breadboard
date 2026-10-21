@@ -22,7 +22,7 @@ Every method is an authenticated call back into the Breadboard API under the *ca
 | Area | Methods |
 |---|---|
 | Content | `createArtifact`, `updateArtifact`, `readNode`, `addComment`, `emitEdge` (derived-from, attached-to, blocks, depends-on, references — never produces/updates), `tagNeedInput` |
-| Knowledge | `queryKnowledge`, `readNote` (returns `base_revision`), `proposeNoteEdit` (the reconcile path) |
+| Knowledge | `queryKnowledge`, `readNote` (returns `base_revision`), `proposeNoteEdit` (the reconcile path), `createNote` (a new Note in writable domains; queued for review, returns `base_revision` and `possible_duplicates`) |
 | Intake | `createTask`, `findSimilarTasks` |
 | Sessions | `runCircuit` (child Session, needs an execute grant), `getSessionSummary` |
 | Composition | `runTool` (nested sandbox; depth-capped) |

@@ -29,7 +29,7 @@ A Knowledge Note is a `knowledge`-type content node ([01](01-data-model.md) §5)
 Each Domain is a named, **arbitrary subset** of the team's Knowledge Notes. Examples: a glossary of key terms; detailed insights about each dataset in the data lake; production-code knowledge; conceptual expertise for the team's area; accumulated learnings about stakeholders' priorities and preferences.
 
 - Domains are defined in the content plane as a property on Notes (`domains: [glossary, datasets]`); a Note may belong to multiple Domains; Domain slugs are declared centrally (in `config/breadboard.yaml`) so grants can be validated.
-- **Selective access:** Subagents and Circuits (or steps within circuits) are granted read/write per Domain ([05](05-subagents.md) §2.4). All knowledge primitives (`query_knowledge`, `read_note`, `propose_note_edit`) enforce grants server-side.
+- **Selective access:** Subagents and Circuits (or steps within circuits) are granted read/write per Domain ([05](05-subagents.md) §2.4). All knowledge primitives (`query_knowledge`, `read_note`, `propose_note_edit`, `create_note`) enforce grants server-side.
 
 ## 4. Deterministic context injection
 
@@ -78,11 +78,21 @@ Failure modes are typed and instructive (the AI must be able to self-correct): `
 ### 5.3 Attribution & revert
 
 - **Server-authoritative attribution.** Every Yjs transaction carries an origin; AI writes are tagged with `{kind: subagent, uid, session_id}` **by the server** (the subagent's config UID; display slug resolvable from it) — clients are never trusted to self-report authorship. Origins are persisted per update in the `yjs_updates` log ([01](01-data-model.md) §8) and stamped per changed block into a sibling attribution map (`Y.Map`: block ID → `{actor, at}`) so the editor can render per-block authorship.
+- **Lineage.** An AI edit made from a circuit step emits an `updates` edge from that step to the post-merge revision ([01](01-data-model.md) §4), so the session's artifacts and the Note's lineage both show it. Edits made outside a step (e.g., an MCP client) carry the origin stamp but no provenance edge, as for Artifacts.
 - **Users can see and revert AI edits:** the editor renders AI-attributed spans/blocks distinctly (toggleable), and each AI write's `pre-ai-edit` revision enables one-click revert of that write (revert = server-computed reverse delta applied as a new transaction — history is never rewritten).
 
 ### 5.4 Comment/quote anchoring for AI
 
 When the AI attaches a Comment with a quote anchor ([09 — Content](09-content.md) §4), anchor resolution is content-based (quote + surrounding context matched against the head, tiered from exact to fuzzy) and **never guesses on ambiguity**: resolution returns typed failures `not_found | ambiguous | unmappable`, surfaced to the AI so it can retry with more context.
+
+### 5.5 AI note creation
+
+The `create_note` primitive lets an AI add a Note rather than edit one: `{title, markdown, domains, tags?, review?}` → `{uid, base_revision, domains, review_request_id, possible_duplicates}`. It is granted with write access exactly like `propose_note_edit` ([05](05-subagents.md) §2.4). The AI is told to search with `query_knowledge` first and to prefer editing an existing Note.
+
+- **Placement.** An AI-created Note must name at least one Domain, and the caller needs a write grant for **every** listed Domain (editing needs only one, since the Note is already placed). Read-only and connector tags are stripped, and the Note is tagged `origin:<kind>` (`origin:subagent` / `origin:code-step`).
+- **Live, then reviewed.** The Note is live immediately: content-plane convergence, no gate. Creation also opens a `need-input` request on it ([09](09-content.md) §3), optionally targeted with `review: {role, username, prompt}`, so it lands in the Review queue. An invalid target falls back to an untargeted request (reported as `review_warning`) rather than failing after the Note exists.
+- **Dedup: flag, link, never block** (as for Tasks, [08](08-intake.md) §4). Existing Notes in the same Domains whose embedding similarity crosses a threshold are tagged on the new Note (`possible-dup-of:<uid>`), linked by `references` edges (`reason: possible-duplicate`), and returned as `possible_duplicates` so the AI can merge instead. Dedup failure (e.g., embeddings unavailable) never fails the create.
+- **Lineage.** Created from a circuit step, the first revision is a `step-completion` revision and the step emits a `produces` edge to it; `base_revision` is that revision, ready for a follow-up `propose_note_edit`.
 
 ## 6. Sync & persistence
 

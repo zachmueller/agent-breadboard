@@ -128,7 +128,7 @@ export async function createKnowledgeKit(opts: { settings?: BreadboardConfig; ga
     maxDebounceMs: 200,
     compactIntervalMs: 0,
   });
-  const knowledge = createKnowledgeService({ db: f.db, team_id: f.team_id, nodes: f.nodes, linkIndexer: f.linkIndexer, sync, gateway, settings: () => settings, events, log: f.log, embedDebounceMs: opts.embedDebounceMs ?? 0 });
+  const knowledge = createKnowledgeService({ db: f.db, team_id: f.team_id, nodes: f.nodes, edges: f.edges, linkIndexer: f.linkIndexer, sync, gateway, settings: () => settings, events, log: f.log, embedDebounceMs: opts.embedDebounceMs ?? 0 });
   return {
     f,
     sync,

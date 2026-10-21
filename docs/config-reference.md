@@ -64,7 +64,7 @@ Each entry: `provider` (must have an installed adapter — v1 ships `bedrock`, p
 
 ## subagents/<uid>.yaml (`breadboard/subagent@v1`)
 
-`uid`, `slug`, `title`, `description`, `system_prompt` (Markdown; `{{knowledge:<UID>}}` injects a live Note at step start), `model_preset`, `tools[]` (`{tool: <uid>, settings?}` or `{mcp: <uid>, allow?: [names]}`), `circuits[]` (`{circuit: <uid>, access: read|execute}`), `knowledge {read: [domains], write: [domains]}`, `repos[]` (names from `breadboard.yaml` `repos[]` the subagent may search and read; a non-empty list adds `search_repo` and `read_repo_file` even to an explicit `primitives` list), optional `primitives[]` (built-in primitive allowlist; default is the content + knowledge-read set, with `propose_note_edit`/`run_circuit` added when the matching grants exist).
+`uid`, `slug`, `title`, `description`, `system_prompt` (Markdown; `{{knowledge:<UID>}}` injects a live Note at step start), `model_preset`, `tools[]` (`{tool: <uid>, settings?}` or `{mcp: <uid>, allow?: [names]}`), `circuits[]` (`{circuit: <uid>, access: read|execute}`), `knowledge {read: [domains], write: [domains]}`, `repos[]` (names from `breadboard.yaml` `repos[]` the subagent may search and read; a non-empty list adds `search_repo` and `read_repo_file` even to an explicit `primitives` list), optional `primitives[]` (built-in primitive allowlist; default is the content + knowledge-read set, with `propose_note_edit` and `create_note` added when `knowledge.write` is non-empty and `run_circuit` when an execute grant exists).
 
 ## circuits/<uid>/circuit.yaml (`breadboard/circuit@v1`)
 

@@ -123,6 +123,7 @@ describe('SubagentRuntime.resolve', () => {
     expect([...r.grants.knowledge.read].sort()).toEqual(['eng', 'ops']);
     expect(r.grants.primitives.has('run_circuit')).toBe(true);
     expect(r.grants.primitives.has('propose_note_edit')).toBe(false);
+    expect(r.grants.primitives.has('create_note')).toBe(false);
     expect(r.grants.primitives.has('create_task')).toBe(false);
     expect(r.grants.tools_override).toBeNull();
   });
@@ -136,8 +137,10 @@ describe('SubagentRuntime.resolve', () => {
     expect(err.message).toContain("'researcher'");
   });
 
-  it('primitive defaults: write grant adds propose_note_edit; explicit lists are literal', () => {
-    expect(grantsFor(subagentDef({ knowledge: { read: [], write: ['eng'] }, circuits: [] })).primitives.has('propose_note_edit')).toBe(true);
+  it('primitive defaults: write grant adds propose_note_edit and create_note; explicit lists are literal', () => {
+    const writer = grantsFor(subagentDef({ knowledge: { read: [], write: ['eng'] }, circuits: [] }));
+    expect(writer.primitives.has('propose_note_edit')).toBe(true);
+    expect(writer.primitives.has('create_note')).toBe(true);
     const explicit = grantsFor(subagentDef({ primitives: ['read_node', 'create_task'] }));
     expect([...explicit.primitives]).toEqual(['read_node', 'create_task']);
   });

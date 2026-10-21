@@ -50,6 +50,7 @@ describe('primitives and hints', () => {
     expect(h.join('\n')).toMatch(/run_circuit primitive/);
     expect(h.join('\n')).toMatch(/propose_note_edit primitive/);
     expect(h.join('\n')).toMatch(/Writable but not readable: x/);
+    expect(grantHints({ primitives: ['create_note'] }).join('\n')).toMatch(/create_note is allowed but no knowledge domain is writable/);
     expect(grantHints({ primitives: ['search_repo'] }).join('\n')).toMatch(/no repository is granted/);
     expect(grantHints({ primitives: ['search_repo'], repos: ['r'] }).join('\n')).not.toMatch(/repository/);
   });

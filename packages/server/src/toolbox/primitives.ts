@@ -296,7 +296,7 @@ export class PrimitivesImpl implements Primitives {
       {
         name: 'query_knowledge',
         scope: 'knowledge:read',
-        description: 'Search the Knowledge Notes you can read. `text` = keyword search, `semantic` = embedding similarity (RAG), `hybrid` (default) = both. Returns ranked hits with snippets; use `read_note` for full content.',
+        description: 'Search the Knowledge Notes you can read. `text` = keyword search, `semantic` = embedding similarity (RAG), `hybrid` (default) = both. Returns ranked hits with snippets; use `read_note` for full content. Search before `create_note` to avoid duplicating a note.',
         input_schema: obj(
           {
             q: { type: 'string', minLength: 1, description: 'Query text.' },
@@ -334,9 +334,47 @@ export class PrimitivesImpl implements Primitives {
           },
           ['uid', 'base_revision', 'markdown'],
         ),
-        handler: async (a, p) => {
-          const r = await d.knowledge.proposeEdit({ uid: a.uid, base_revision: a.base_revision, markdown: a.markdown, by: p });
+        handler: async (a, p, ctx) => {
+          const r = await d.knowledge.proposeEdit({ uid: a.uid, base_revision: a.base_revision, markdown: a.markdown, by: p, session_id: ctx.session_id ?? p.session_id, step_id: ctx.step_id ?? p.actor.step_id ?? null });
           return { applied: r.applied, had_concurrent_edits: r.had_concurrent_edits, merged_markdown: r.merged_markdown, new_head_revision: r.new_head_revision, pre_ai_edit_revision: r.pre_ai_edit_revision };
+        },
+      },
+      {
+        name: 'create_note',
+        scope: 'knowledge:write',
+        description:
+          'Create a new Knowledge Note in domains you can write. Search with `query_knowledge` first: when an existing note covers the topic, edit it with `propose_note_edit` instead. The note is live immediately and is queued for human review (target a review `role` or `username` via `review`). Returns its UID, the `base_revision` for follow-up `propose_note_edit` calls, and `possible_duplicates` — existing notes it closely resembles (flagged and linked, never blocked); consider merging into one of those. Failures: `grant-denied` (a domain you cannot write), `validation-failed` (unknown domain), `parse-failed`.',
+        input_schema: obj(
+          {
+            title: { type: 'string', minLength: 1, description: 'Note title.' },
+            markdown: { type: 'string', description: 'Full Markdown body of the note.' },
+            domains: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 }, description: 'Knowledge Domain slugs to place the note in; you need a write grant for every one.' },
+            tags: STRING_ARRAY('Optional tags.'),
+            review: obj(
+              {
+                role: { type: 'string', description: 'Review role slug to target (e.g. `scientist`).' },
+                username: { type: 'string', description: 'Specific user handle to target.' },
+                prompt: { type: 'string', description: 'What the reviewer should check.' },
+              },
+            ),
+          },
+          ['title', 'markdown', 'domains'],
+        ),
+        handler: async (a, p, ctx) => {
+          const n = await d.knowledge.createNote({ title: a.title, markdown: a.markdown, domains: a.domains, tags: a.tags, by: p, session_id: ctx.session_id ?? p.session_id, step_id: ctx.step_id ?? p.actor.step_id ?? null });
+          const review = a.review ?? {};
+          const prompt = review.prompt ?? 'New AI-created knowledge note: check it for accuracy, placement and overlap with existing notes.';
+          // The note exists by now: a bad review target falls back to an untargeted request rather than failing (a retry would duplicate the note).
+          let review_warning: string | undefined;
+          let req;
+          try {
+            req = await d.content.tagNeedInput({ uid: n.uid, role: review.role ?? null, username: review.username ?? null, prompt, by: p });
+          } catch (e) {
+            if (!(e instanceof BreadboardError && e.code === 'validation-failed') || (!review.role && !review.username)) throw e;
+            review_warning = `${e.message}; the review request is untargeted instead`;
+            req = await d.content.tagNeedInput({ uid: n.uid, role: null, username: null, prompt, by: p });
+          }
+          return { uid: n.uid, base_revision: n.revision_id, domains: a.domains, review_request_id: req.request_id, possible_duplicates: n.possible_duplicates, ...(review_warning ? { review_warning } : {}) };
         },
       },
 

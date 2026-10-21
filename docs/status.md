@@ -195,6 +195,30 @@ Deployed to the instance behind a load balancer as server `20ea21f` (a metadata-
 
 Not yet exercised: a subagent calling the primitives in a circuit run.
 
+## Decisions made 2026-10-21: AI note creation
+
+Prompted by subagents being able to edit Knowledge Notes but not add one: `KnowledgeService.createNote` already had AI rules, but only `POST /knowledge` called it. Recorded in spec [07](../specs/07-knowledge.md) §3, §5.3 and §5.5, [05](../specs/05-subagents.md) §2.4, [06](../specs/06-toolbox.md) §3 and [11](../specs/11-api-mcp.md) §3–4.
+
+1. **`create_note` primitive.**
+   - **Grant.** Scope `knowledge:write`. It is added to the default primitives alongside `propose_note_edit` when `knowledge.write` is non-empty; explicit lists must name it.
+   - **Placement.** An AI caller needs a write grant for every listed domain (`canWriteAllDomains`). Editing still needs only one.
+   - **Result.** It returns `base_revision`, ready for `propose_note_edit`.
+   - **SDKs.** `ctx.createNote` (TS) and `create_note` (Python).
+2. **Live, then reviewed.**
+   - The note is live at once and tagged `origin:subagent` / `origin:code-step`.
+   - Creation opens a need-input request so the note reaches the Review queue, optionally targeted with `review`.
+   - An invalid target falls back to an untargeted request with `review_warning` instead of failing, because a retry would create the note again.
+   - These requests count toward the need-input health metric, as gate requests already do.
+3. **Dedup: flag, link, never block** (the task rule).
+   - A semantic search runs over the note's domains with a cosine threshold of `NOTE_DUP_THRESHOLD` (0.85). Matches get `possible-dup-of:<uid>` tags and `references` edges, and are returned as `possible_duplicates`.
+   - New notes are embedded after a debounce of about 3 s, so a duplicate created within seconds of its original is not caught.
+4. **Note lineage.**
+   - The knowledge service now takes the edge store.
+   - From a session step, `createNote` cuts a `step-completion` revision and emits `produces`.
+   - An applied `proposeEdit` that changes blocks emits `updates`. AI note work now appears in session artifacts and lineage.
+
+The seed knowledge-editor and its circuit prompt use `create_note`. Existing config repos need `create_note` added to any explicit `primitives` list by hand, after the server is upgraded (an older server silently drops a primitive it does not know). Not yet deployed or exercised in a live circuit run.
+
 ## Next steps (in priority order)
 
 0. **Roll out reasoning, caching and Strands Harness** (decisions of 2026-10-15, above). Build the Python sandbox image with `strands-harness==0.3.1`, then run a `spawn-harness` step with `harness: strands-harness` in Docker on Bedrock and a designer chat of three or more messages, checking cache reads and reasoning in the transcript. Upgrades apply migration 0007 at startup; seed changes (`spawn-harness` manifest and sources) reach only new config repos, so existing instances need the tool updated in their config repo. Then compare `strands` and `strands-harness` (and effort settings) on the same fixtures.
