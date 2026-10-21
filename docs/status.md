@@ -156,6 +156,10 @@ Prompted by an internal compliance finding against the instance behind a load ba
 
 Deployed to the instance behind a load balancer as server `8cb5f5b` (then `7e95830`, infrastructure only): the host restarted once (same instance, private IP and config repo), the grant ran, the master password is refused (`PAM authentication failed`), the server and the load balancer target are healthy, and phase 2 modified the database in place (same resource id, no RDS events).
 
+## Fixed 2026-10-21: long MCP tool calls lost their result
+
+The MCP transport's idle sweep closes a connection 30 minutes after its last request. A tool call's request is the last one while the call runs, so a call of about 30 minutes (an Athena query at Athena's own DML timeout) had its connection closed under it: the tool finished, and the result was lost. The MCP server now reports each tool call's start and end to the transport (`on_call`). A connection with a call in flight is never idle, and its idle clock restarts when the call returns. A new transport test covers this (it hangs on the old code).
+
 ## Next steps (in priority order)
 
 0. **Roll out reasoning, caching and Strands Harness** (decisions of 2026-10-15, above). Build the Python sandbox image with `strands-harness==0.3.1`, then run a `spawn-harness` step with `harness: strands-harness` in Docker on Bedrock and a designer chat of three or more messages, checking cache reads and reasoning in the transcript. Upgrades apply migration 0007 at startup; seed changes (`spawn-harness` manifest and sources) reach only new config repos, so existing instances need the tool updated in their config repo. Then compare `strands` and `strands-harness` (and effort settings) on the same fixtures.

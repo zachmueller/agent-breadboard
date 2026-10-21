@@ -23,6 +23,8 @@ export interface BreadboardMcpServerOptions {
   session: () => Promise<string>;
   /** Record `tool-call` / `tool-result` events on the session (default: true). */
   record_events?: boolean;
+  /** Called as a tool call starts; the returned function runs when it settles (the transport's idle tracking). */
+  on_call?: () => () => void;
 }
 
 type McpServices = Pick<Services, 'primitives' | 'toolbox' | 'sessions' | 'log'>;
@@ -75,8 +77,15 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
   });
 
   mcp.server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToolResult> => {
-    const name = req.params.name;
-    const args = req.params.arguments ?? {};
+    const settled = opts.on_call?.();
+    try {
+      return await callTool(req.params.name, req.params.arguments ?? {});
+    } finally {
+      settled?.();
+    }
+  });
+
+  async function callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
     const idx = callIndex++;
     const { session_id, principal } = await scoped();
     if (record) await safeAppend(services, session_id, 'tool-call', { name, input: args, call_index: idx, via: 'mcp', external: opts.external, actor: principal.actor });
@@ -107,7 +116,7 @@ export function createBreadboardMcpServer(services: McpServices, principal: Prin
       if (e.code === 'internal') services.log.warn({ err, tool: name }, 'mcp tool call failed');
       return { isError: true, content: [{ type: 'text', text: JSON.stringify(e) }] };
     }
-  });
+  }
 
   mcp.registerResource(
     'node',

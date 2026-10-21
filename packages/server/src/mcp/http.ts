@@ -28,6 +28,8 @@ interface McpConnection {
   session: Promise<string> | null;
   actor_key: string;
   last_seen: number;
+  /** Tool calls still running: the connection is not idle while one is, however long it takes. */
+  inflight: number;
   closed: boolean;
   /** The session's state_detail as created; closing adds `closed_reason` to it. */
   state_detail: Record<string, unknown>;
@@ -67,7 +69,7 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
 
   const sweep = setInterval(() => {
     const cutoff = Date.now() - idleMs;
-    for (const [id, c] of connections) if (c.last_seen < cutoff) void close(id, 'idle');
+    for (const [id, c] of connections) if (c.inflight === 0 && c.last_seen < cutoff) void close(id, 'idle');
   }, opts.sweep_interval_ms ?? 60_000);
   sweep.unref();
 
@@ -116,11 +118,21 @@ export async function register(app: FastifyInstance, services: HttpServices, opt
       });
       return c.session;
     };
-    const server = createBreadboardMcpServer(services, principal, { external: true, session: open });
+    // A tool call can outlast the idle timeout (a 30-minute Athena query); its request is the connection's last.
+    const onCall = (): (() => void) => {
+      const c: McpConnection | null = conn;
+      if (!c) return () => undefined;
+      c.inflight++;
+      return () => {
+        c.inflight--;
+        c.last_seen = Date.now();
+      };
+    };
+    const server = createBreadboardMcpServer(services, principal, { external: true, session: open, on_call: onCall });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
-        conn = { transport, server, session: null, actor_key: actorKey(principal), last_seen: Date.now(), closed: false, state_detail: stateDetail };
+        conn = { transport, server, session: null, actor_key: actorKey(principal), last_seen: Date.now(), inflight: 0, closed: false, state_detail: stateDetail };
         connections.set(id, conn);
         services.log.info({ mcp_session: id, actor: principal.actor }, 'MCP connection opened');
       },

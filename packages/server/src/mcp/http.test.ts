@@ -327,3 +327,38 @@ describe('graceful shutdown', () => {
     await client.close().catch(() => undefined);
   }, 15000);
 });
+
+describe('idle sweep', () => {
+  it('never closes a connection while a tool call runs; it goes idle once the call settles', async () => {
+    const store = memorySessions(f.team_id);
+    const slow: any = {
+      externalTools: (services.toolbox as any).externalTools,
+      invoke: async (inv: any) => {
+        await new Promise((r) => setTimeout(r, 600));
+        return { output: { echoed: inv.input }, logs: [], execution_key: 'k', replayed: false, cost_units: 0, duration_ms: 600 };
+      },
+    };
+    const live = Fastify();
+    live.decorateRequest('principal', null);
+    live.addHook('preHandler', async (req) => {
+      (req as any).principal = f.memberPrincipal;
+    });
+    await register(live, { ...services, toolbox: slow, sessions: store } as unknown as Services, { idle_timeout_ms: 200, sweep_interval_ms: 20 });
+    await live.listen({ port: 0, host: '127.0.0.1' });
+    try {
+      const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(live.server.address() as { port: number }).port}${MCP_PATH}`), { requestInit: { headers: { Authorization: 'Bearer x' } } });
+      const client = new Client({ name: 'slow-probe', version: '1' });
+      await client.connect(transport);
+      const res = await client.callTool({ name: 'echo', arguments: { msg: 'slow' } });
+      expect(res.isError).toBeFalsy();
+      expect(JSON.parse((res.content as any)[0].text)).toEqual({ echoed: { msg: 'slow' } });
+      const session = () => [...store.rows.values()].find((s) => s.kind === 'conversation');
+      expect(session()?.state).toBe('running');
+      await new Promise((r) => setTimeout(r, 400));
+      expect(session()).toMatchObject({ state: 'completed', state_detail: { closed_reason: 'idle' } });
+      await client.close().catch(() => undefined);
+    } finally {
+      await live.close();
+    }
+  }, 15000);
+});
