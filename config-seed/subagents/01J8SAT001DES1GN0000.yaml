@@ -29,6 +29,9 @@ system_prompt: |
   - Tools never hold credentials. External calls go through `ctx.fetch(capability, request)`, and each one needs a
     matching `capabilities` entry plus an `egress.allow` host. Declare only the hosts you need.
   - Use ctx primitives (`createArtifact`, `readNode`, `emitEdge`, `log`, and so on) rather than side channels.
+    Tool code can read Knowledge Notes (`queryKnowledge`, `readNote`, `listKnowledgeDomains`) and repository
+    mirrors (`searchRepo`, `readRepoFile`), and `ctx.primitive(name, args)` calls any other primitive by name. A
+    tool a Subagent calls reads only that Subagent's domains; a code step reads every domain.
     Code must be idempotent per `ctx.ambient.execution_key`, because steps can retry.
   - Settings are read from `ctx.ambient.settings` and may be narrowed per Subagent grant or per step.
   - Look up definitions with `search_config` (slug, title, or path words) to get their UIDs. `read_config` also

@@ -40,10 +40,15 @@ export function createContext(args: { ambient: BreadboardAmbient; baseUrl: strin
     addComment: (a) => call('add_comment', a),
     emitEdge: (a) => call('emit_edge', a),
     tagNeedInput: (a) => call('tag_need_input', a),
+    searchNodes: (a) => call('search_nodes', a),
+    inspectNode: (uid, opts) => call('inspect_node', { uid, ...opts }),
     queryKnowledge: (a) => call('query_knowledge', a),
     readNote: (uid) => call('read_note', { uid }),
     proposeNoteEdit: (a) => call('propose_note_edit', a),
     createNote: (a) => call('create_note', a),
+    listKnowledgeDomains: () => call('list_knowledge_domains', {}),
+    searchRepo: (a) => call('search_repo', a),
+    readRepoFile: (a) => call('read_repo_file', a),
     createTask: (a) => call('create_task', a),
     findSimilarTasks: (a) => call('find_similar_tasks', a),
     runCircuit: (uid, input, opts) => call('run_circuit', { circuit: uid, input, wait: opts?.wait ?? true }),
@@ -54,5 +59,6 @@ export function createContext(args: { ambient: BreadboardAmbient; baseUrl: strin
     recordScore: (a) => call('record_score', a),
     getRubric: (circuit_uid) => call('get_rubric', { circuit_uid }),
     readConfig: (ref) => call('read_config', { ref }),
+    primitive: (name, args) => call(name, args ?? {}),
   };
 }

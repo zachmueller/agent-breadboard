@@ -39,6 +39,13 @@ export async function handler(input: { n: number; mode?: string; url?: string },
     return { exit: 'done', output: { n: res.status } };
   }
   if (input.mode === 'settings') return { exit: 'done', output: { n: input.n, settings: ctx.ambient.settings } };
+  if (input.mode === 'reads') {
+    const note = await ctx.readNote('NOTE0000000000000001');
+    const { domains } = await ctx.listKnowledgeDomains();
+    const repo = await ctx.searchRepo({ pattern: 'todo', paths: ['*.md'] });
+    const nodes = await ctx.primitive('search_nodes', { q: 'runbook' });
+    return { exit: 'done', output: { n: input.n, note: note.markdown, domains, repo, nodes } };
+  }
   if (input.mode === 'raw') {
     // Ignores the proxy variables and opens a TCP socket straight at the target.
     const net = await import('node:net');
@@ -62,10 +69,31 @@ export async function handler(input: { n: number; mode?: string; url?: string },
 
 const PY_HANDLER = `
 def handler(input, ctx):
+    if input.get("mode") == "reads":
+        note = ctx.read_note("NOTE0000000000000001")
+        domains = ctx.list_knowledge_domains()["domains"]
+        repo = ctx.search_repo(pattern="todo", paths=["*.md"])
+        nodes = ctx.primitive("search_nodes", {"q": "runbook"})
+        return {"exit": "done", "output": {"n": input["n"], "note": note["markdown"], "domains": domains, "repo": repo, "nodes": nodes}}
     ctx.log("info", "hi from python")
     ref = ctx.create_artifact(title="from py", body="hello")
     return {"exit": "done", "output": {"n": input["n"] * 2, "ref": ref}}
 `;
+
+/** Canned API replies for the read primitives the `reads` handlers call. */
+const READ_REPLIES: Record<string, unknown> = {
+  read_note: { uid: 'NOTE0000000000000001', title: 'Runbook', markdown: '# Runbook', base_revision: 2, domains: ['ops'], read_only: false, tags: [] },
+  list_knowledge_domains: { domains: [{ slug: 'ops', description: 'Operations', note_count: 1 }] },
+  search_repo: { repo: 'handbook', commit: 'abc1234', files: [] },
+  search_nodes: { nodes: [], next_cursor: null },
+};
+const READS_OUTPUT = { note: '# Runbook', domains: [{ slug: 'ops', description: 'Operations', note_count: 1 }], repo: READ_REPLIES.search_repo, nodes: READ_REPLIES.search_nodes };
+const READS_CALLS = [
+  { name: 'read_note', body: { uid: 'NOTE0000000000000001' } },
+  { name: 'list_knowledge_domains', body: {} },
+  { name: 'search_repo', body: { pattern: 'todo', paths: ['*.md'] } },
+  { name: 'search_nodes', body: { q: 'runbook' } },
+];
 
 const INPUT_SCHEMA = { type: 'object', required: ['n'], properties: { n: { type: 'number' }, mode: { type: 'string' }, url: { type: 'string' } } };
 
@@ -141,9 +169,9 @@ beforeAll(async () => {
       const m = /^\/api\/v1\/primitives\/([a-z_]+)$/.exec(req.url ?? '');
       if (!m || req.method !== 'POST') return res.writeHead(404).end();
       primitiveCalls.push({ name: m[1]!, auth: req.headers.authorization, execution: req.headers['x-breadboard-execution'] as string, body: JSON.parse(body || '{}') });
-      if (m[1] === 'create_artifact') {
-        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ uid: 'ARTFCT00000000000001', revision_id: 1 }));
-      } else res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { code: 'validation-failed', message: 'nope' } }));
+      const reply = READ_REPLIES[m[1]!] ?? (m[1] === 'create_artifact' ? { uid: 'ARTFCT00000000000001', revision_id: 1 } : undefined);
+      if (reply) res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(reply));
+      else res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { code: 'validation-failed', message: 'nope' } }));
     });
   });
   await new Promise<void>((r) => api.listen(0, '127.0.0.1', r));
@@ -259,6 +287,14 @@ describe(`ToolboxImpl.invoke (${TEST_RUNNER} runner)`, () => {
     expect(r.output).toEqual({ exit: 'done', output: { n: 10, ref: { uid: 'ARTFCT00000000000001', revision_id: 1 } } });
     expect(r.logs.map((l) => l.message)).toContain('hi from python');
     expect(primitiveCalls.some((c) => c.execution === r.execution_key && c.body.title === 'from py')).toBe(true);
+  });
+
+  it('tool code reads knowledge, repo mirrors and any other primitive (`ctx.primitive`) in both languages', async () => {
+    for (const tool of hasPython ? [tsTool, pyTool] : [tsTool]) {
+      const r = await toolbox.invoke({ tool_uid: tool.uid, input: { n: 1, mode: 'reads' }, principal: f.adminPrincipal, ambient: { invocation: 'code-step' } });
+      expect(r.output).toEqual({ exit: 'done', output: { n: 1, ...READS_OUTPUT } });
+      expect(primitiveCalls.filter((c) => c.execution === r.execution_key).map(({ name, body }) => ({ name, body }))).toEqual(READS_CALLS);
+    }
   });
 
   it('replays a completed execution key from the journal without re-running', async () => {

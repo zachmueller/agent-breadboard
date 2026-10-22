@@ -81,6 +81,28 @@ export interface BreadboardContext {
   addComment(args: { target: string; body: string; anchor?: { revision?: number; quote: string; context?: string } }): Promise<{ uid: string }>;
   emitEdge(args: { type: 'derived-from' | 'attached-to' | 'blocks' | 'depends-on' | 'references'; src: string; dst: string; dst_revision?: number }): Promise<{ edge_id: number }>;
   tagNeedInput(args: { uid: string; role?: string; username?: string; prompt?: string }): Promise<{ request_id: string }>;
+  /** Find nodes by type, text, tags, status, domain…; returns compact nodes (no bodies) and `next_cursor`. */
+  searchNodes(args: {
+    type?: 'task' | 'artifact' | 'comment' | 'knowledge';
+    q?: string;
+    tag?: string[];
+    scope?: 'team' | 'session';
+    status?: string[];
+    priority?: string[];
+    origin_kind?: string[];
+    circuit?: string;
+    need_input_open?: boolean;
+    need_input_role?: string;
+    need_input_username?: string;
+    domain?: string[];
+    session_id?: string;
+    created_after?: string;
+    created_before?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<{ nodes: unknown[]; next_cursor: string | null }>;
+  /** A node's revisions, edges, comments and lineage (not its body; use `readNode`). */
+  inspectNode(uid: string, opts?: { lineage_depth?: number; revisions_limit?: number }): Promise<unknown>;
 
   // Knowledge primitives
   queryKnowledge(args: { q: string; mode?: 'text' | 'semantic' | 'hybrid'; domains?: string[]; limit?: number }): Promise<Array<{ uid: string; title: string; snippet: string; score: number; domains: string[] }>>;
@@ -94,6 +116,28 @@ export interface BreadboardContext {
     possible_duplicates: Array<{ uid: string; title: string; score: number }>;
     review_warning?: string;
   }>;
+  /** The Knowledge Domains the caller can read. */
+  listKnowledgeDomains(): Promise<{ domains: Array<{ slug: string; description: string; note_count: number }> }>;
+
+  // Repository mirrors ([06] §7.1): every result cites the commit it was read at
+  /** `repo` may be omitted when exactly one mirror is readable. */
+  searchRepo(args: {
+    repo?: string;
+    pattern: string;
+    regex?: boolean;
+    ignore_case?: boolean;
+    word?: boolean;
+    paths?: string[];
+    exclude?: string[];
+    context?: number;
+    max_results?: number;
+    max_per_file?: number;
+    files_only?: boolean;
+    commit?: string;
+    max_chars?: number;
+  }): Promise<unknown>;
+  /** A file, line range or directory listing; `path` empty lists the root. */
+  readRepoFile(args: { repo?: string; path?: string; commit?: string; start_line?: number; end_line?: number; raw?: boolean; max_chars?: number }): Promise<unknown>;
 
   // Intake primitives
   createTask(args: { title: string; body: string; priority?: 'p0' | 'p1' | 'p2' | 'p3'; target_circuit?: string; draft?: boolean; tags?: string[] }): Promise<{ uid: string; status: string }>;
@@ -119,6 +163,12 @@ export interface BreadboardContext {
   // Config
   /** `ref`: a UID, a slug (or `<kind>:<slug>`), `presets` / `tenets` / `breadboard`, or a repo-relative path. */
   readConfig(ref: string): Promise<unknown>;
+
+  /**
+   * Call any Breadboard primitive by its catalog name (`search_config`, `list_sessions`, `resolve_need_input`, …) with
+   * its MCP argument shape. The server enforces grants and token scopes exactly as for the typed methods above.
+   */
+  primitive<T = unknown>(name: string, args?: Record<string, unknown>): Promise<T>;
 }
 
 export interface ToolHandler<I = any, O = any> {

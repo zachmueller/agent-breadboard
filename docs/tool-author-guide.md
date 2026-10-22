@@ -17,12 +17,13 @@ The handler receives validated `input` (per the manifest's `input` schema, defau
 
 ## The context (`ctx`)
 
-Every method is an authenticated call back into the Breadboard API under the *caller's* grants — a tool cannot read a Knowledge Domain its calling Subagent can't.
+Every method is an authenticated call back into the Breadboard API under the *caller's* grants — a tool cannot read a Knowledge Domain its calling Subagent can't. A code step has no calling Subagent, so it reads every Knowledge Domain and repository mirror (and only its own session family's session-scoped content).
 
 | Area | Methods |
 |---|---|
-| Content | `createArtifact`, `updateArtifact`, `readNode`, `addComment`, `emitEdge` (derived-from, attached-to, blocks, depends-on, references — never produces/updates), `tagNeedInput` |
-| Knowledge | `queryKnowledge`, `readNote` (returns `base_revision`), `proposeNoteEdit` (the reconcile path), `createNote` (a new Note in writable domains; queued for review, returns `base_revision` and `possible_duplicates`) |
+| Content | `createArtifact`, `updateArtifact`, `readNode`, `addComment`, `emitEdge` (derived-from, attached-to, blocks, depends-on, references — never produces/updates), `tagNeedInput`, `searchNodes`, `inspectNode` |
+| Knowledge | `queryKnowledge`, `readNote` (returns `base_revision`), `listKnowledgeDomains`, `proposeNoteEdit` (the reconcile path), `createNote` (a new Note in writable domains; queued for review, returns `base_revision` and `possible_duplicates`) |
+| Repositories | `searchRepo`, `readRepoFile` (server-side mirrors; every result cites its commit) |
 | Intake | `createTask`, `findSimilarTasks` |
 | Sessions | `runCircuit` (child Session, needs an execute grant), `getSessionSummary` |
 | Composition | `runTool` (nested sandbox; depth-capped) |
@@ -31,6 +32,7 @@ Every method is an authenticated call back into the Breadboard API under the *ca
 | Evals | `recordScore`, `getRubric` |
 | Config | `readConfig` |
 | Logging | `ctx.log(level, message, data)` → the Session code log |
+| Anything else | `primitive(name, args)` calls any primitive by its catalog name with its MCP argument shape (`search_config`, `list_sessions`, `resolve_need_input`, …; [11](../specs/11-api-mcp.md) §4 lists them) |
 
 Ambient context: `ctx.ambient` has `session_id`, `step_id`, `attempt`, `execution_key`, `tool_uid`, `budget_remaining`, `task`, `settings` (merged manifest defaults ← grant settings, including hidden ones), `invocation`.
 
@@ -64,6 +66,8 @@ def handler(input, ctx):
     ref = ctx.create_artifact(title="Related notes", body="\n".join(f"- [[{h['uid']}|{h['title']}]]" for h in hits), tags=["intermediate"])
     return {"exit": "done", "output": {"notes": ref}}
 ```
+
+Python methods are the snake_case twins of the table above (`read_note`, `list_knowledge_domains`, `search_repo`, `read_repo_file`, …), with keyword arguments; `ctx.primitive("search_config", {"q": "athena"})` reaches the rest.
 
 ## Egress and credentials
 

@@ -79,6 +79,12 @@ class BreadboardContext:
     def tag_need_input(self, **a):
         return self._call("tag_need_input", a)
 
+    def search_nodes(self, **a):
+        return self._call("search_nodes", a)
+
+    def inspect_node(self, uid, **a):
+        return self._call("inspect_node", {"uid": uid, **a})
+
     # -- knowledge -------------------------------------------------------
     def query_knowledge(self, **a):
         return self._call("query_knowledge", a)
@@ -91,6 +97,16 @@ class BreadboardContext:
 
     def create_note(self, **a):
         return self._call("create_note", a)
+
+    def list_knowledge_domains(self):
+        return self._call("list_knowledge_domains", {})
+
+    # -- repository mirrors ----------------------------------------------
+    def search_repo(self, **a):
+        return self._call("search_repo", a)
+
+    def read_repo_file(self, **a):
+        return self._call("read_repo_file", a)
 
     # -- intake ----------------------------------------------------------
     def create_task(self, **a):
@@ -135,6 +151,11 @@ class BreadboardContext:
 
     def read_config(self, ref):
         return self._call("read_config", {"ref": ref})
+
+    # -- any primitive ---------------------------------------------------
+    def primitive(self, name, args=None):
+        """Call any Breadboard primitive by its catalog name; the server enforces grants and scopes."""
+        return self._call(name, args or {})
 
 
 def _load_module(workdir, entrypoint):

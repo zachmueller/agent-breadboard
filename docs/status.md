@@ -25,9 +25,9 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 80 files, 631 passed, 5 skipped (Docker-only, plus the Strands adapter checks without `PYTHON_BIN`); 2026-10-15 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 84 files, 691 passed, 5 skipped (Docker-only, plus the Strands adapter checks without `PYTHON_BIN`); 2026-10-22 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 46 files, 393 passed, 1 failed (2026-10-15). The failure, `src/mcp/http.test.ts` "MCP conversations left by an earlier process", is a race that predates the reasoning/caching work (it fails with it stashed too): the test asserts before the endpoint's startup cleanup finishes on the slower database |
-| Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 19 of 19 |
+| Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 20 of 20 (2026-10-22) |
 | CDK template | `cd deploy/aws && npm test` | 29 passed |
 | Typecheck / lint | `npm run typecheck`, `npm run lint` | clean; 4 pre-existing lint warnings (2026-10-10) |
 
@@ -226,6 +226,22 @@ Deployed to the instance behind a load balancer as server `2df98be`. It was a me
 Not yet exercised:
 - a subagent calling `create_note` in a live circuit run (the instance's knowledge-editor still needs `create_note` in its config repo);
 - the dedup threshold against real embeddings.
+
+## Decisions made 2026-10-22: tool code reaches the whole primitive catalog
+
+Prompted by a circuit-design session that assumed code tools could not read Knowledge Notes. They could: `ctx.readNote`, `readNode` and `queryKnowledge` existed, and the server already lets tool code call every primitive. What was missing was SDK surface for the rest of the catalog, and a designer prompt that mentioned the knowledge reads. Recorded in spec [06](../specs/06-toolbox.md) §7 and the [tool author guide](tool-author-guide.md).
+
+1. **`ctx.primitive(name, args)`** (TS and Python) calls any primitive by its catalog name, with the server enforcing grants and scopes as for the typed methods.
+2. **Typed read methods:**
+   - `listKnowledgeDomains` for knowledge;
+   - `searchRepo` and `readRepoFile` for repository mirrors;
+   - `searchNodes` and `inspectNode` for content.
+   Python has the snake_case twins.
+3. **Grants unchanged.** A tool a subagent calls reads only that subagent's domains and mirrors. A code step has no subagent, so it runs grant-less within its session family and reads every domain and mirror.
+
+The methods ship in the sandbox images, not the server, so an instance needs new `sandbox-ts` / `sandbox-py` images. The seed tool-designer prompt names the knowledge reads and `ctx.primitive`; existing config repos need that edit by proposal.
+
+Out of scope: calling onboarded MCP server tools from tool code.
 
 ## Next steps (in priority order)
 

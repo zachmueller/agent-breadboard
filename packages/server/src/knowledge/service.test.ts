@@ -106,6 +106,14 @@ describe('KnowledgeService', () => {
     expect(res).toMatchObject({ applied: true, had_concurrent_edits: false, blocks_changed: 0, new_head_revision: base.base_revision });
   });
 
+  it('tool code reads notes: a code step reads every domain; a tool a subagent calls reads only its domains', async () => {
+    const secret = await kit.knowledge.createNote({ title: 'Secret', markdown: 'classified material here', domains: ['secret'], by: kit.f.memberPrincipal });
+    const sub = aiPrincipal(kit.f, { read: ['ops'] });
+    const codeStep = { ...sub, actor: { kind: 'code-step' as const, id: 'TOOL0000000000000001', session_id: sub.session_id! }, grants: null };
+    expect((await kit.knowledge.readNote(secret.uid, codeStep)).markdown).toContain('classified');
+    expect(await code(kit.knowledge.readNote(secret.uid, { ...sub, execution_key: 'S:step:1:0' }))).toBe('grant-denied');
+  });
+
   it('typed failures: base-revision-too-old, read-only-source, grant-denied, wipeout-detected, parse/validation', async () => {
     const ai = aiPrincipal(kit.f, { read: ['ops'], write: ['ops'] });
     const node = await kit.knowledge.createNote({ title: 'P', markdown: NOTE, domains: ['ops'], by: kit.f.memberPrincipal });
