@@ -243,6 +243,13 @@ The methods ship in the sandbox images, not the server, so an instance needs new
 
 Out of scope: calling onboarded MCP server tools from tool code.
 
+Deployed to the instance behind a load balancer as sandbox images `9bf51f6`, with the server unchanged. The deploy changed only the two `SANDBOX_IMAGE_*` lines of `deploy.env`: same host, health ok, every warm container on the new images. The instance's tool-designer prompt was updated by proposal. A temporary externally exposed tool exercised these methods in a Docker sandbox and was then removed:
+- `listKnowledgeDomains`, then `queryKnowledge` → `readNote` and `readNode`;
+- `searchRepo` and `readRepoFile` on a mirror;
+- `ctx.primitive` for `search_nodes` and `search_config`.
+
+Not yet exercised: a code step reading a note in a live circuit run (covered by unit tests only).
+
 ## Next steps (in priority order)
 
 0. **Roll out reasoning, caching and Strands Harness** (decisions of 2026-10-15, above). Build the Python sandbox image with `strands-harness==0.3.1`, then run a `spawn-harness` step with `harness: strands-harness` in Docker on Bedrock and a designer chat of three or more messages, checking cache reads and reasoning in the transcript. Upgrades apply migration 0007 at startup; seed changes (`spawn-harness` manifest and sources) reach only new config repos, so existing instances need the tool updated in their config repo. Then compare `strands` and `strands-harness` (and effort settings) on the same fixtures.
