@@ -59,7 +59,7 @@ All inputs are CDK context: `-c key=value` on the command line, or a `context` b
 | `dbMultiAz` | `false` | |
 | `dbBackupRetentionDays` | `14` | |
 | `dbDeletionProtection` | `true` | |
-| `dbMasterPassword` | `true` | Keep the generated master password in the stack. Must be `true` when the database is created; set `false` once the master user is IAM-only (see Database authentication). Applied without touching the host or replacing the database. |
+| `dbMasterPassword` | `true` | Keep the generated master password in the stack. Must be `true` when the database is created; set `false` once the master user is IAM-only (see Database authentication), which also sets its authentication type to `iam-db-auth`. Applied without touching the host or replacing the database. |
 | `enableS3Objects` | `true` | When false, blobs go to the host filesystem under `/var/breadboard`. |
 | `tags` | none | Extra tags, e.g. `Team=research,CostCenter=1234`. `Project` and `Breadboard` are always set. |
 
@@ -87,10 +87,11 @@ auth) turn the password off once:
    `breadboard-db-grant-iam` signs in with the master secret (read with the instance role, kept off command lines) inside
    the server image, runs the grant, and lists every login role as `iam-only`, `superuser` or `PASSWORD`. Until it has
    run, the server cannot sign in: it logs `RDS IAM authentication failed for database user breadboard` and restarts.
-2. Deploy with `-c dbMasterPassword=false` (plus the usual `-c` set). The password leaves the template and the instance
-   role loses read access to the secret; the host is not touched (the container is recreated once). Preview it with
-   `npx cdk deploy … --no-execute` and check the change set: the DB instance is modified (`MasterUserPassword` only),
-   not replaced.
+2. Deploy with `-c dbMasterPassword=false` (plus the usual `-c` set). The password leaves the template, the instance
+   role loses read access to the secret, and the master user's authentication type becomes `iam-db-auth`. RDS cannot
+   see the `rds_iam` grant, so without that setting it still counts the master user as a password user. The host is
+   not touched (the container is recreated once). Preview it with `npx cdk deploy … --no-execute` and check the change
+   set: the DB instance is modified in place (`MasterUserPassword` and `MasterUserAuthenticationType`), not replaced.
 3. Remove the password from the secret, keeping the user name the template reads (the value stays off command lines):
    ```bash
    umask 077; f=$(mktemp)

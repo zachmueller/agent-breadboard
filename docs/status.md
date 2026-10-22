@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-21.
+**As of:** 2026-10-22.
 **Branch:** `main`; the `cdk-aws-deploy` work was merged on 2026-10-10. The verification pass and its follow-ups start at `467a8b1` (`git log 467a8b1..HEAD`).
 **Read first when resuming:** this file, then the checklist at the end of [verification-plan.md](verification-plan.md).
 
@@ -155,6 +155,8 @@ Prompted by an internal compliance finding against the instance behind a load ba
 4. **A user data change restarts the reference host; it does not replace it.** The root volume is EBS and the instance's logical id carries no user-data hash, so CloudFormation stops and starts the same instance. Earlier notes here and in the README said otherwise.
 
 Deployed to the instance behind a load balancer as server `8cb5f5b` (then `7e95830`, infrastructure only): the host restarted once (same instance, private IP and config repo), the grant ran, the master password is refused (`PAM authentication failed`), the server and the load balancer target are healthy, and phase 2 modified the database in place (same resource id, no RDS events).
+
+5. **RDS records the master user as IAM-only too (2026-10-22).** The finding persisted after the grant: RDS has its own `MasterUserAuthenticationType` (`password` or `iam-db-auth`) and cannot see `rds_iam` membership, so it still counted the master user as a password user. `dbMasterPassword=false` now also sets the type to `iam-db-auth`. The change set modified only the DB instance (`Replacement: False`, `RequiresRecreation: Never`); it applied in under two minutes with no interruption, the same instance, and the server signing in with tokens throughout. `describe-db-instances` does not return the type, so CloudTrail's `ModifyDBInstance` request is the place to confirm it.
 
 ## Fixed 2026-10-21: long MCP tool calls lost their result
 

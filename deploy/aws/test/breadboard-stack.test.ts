@@ -348,12 +348,16 @@ describe('BreadboardStack', () => {
     const dbId = logicalId(t, 'AWS::RDS::DBInstance', {});
     const dbProps = (x: Template) => x.findResources('AWS::RDS::DBInstance')[dbId]!.Properties;
     expect(dbProps(retired).MasterUserPassword).toBeUndefined();
+    // RDS records the master user as IAM-only (an in-place change); until then it counts it as a password user.
+    expect(dbProps(t).MasterUserAuthenticationType).toBeUndefined();
+    const { MasterUserAuthenticationType, ...retiredRest } = dbProps(retired);
+    expect(MasterUserAuthenticationType).toBe('iam-db-auth');
     // Every other property is unchanged. MasterUsername in particular stays the reference to the secret: CloudFormation
     // compares the template text, so even the same name as a literal requires replacing the database (verified on a
     // live stack's change set, 2026-10-20).
     const { MasterUserPassword, ...rest } = dbProps(t);
     expect(MasterUserPassword).toBeDefined();
-    expect(dbProps(retired)).toEqual(rest);
+    expect(retiredRest).toEqual(rest);
     expect(JSON.stringify(rest.MasterUsername)).toContain('{{resolve:secretsmanager:');
     // The secret stays (for the user name), but the host can no longer read it.
     expect(Object.keys(retired.findResources('AWS::SecretsManager::Secret'))).toHaveLength(4);

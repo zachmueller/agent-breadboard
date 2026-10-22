@@ -82,7 +82,8 @@ export interface BreadboardStackProps extends StackProps {
    * Keep the generated master password (`breadboard-<name>/db`) in the stack. The server always signs in with RDS IAM
    * tokens; RDS needs a password to create the instance, and `breadboard-db-grant-iam` reads it once to `GRANT rds_iam`
    * to the master user, which turns its password sign-in off. Afterwards deploy with false, which drops the password
-   * from the template and the host's read access without touching the host, then remove the password from the secret.
+   * from the template and the host's read access and sets the master user's authentication type to `iam-db-auth` (so
+   * RDS itself records it as IAM-only), without touching the host; then remove the password from the secret.
    * The secret itself stays: the instance's master user name is a reference to it, and CloudFormation replaces the
    * database when that reference changes, even to the same name. Must be true when the database is created.
    */
@@ -283,8 +284,13 @@ export class BreadboardStack extends Stack {
       publiclyAccessible: false,
     });
     // Without the password, RDS keeps the current one, which rds_iam membership has turned off. MasterUsername keeps
-    // its reference to the secret: changing it, even to the same name, replaces the database.
-    if (!p.dbMasterPassword) (db.node.defaultChild as rds.CfnDBInstance).addPropertyDeletionOverride('MasterUserPassword');
+    // its reference to the secret: changing it, even to the same name, replaces the database. The authentication type
+    // records the switch in RDS itself (rds_iam is invisible to it); it is changed in place, without interruption.
+    if (!p.dbMasterPassword) {
+      const cfnDb = db.node.defaultChild as rds.CfnDBInstance;
+      cfnDb.addPropertyDeletionOverride('MasterUserPassword');
+      cfnDb.masterUserAuthenticationType = 'iam-db-auth';
+    }
     dbSg.addIngressRule(serverSg, ec2.Port.tcp(5432), 'Postgres from the server host only');
 
     // --- Secrets ---------------------------------------------------------------
