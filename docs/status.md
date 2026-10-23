@@ -270,7 +270,7 @@ Prompted by moving work from an existing codebase into a Breadboard. To test end
 4. **Admin control:** an Admin › Users toggle (`POST /admin/users/:id/admin`) that refuses your own flag and the last active admin, invalidates cached principals, and publishes `user.admin-changed`. `POST /admin/users` no longer flips an existing user's flag. The active admins appear in the startup `admin sign-in paths` line and in `get_breadboard_overview`.
 5. **Migration 0008** turns members' existing full-access tokens into editor tokens; admins' tokens stay full.
 
-**Not deployed.** Upgrading applies 0008 at startup. After the upgrade, check `get_breadboard_overview.admins`, demote or deactivate any leftover seed admin rows, and mint a full token for the admin's own harness. A full token of a former admin stops working.
+Deployed to the instance behind a load balancer as server `bd51c99`, sandboxes unchanged. The diff changed only the `SERVER_IMAGE` line of `deploy.env`: same host, 2+2 warm sandboxes, health ok, and 0008 applied at startup. The `admin sign-in paths` line lists the active admins. Over MCP, the admin's existing unscoped token reports `access: full` and lists the three new tools. Still to do there: demote or deactivate the leftover seed admin row, and record a gate verdict over MCP on a real gated run (unit- and orchestrator-tested only). After any upgrade, check `get_breadboard_overview.admins`. A full token of a former admin stops working.
 
 ## Next steps (in priority order)
 
