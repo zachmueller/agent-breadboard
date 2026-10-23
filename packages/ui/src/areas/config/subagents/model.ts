@@ -25,6 +25,7 @@ export const PRIMITIVES: PrimitiveInfo[] = [
   { name: 'find_similar_tasks', group: 'Intake', description: 'Find similar existing Tasks (duplicate detection).' },
   { name: 'run_circuit', group: 'Sessions & circuits', description: 'Invoke a circuit with an execute grant as a sub-session.' },
   { name: 'get_session_summary', group: 'Sessions & circuits', description: 'Summarize a visible session: state, cost, steps, children.' },
+  { name: 'start_eval_run', group: 'Evals', description: 'Start an eval run of a circuit (main, a commit, or a proposal) with an execute grant.' },
   { name: 'record_score', group: 'Evals', description: "Record a rubric dimension's score (evaluator Subagents)." },
   { name: 'get_rubric', group: 'Evals', description: "Read a circuit's eval rubric." },
   { name: 'get_fixture_output', group: 'Evals', description: 'Read the output produced for a fixture in an eval run.' },

@@ -25,7 +25,7 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 84 files, 691 passed, 5 skipped (Docker-only, plus the Strands adapter checks without `PYTHON_BIN`); 2026-10-22 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 84 files, 694 passed, 5 skipped (Docker-only, plus the Strands adapter checks without `PYTHON_BIN`); 2026-10-22 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 46 files, 393 passed, 1 failed (2026-10-15). The failure, `src/mcp/http.test.ts` "MCP conversations left by an earlier process", is a race that predates the reasoning/caching work (it fails with it stashed too): the test asserts before the endpoint's startup cleanup finishes on the slower database |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 20 of 20 (2026-10-22) |
 | CDK template | `cd deploy/aws && npm test` | 29 passed |
@@ -249,6 +249,14 @@ Deployed to the instance behind a load balancer as sandbox images `9bf51f6`, wit
 - `ctx.primitive` for `search_nodes` and `search_config`.
 
 Not yet exercised: a code step reading a note in a live circuit run (covered by unit tests only).
+
+## Decisions made 2026-10-22: agents start eval runs
+
+Prompted by agents iterating on circuits from a local harness. Over MCP they could read and score eval runs but not start one, so every iteration waited on a person clicking the run launcher. Recorded in specs [04](../specs/04-evals.md) §5 and [11](../specs/11-api-mcp.md) §4.
+
+1. **`start_eval_run`** (scope `evals:write`) mirrors `POST /evals/runs`. It runs main, a `ref`, or a proposal's branch (`proposal_id`, attached to the proposal's review page). It also takes `fixture_tags` and `model_overrides`.
+2. **It returns at once by default** (`wait: false`, as REST does). A run takes minutes and can wait days at a hard gate. `read_eval_run` follows it, and the MCP `instructions` say so.
+3. **Grants unchanged.** Users and services get it with the scope, so a read-only token never lists it. A subagent needs it in `primitives` and an execute grant on the circuit, which `startRun` already enforced. Tool code reaches it through `ctx.primitive`; there is no typed SDK method, so the sandbox images are unchanged.
 
 ## Next steps (in priority order)
 

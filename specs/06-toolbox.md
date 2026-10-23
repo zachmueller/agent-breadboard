@@ -96,7 +96,7 @@ Breadboard ships with built-in tool extensions (same manifest format, maintained
 - **Knowledge primitives** — `query_knowledge` (text + RAG), `read_note`, `propose_note_edit` (the reconcile path, [07](07-knowledge.md) §5), `create_note` ([07](07-knowledge.md) §5.5).
 - **Intake primitives** — `create_task`, `find_similar_tasks` ([08](08-intake.md) §6).
 - **Session primitives** — `run_circuit`, `get_session_summary`.
-- **Eval primitives** — `record_score`, `get_rubric` ([04](04-evals.md) §5).
+- **Eval primitives** — `start_eval_run`, `record_score`, `get_rubric` ([04](04-evals.md) §5).
 - **Config-editing tools** (used by designer chat panels): `propose_config_change` (writes a branch + opens a review), `read_config`, `search_config`, `validate_config`. `read_config` takes a UID, a slug (or `<kind>:<slug>` when kinds share one), or a repo path, and a miss lists the closest definitions; `search_config` finds definitions by slug, title, UID or path and returns metadata only, so an agent can get the UID that references need ([01](01-data-model.md) §6.2).
 
 ## 4. Execution runtime

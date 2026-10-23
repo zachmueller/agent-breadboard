@@ -113,6 +113,7 @@ The evaluator LLM captures findings in a standardized, structured fashion so res
 
 - `record_score({eval_run_id, fixture_id, dimension, value, rationale})` — validated against the rubric's dimension type before persisting.
 - `get_rubric({circuit_uid})`, `get_fixture_output({eval_run_id, fixture_id})` — read-side helpers.
+- `start_eval_run({circuit, ref?, proposal_id?, fixture_tags?, model_overrides?, wait?})` — starts an eval run (§4) as `POST /evals/runs` does, so an agent iterating on a circuit runs its evals without the UI: on main, at a commit, or on a proposal's branch (attached to its review page, §7). It needs an execute grant on the circuit and returns at once unless `wait` is set; the inspection tools `read_eval_run`, `list_eval_runs` and `get_eval_analysis` follow it ([11](11-api-mcp.md) §4).
 
 The same tools back both in-Breadboard eval runs and (future) external harnesses that want to score against a Breadboard rubric.
 

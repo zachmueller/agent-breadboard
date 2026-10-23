@@ -120,7 +120,7 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 | `query_knowledge`, `read_note`, `propose_note_edit`, `create_note` | Knowledge incl. the reconcile path and AI note creation ([07](07-knowledge.md) §5) |
 | `search_repo`, `read_repo_file` | Repository mirrors: grep and read over git repositories the server mirrors, citing the commit; a subagent needs a `repos` grant ([06](06-toolbox.md) §7.1) |
 | `run_circuit`, `get_session_summary` | Session composition (grant-gated) |
-| `record_score`, `get_rubric` | Evals MCP ([04](04-evals.md) §5) |
+| `start_eval_run`, `record_score`, `get_rubric` | Evals MCP ([04](04-evals.md) §5): starting a run (mirrors `POST /evals/runs`, an execute grant on the circuit) and judge capture |
 | `propose_config_change`, `read_config`, `search_config`, `validate_config` | Designer chats / meta-operation (lookup by UID, slug, or path; `read_config` and `search_config` take an optional `commit`) |
 
 **Inspection catalog** (read-only; the deep-dive surface for a team member's local harness, and grantable to subagents like any primitive). Each tool is a thin wrapper over the service method its REST route calls, so scope, session visibility and knowledge grants are enforced identically:

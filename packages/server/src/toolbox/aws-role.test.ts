@@ -14,7 +14,7 @@ describe('defaultAwsRoleResolver', () => {
   });
 
   it('accepts role ARNs only', () => {
-    expect(ROLE_ARN.test('arn:aws:iam::123456789012:role/breadboard-carp-data')).toBe(true);
+    expect(ROLE_ARN.test('arn:aws:iam::123456789012:role/breadboard-data')).toBe(true);
     expect(ROLE_ARN.test('arn:aws:iam::123456789012:role/path/to/role')).toBe(true);
     expect(ROLE_ARN.test('arn:aws:iam::123456789012:user/alice')).toBe(false);
     expect(ROLE_ARN.test('arn:aws:iam::12345:role/r')).toBe(false);

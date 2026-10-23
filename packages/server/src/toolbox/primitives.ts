@@ -582,6 +582,25 @@ export class PrimitivesImpl implements Primitives {
 
       // ---------------- Evals ----------------
       {
+        name: 'start_eval_run',
+        scope: 'evals:write',
+        description:
+          "Start an eval run ([04] §4): execute a circuit against its active fixtures (optionally a tag subset) and score each output with its rubric. Runs main by default, or `ref`, or a proposal's branch (`proposal_id`, which also attaches the run to the proposal's review page). Each fixture runs as an `eval-run` session and spends model budget. Requires an execute grant on the circuit. Returns at once with `status: running` (unless `wait: true`); follow it with `read_eval_run`. A fixture that reaches a hard gate waits for its human reviewers, so a run can stay `running` until they record verdicts. Compare runs with `get_eval_analysis`.",
+        input_schema: obj(
+          {
+            circuit: { type: 'string', minLength: 1, description: 'Circuit UID (find it with `search_config`).' },
+            ref: { type: 'string', minLength: 1, description: 'Run the circuit at this commit hash or branch instead of main.' },
+            proposal_id: { type: 'string', minLength: 1, description: "Evaluate this proposal's head commit and attach the run to its review page." },
+            fixture_tags: STRING_ARRAY('Only fixtures carrying one of these tags (e.g. `smoke`); default all active fixtures.'),
+            model_overrides: { type: 'object', additionalProperties: { type: 'string' }, description: 'Model comparison run: preset tier → concrete model id (e.g. `{"medium": "<model id>"}`).' },
+            wait: { type: 'boolean', default: false, description: 'Block until the run finishes (default false; runs take minutes, longer at gates).' },
+          },
+          ['circuit'],
+        ),
+        handler: async (a, p) =>
+          d.evals.startRun({ circuit: a.circuit, ref: a.ref ?? null, proposal_id: a.proposal_id ?? null, fixture_tags: a.fixture_tags ?? null, model_overrides: a.model_overrides ?? null, wait: a.wait === true, by: p }),
+      },
+      {
         name: 'record_score',
         scope: 'evals:write',
         description: "Record one rubric dimension's score for a fixture in an eval run. `value` must match the dimension's declared type (see `get_rubric`); include a short rationale.",

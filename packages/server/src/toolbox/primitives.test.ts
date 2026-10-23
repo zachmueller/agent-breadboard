@@ -111,7 +111,7 @@ function build(): PrimitivesImpl {
       costIncludingChildren: () => spentUsd,
       recordTurn: (t: any) => ({ ...t, turn_id: 'trn_1', created_at: '' }),
     }),
-    evals: fake('evals', calls, { recordScore: () => undefined, getFixtureOutput: () => ({ out: 1 }) }),
+    evals: fake('evals', calls, { startRun: (i: any) => ({ eval_run_id: 'evr_1', circuit_uid: i.circuit, status: 'running' }), recordScore: () => undefined, getFixtureOutput: () => ({ out: 1 }) }),
     config: fake('config', calls, {
       definition: (ref: string, _at?: string, opts?: { lenient?: boolean }) => {
         // A path to any file under a definition resolves to the definition, as the real lookup does.
@@ -208,7 +208,7 @@ describe('primitives catalog', () => {
   });
 
   it('covers the [11] §4 MCP core catalog', () => {
-    const mcpCatalog = ['create_task', 'find_similar_tasks', 'create_artifact', 'update_artifact', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input', 'query_knowledge', 'read_note', 'propose_note_edit', 'create_note', 'run_circuit', 'get_session_summary', 'record_score', 'get_rubric', 'propose_config_change', 'read_config', 'search_config', 'validate_config', 'get_fixture_output'];
+    const mcpCatalog = ['create_task', 'find_similar_tasks', 'create_artifact', 'update_artifact', 'add_comment', 'emit_edge', 'tag_need_input', 'resolve_need_input', 'query_knowledge', 'read_note', 'propose_note_edit', 'create_note', 'run_circuit', 'get_session_summary', 'start_eval_run', 'record_score', 'get_rubric', 'propose_config_change', 'read_config', 'search_config', 'validate_config', 'get_fixture_output'];
     for (const n of mcpCatalog) expect(prims.names).toContain(n);
   });
 
@@ -342,6 +342,26 @@ describe('run_circuit', () => {
 
   it('enforces the composition depth cap', async () => {
     expect(await codeOf(prims.call('run_circuit', { circuit: CIRCUIT, input: {} }, f.memberPrincipal, { depth: 8 }))).toBe('invalid-state');
+  });
+});
+
+describe('start_eval_run', () => {
+  it('starts a background run under the caller', async () => {
+    const out = await prims.call('start_eval_run', { circuit: CIRCUIT, fixture_tags: ['smoke'], model_overrides: { medium: 'm-2' } }, f.memberPrincipal);
+    expect(out).toEqual({ eval_run_id: 'evr_1', circuit_uid: CIRCUIT, status: 'running' });
+    expect(callsTo('evals', 'startRun')[0]!.args[0]).toEqual({ circuit: CIRCUIT, ref: null, proposal_id: null, fixture_tags: ['smoke'], model_overrides: { medium: 'm-2' }, wait: false, by: f.memberPrincipal });
+  });
+
+  it('passes a proposal and wait through', async () => {
+    await prims.call('start_eval_run', { circuit: CIRCUIT, proposal_id: 'prp_1', wait: true }, f.memberPrincipal);
+    expect(callsTo('evals', 'startRun')[0]!.args[0]).toMatchObject({ proposal_id: 'prp_1', ref: null, wait: true });
+  });
+
+  it('needs the primitive grant for subagents and a non-string override is invalid', async () => {
+    const p = subagentPrincipal(f, grants({ primitives: ['get_rubric'], execute: [CIRCUIT] }));
+    expect(await codeOf(prims.call('start_eval_run', { circuit: CIRCUIT }, p))).toBe('grant-denied');
+    expect(await codeOf(prims.call('start_eval_run', { circuit: CIRCUIT, model_overrides: { medium: 3 } }, f.memberPrincipal))).toBe('validation-failed');
+    expect(callsTo('evals', 'startRun')).toHaveLength(0);
   });
 });
 
@@ -527,7 +547,7 @@ describe('inspection primitives', () => {
     const listed = (p: Principal) => prims.specsFor(p).map((s) => s.name);
     const ro = listed(readOnly());
     expect(ro).toEqual(expect.arrayContaining(['whoami', 'search_config', 'read_config', 'read_node', 'list_sessions']));
-    for (const write of ['create_task', 'add_comment', 'create_artifact', 'propose_config_change', 'run_circuit']) expect(ro).not.toContain(write);
+    for (const write of ['create_task', 'add_comment', 'create_artifact', 'propose_config_change', 'run_circuit', 'start_eval_run']) expect(ro).not.toContain(write);
     // An unscoped principal sees the writes; a write scope implies its read.
     expect(listed(f.memberPrincipal)).toEqual(expect.arrayContaining(['create_task', 'add_comment']));
     const writer = listed({ ...f.servicePrincipal, scopes: ['tasks:write'] });
