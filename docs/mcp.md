@@ -1,6 +1,6 @@
 # Connecting to the Breadboard MCP server
 
-Every Breadboard runs a built-in MCP server ([11 — API & MCP](../specs/11-api-mcp.md) §4). From a local harness such as Claude Code you can inspect everything your Breadboard has done: sessions and their full transcripts, the orchestrator's event log, sandboxed tool executions, tasks and artifacts with their lineage, configuration at any commit with its history and proposals, knowledge notes, eval runs, and the instance's health. With a full-access token you can also work in it: create and triage Tasks, comment on Artifacts, edit Knowledge Notes, run circuits, propose configuration changes and call team tool extensions.
+Every Breadboard runs a built-in MCP server ([11 — API & MCP](../specs/11-api-mcp.md) §4). From a local harness such as Claude Code you can inspect everything your Breadboard has done: sessions and their full transcripts, the orchestrator's event log, sandboxed tool executions, tasks and artifacts with their lineage, configuration at any commit with its history and proposals, knowledge notes, eval runs, and the instance's health. With an editor token you can also work in it: create and triage Tasks, comment on Artifacts, edit Knowledge Notes, run circuits and evals, propose configuration changes and call team tool extensions. An admin's full-access token can also merge proposals and record gate verdicts.
 
 - **Endpoint:** `http(s)://<breadboard-host>/api/v1/mcp`
 - **Transport:** MCP Streamable HTTP (`POST` / `GET` / `DELETE` on that one URL). There is no stdio transport; local harnesses connect over HTTP.
@@ -11,10 +11,11 @@ Every Breadboard runs a built-in MCP server ([11 — API & MCP](../specs/11-api-
 Open **Account & tokens** from the user menu (top right; also `g` `u`, or the command palette) and create a personal access token.
 
 - **Read-only** (the default) can read everything you can see and changes nothing. Use it for investigating. The server lists only the tools a token's scopes allow, so a read-only connection sees no working tools and no team tool extensions.
-- **Full access** acts exactly as you, including review verdicts and configuration merges. Create one only when Claude Code should do work in your Breadboard.
+- **Editor** also does everyday work: it writes content and knowledge, proposes (and discards) configuration changes, runs circuits and evals, and calls team tool extensions. It never merges a proposal or records a gate verdict, so a human still makes those calls in the browser. Use it when Claude Code should do work in your Breadboard.
+- **Full** (admins only) acts exactly as you, admin actions included, and adds `merge_proposal` and `record_gate_verdict`. With it, a harness closes the loop by itself: propose, run evals on the branch, merge, and approve gates that target you. It is meant for an admin's own end-to-end work, not for day-to-day use. The server refuses it to members, and a full token stops working the moment its owner is no longer an admin.
 - Tokens expire (90 days by default, a year at most) and can be revoked on the same page, which takes effect at once. The secret (`bbu_…`) is shown once, together with the ready-to-paste command below.
 
-A token can never mint another token, and admin-only pages stay behind your browser sign-in: a read-only token of an admin is a member.
+A token can never mint another token. A read-only or editor token of an admin is a member: admin pages need the browser sign-in or a full token. `whoami` reports the tier as `access`.
 
 ## 2. Claude Code
 
@@ -108,9 +109,11 @@ Any MCP client that supports Streamable HTTP will work. Point it at the endpoint
 | Configuration | `search_config` (by slug, title, path or description; several words rank by how many match; pages with `offset`), `read_config` (by UID, slug or path; at main or at any `commit`), `get_config_history`, `diff_config`, `list_proposals`, `read_proposal`, `validate_config` |
 | Evals | `list_eval_runs`, `read_eval_run`, `get_eval_analysis`, `get_rubric`, `get_fixture_output` |
 
-**Working tools** (a full-access token): `create_task`, `create_artifact`, `update_artifact`, `add_comment`, `emit_edge`, `tag_need_input`, `resolve_need_input`, `propose_note_edit`, `create_note`, `run_circuit`, `start_eval_run`, `record_score`, `propose_config_change`. Tool code alone can call `run_tool`, `broker_fetch` and `model_converse`, so the MCP server never exposes them.
+**Working tools** (an editor or full token): `create_task`, `create_artifact`, `update_artifact`, `add_comment`, `emit_edge`, `tag_need_input`, `resolve_need_input`, `propose_note_edit`, `create_note`, `run_circuit`, `start_eval_run`, `record_score`, `propose_config_change`, `discard_proposal`.
 
-The server also lists **team tool extensions** that opt in with `exposure.external_mcp: true` in their manifest ([06](../specs/06-toolbox.md) §8). Each one is named by its slug. If a slug matches a primitive name, the tool is listed as `tool_<slug>` instead. These tools run in the same sandbox with the same limits as they do inside Breadboard, under your user permissions. A tool can write through its broker capabilities, so they need a full-access token (the `tools:execute` scope): a read-only connection neither lists nor calls them. The server re-reads the list on every `tools/list`, so a newly merged tool shows up when the client next lists tools.
+**Closing the loop** (an admin's full token only): `merge_proposal` (the same validation and replay over main as the proposal page) and `record_gate_verdict` (`approve`, or `request-changes` with a comment and `edits`, on a gate request that targets you by handle or review role; there is no admin bypass). A subagent can never be granted these, and tool code cannot call them. Tool code alone can call `run_tool`, `broker_fetch` and `model_converse`, so the MCP server never exposes them.
+
+The server also lists **team tool extensions** that opt in with `exposure.external_mcp: true` in their manifest ([06](../specs/06-toolbox.md) §8). Each one is named by its slug. If a slug matches a primitive name, the tool is listed as `tool_<slug>` instead. These tools run in the same sandbox with the same limits as they do inside Breadboard, under your user permissions. A tool can write through its broker capabilities, so they need an editor or full token (the `tools:execute` scope): a read-only connection neither lists nor calls them. The server re-reads the list on every `tools/list`, so a newly merged tool shows up when the client next lists tools.
 
 **Resources.**
 - `breadboard://nodes/{uid}` is the head of a content node (the same data `read_node` returns).
@@ -126,7 +129,7 @@ The server also lists **team tool extensions** that opt in with `exposure.extern
 4. `read_session_transcript {session_id, step: "summarize"}`: every turn with its tool calls and results; `read_session_events` for retries, gates and the resolved config commit; `list_session_executions` for what a sandboxed tool actually did, with its logs.
 5. `read_config {ref: "lit-review", commit: <session.config_commit>}`: the circuit, subagent or tool exactly as it ran; `get_config_history` and `diff_config` for what changed since.
 6. `inspect_node` on the artifacts it produced (`search_nodes {session_id}` finds its scratch), `read_node` for a body.
-7. Fix the cause where it lives: the circuit, the subagent, the tool or the note. A full-access token can `propose_config_change`; a read-only one leaves that to the browser.
+7. Fix the cause where it lives: the circuit, the subagent, the tool or the note. An editor token can `propose_config_change` (and `start_eval_run {proposal_id}` to test the branch); a human merges it in the browser, or an admin's full token with `merge_proposal`. A read-only token leaves all of it to the browser.
 
 ## 7. Logging and attribution
 

@@ -100,6 +100,7 @@ function build(): PrimitivesImpl {
     orchestrator: fake('orchestrator', calls, {
       enqueue: () => session('sess_child', 'queued'),
       waitFor: (id: string) => session(id, 'completed'),
+      gateVerdict: (i: any) => ({ resolved: true, session_id: `gate-of-${i.node_uid}` }),
     }),
     sessions: fake('sessions', calls, {
       events: (_id: string, after?: number) => events.filter((e) => after === undefined || e.seq > after),
@@ -113,6 +114,8 @@ function build(): PrimitivesImpl {
     }),
     evals: fake('evals', calls, { startRun: (i: any) => ({ eval_run_id: 'evr_1', circuit_uid: i.circuit, status: 'running' }), recordScore: () => undefined, getFixtureOutput: () => ({ out: 1 }) }),
     config: fake('config', calls, {
+      mergeProposal: (id: string) => ({ proposal_id: id, status: 'merged', merged_commit: 'm3rg3d', diff: '+big patch' }),
+      discardProposal: (id: string) => ({ proposal_id: id, status: 'discarded', diff: '+big patch' }),
       definition: (ref: string, _at?: string, opts?: { lenient?: boolean }) => {
         // A path to any file under a definition resolves to the definition, as the real lookup does.
         const uid = opts?.lenient && ref === 'lit-review' ? CIRCUIT : (/^(?:tools|circuits)\/([^/]+)\//.exec(ref)?.[1] ?? ref);
@@ -399,11 +402,17 @@ describe('repository primitives', () => {
 });
 
 describe('specsFor by principal kind', () => {
-  it('users/services get everything except the tool-code-only primitives', () => {
+  it('users/services get everything except the tool-code-only primitives; human-only ones are for users, admin ones for admins', () => {
     const names = prims.specsFor(f.memberPrincipal).map((s) => s.name);
-    for (const n of ['broker_fetch', 'run_tool', 'model_converse']) expect(names).not.toContain(n);
-    expect(names.length).toBe(prims.names.length - 3);
-    expect(prims.specsFor(f.servicePrincipal).map((s) => s.name)).toEqual(names);
+    for (const n of ['broker_fetch', 'run_tool', 'model_converse', 'merge_proposal', 'record_gate_verdict']) expect(names).not.toContain(n);
+    expect(names).toContain('discard_proposal');
+    expect(names.length).toBe(prims.names.length - 5);
+    const admin = prims.specsFor(f.adminPrincipal).map((s) => s.name);
+    expect(admin).toEqual(expect.arrayContaining(['merge_proposal', 'record_gate_verdict', 'discard_proposal']));
+    expect(admin.length).toBe(prims.names.length - 3);
+    // A service has no person behind it, admin or not.
+    const service = prims.specsFor(f.servicePrincipal).map((s) => s.name);
+    expect(service).toEqual(names.filter((n) => n !== 'discard_proposal'));
   });
 
   it('subagents get granted primitives ∩ catalog, plus read_node, never broker_fetch', () => {
@@ -411,11 +420,14 @@ describe('specsFor by principal kind', () => {
     expect(prims.specsFor(p).map((s) => s.name).sort()).toEqual(['create_artifact', 'read_node']);
   });
 
-  it('tool code (code-step or execution key) gets everything', () => {
+  it('tool code (code-step or execution key) gets everything except the human-only primitives', () => {
     const codeStep: Principal = { ...f.servicePrincipal, actor: { kind: 'code-step', id: TOOL, session_id: 'S' }, is_admin: false, token_kind: 'actor' };
-    expect(prims.specsFor(codeStep)).toHaveLength(prims.names.length);
+    expect(prims.specsFor(codeStep)).toHaveLength(prims.names.length - 3);
     const toolUnderSubagent = subagentPrincipal(f, grants(), { execution_key: 'S:step:1:0', token_kind: 'actor' });
-    expect(prims.specsFor(toolUnderSubagent)).toHaveLength(prims.names.length);
+    expect(prims.specsFor(toolUnderSubagent)).toHaveLength(prims.names.length - 3);
+    // Tool code a user's call started acts as that user, and still may not merge or approve.
+    const toolUnderAdmin: Principal = { ...f.adminPrincipal, execution_key: 'S:mcp:1:0', token_kind: 'actor' };
+    for (const n of ['merge_proposal', 'discard_proposal', 'record_gate_verdict']) expect(prims.specsFor(toolUnderAdmin).map((s) => s.name)).not.toContain(n);
   });
 });
 
@@ -534,12 +546,56 @@ describe('broker_fetch, run_tool, config', () => {
   });
 });
 
+describe('proposal merges and gate verdicts (token tiers, [12] §3)', () => {
+  const EDITOR = ['tasks:read', 'nodes:read', 'sessions:read', 'config:read', 'knowledge:read', 'evals:read', 'events:read', 'mcp:call', 'tasks:write', 'nodes:write', 'knowledge:write', 'config:propose', 'sessions:write', 'evals:write', 'tools:execute'];
+  const editorOf = (p: Principal): Principal => ({ ...p, scopes: EDITOR, token_kind: 'personal' });
+  const fullOf = (p: Principal): Principal => ({ ...p, scopes: null, token_kind: 'personal' });
+
+  it("an admin's full token merges and records verdicts; the patch is left out of the result", async () => {
+    const merged = (await prims.call('merge_proposal', { proposal_id: 'prp_1' }, fullOf(f.adminPrincipal))) as any;
+    expect(merged).toEqual({ proposal_id: 'prp_1', status: 'merged', merged_commit: 'm3rg3d' });
+    expect(callsTo('config', 'mergeProposal')[0]!.args[0]).toBe('prp_1');
+
+    const edits = { summary: 'tighter' };
+    const v = await prims.call('record_gate_verdict', { uid: TOOL, request_id: 'nir_1', verdict: 'request-changes', comment: 'shorter', edits }, fullOf(f.adminPrincipal));
+    expect(v).toEqual({ resolved: true, session_id: `gate-of-${TOOL}` });
+    expect(callsTo('orchestrator', 'gateVerdict')[0]!.args[0]).toMatchObject({ node_uid: TOOL, request_id: 'nir_1', verdict: 'request-changes', comment: 'shorter', edits });
+    expect(await codeOf(prims.call('record_gate_verdict', { uid: TOOL, request_id: 'nir_1', verdict: 'maybe' }, fullOf(f.adminPrincipal)))).toBe('validation-failed');
+  });
+
+  it('an editor token discards but never merges or records verdicts, admin or not', async () => {
+    for (const p of [editorOf(f.adminPrincipal), editorOf(f.memberPrincipal)]) {
+      const listed = prims.specsFor(p).map((s) => s.name);
+      expect(listed).toEqual(expect.arrayContaining(['propose_config_change', 'discard_proposal', 'run_circuit', 'start_eval_run', 'create_note']));
+      for (const n of ['merge_proposal', 'record_gate_verdict']) expect(listed).not.toContain(n);
+      expect(await codeOf(prims.call('merge_proposal', { proposal_id: 'prp_1' }, p))).toBe('forbidden');
+    }
+    expect(await codeOf(prims.call('record_gate_verdict', { uid: TOOL, request_id: 'nir_1', verdict: 'approve' }, editorOf(f.adminPrincipal)))).toBe('forbidden');
+    expect(await prims.call('discard_proposal', { proposal_id: 'prp_2' }, editorOf(f.memberPrincipal))).toEqual({ proposal_id: 'prp_2', status: 'discarded' });
+    expect(callsTo('config', 'mergeProposal')).toHaveLength(0);
+  });
+
+  it("a member's own sign-in, a subagent granted them and tool code are refused", async () => {
+    expect(await codeOf(prims.call('merge_proposal', { proposal_id: 'prp_1' }, f.memberPrincipal))).toBe('forbidden');
+    expect(await codeOf(prims.call('record_gate_verdict', { uid: TOOL, request_id: 'nir_1', verdict: 'approve' }, f.memberPrincipal))).toBe('forbidden');
+    const designer = subagentPrincipal(f, grants({ primitives: ['merge_proposal', 'discard_proposal', 'record_gate_verdict', 'propose_config_change'] }));
+    expect(prims.specsFor(designer).map((s) => s.name).sort()).toEqual(['propose_config_change', 'read_node']);
+    for (const n of ['merge_proposal', 'discard_proposal']) expect(await codeOf(prims.call(n, { proposal_id: 'prp_1' }, designer))).toBe('grant-denied');
+    const toolCode = subagentPrincipal(f, grants(), { execution_key: 'exec-1', token_kind: 'actor' });
+    expect(await codeOf(prims.call('merge_proposal', { proposal_id: 'prp_1' }, toolCode))).toBe('grant-denied');
+    expect(await codeOf(prims.call('merge_proposal', { proposal_id: 'prp_1' }, f.servicePrincipal))).toBe('grant-denied');
+    expect(callsTo('config', 'mergeProposal')).toHaveLength(0);
+  });
+});
+
 describe('inspection primitives', () => {
   const readOnly = (): Principal => ({ ...f.memberPrincipal, scopes: ['tasks:read', 'nodes:read', 'sessions:read', 'config:read', 'knowledge:read', 'evals:read', 'events:read', 'mcp:call'], token_kind: 'personal' });
 
   it('whoami describes the principal, including read-only tokens', async () => {
     expect(await prims.call('whoami', {}, f.memberPrincipal)).toMatchObject({ user: { handle: 'member' }, roles: ['scientist'], is_admin: false, token_kind: 'user', scopes: null, read_only: false });
-    expect(await prims.call('whoami', {}, readOnly())).toMatchObject({ token_kind: 'personal', read_only: true });
+    expect(await prims.call('whoami', {}, readOnly())).toMatchObject({ token_kind: 'personal', access: 'read-only', read_only: true });
+    expect(await prims.call('whoami', {}, { ...f.adminPrincipal, token_kind: 'personal' })).toMatchObject({ token_kind: 'personal', access: 'full', read_only: false });
+    expect(await prims.call('whoami', {}, f.memberPrincipal)).not.toHaveProperty('access');
     expect(await prims.call('whoami', {}, { ...f.servicePrincipal, scopes: ['tasks:write'] })).toMatchObject({ user: null, read_only: false });
   });
 
@@ -570,6 +626,7 @@ describe('inspection primitives', () => {
     expect(r.open_proposals).toBeNull();
     expect(r.sessions).toEqual({ gated: 0, suspended_error: 0, running: 0, queued: 0 });
     expect(r.repos).toEqual([]);
+    expect(r.admins).toEqual(['zach']);
     expect(callsTo('mirrors', 'status')[0]!.args[0]).toBe(f.memberPrincipal);
   });
 

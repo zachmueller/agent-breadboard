@@ -43,6 +43,7 @@ export interface UserTokenRecord {
   user_id: string;
   name: string;
   scopes: string[] | null;
+  access: TokenAccess;
   created_at: string;
   expires_at: string;
   revoked_at: string | null;
@@ -51,6 +52,28 @@ export interface UserTokenRecord {
 
 /** The scope set of a read-only personal token: every read scope plus the MCP connection itself. */
 export const READ_ONLY_SCOPES: readonly ServiceScope[] = ['tasks:read', 'nodes:read', 'sessions:read', 'config:read', 'knowledge:read', 'evals:read', 'events:read', 'mcp:call'];
+
+/** An editor personal token: the read scopes plus everyday writes, proposals, runs and team tools; never a merge, a gate verdict or admin. */
+export const EDITOR_SCOPES: readonly ServiceScope[] = [...READ_ONLY_SCOPES, 'tasks:write', 'nodes:write', 'knowledge:write', 'config:propose', 'sessions:write', 'evals:write', 'tools:execute'];
+
+/**
+ * Required to record a gate verdict ([02] §5.4). No token scope list grants it, so only an unscoped credential (a
+ * browser sign-in, or an admin's full personal token) passes; service tokens are refused gate verdicts anyway.
+ */
+export const GATE_VERDICT_SCOPE = 'gates:verdict';
+
+/** A personal token's tier ([12] §3): `full` (unscoped, admins only), `editor`, or `read-only`. */
+export type TokenAccess = 'read-only' | 'editor' | 'full';
+export const TOKEN_ACCESS_LEVELS: readonly TokenAccess[] = ['read-only', 'editor', 'full'];
+
+export function scopesForAccess(access: TokenAccess): string[] | null {
+  return access === 'full' ? null : access === 'editor' ? [...EDITOR_SCOPES] : [...READ_ONLY_SCOPES];
+}
+
+export function tokenAccess(scopes: readonly string[] | null): TokenAccess {
+  if (scopes === null) return 'full';
+  return scopes.every((s) => (READ_ONLY_SCOPES as readonly string[]).includes(s)) ? 'read-only' : 'editor';
+}
 
 export function hashToken(secret: string): string {
   return createHash('sha256').update(secret).digest('hex');
@@ -115,6 +138,12 @@ export class IdentityStore {
   async linkOidcSubject(userId: string, subject: string, q: Queryable = this.db): Promise<boolean> {
     const r = await q.query(`UPDATE users SET oidc_subject=$2 WHERE user_id=$1 AND oidc_subject IS NULL RETURNING user_id`, [userId, subject]);
     return r.rows.length > 0;
+  }
+
+  /** Grant or revoke the admin flag; never reactivates (unlike `upsertUser`). */
+  async setAdmin(userId: string, isAdmin: boolean, q: Queryable = this.db): Promise<UserRecord | null> {
+    const r = await q.query(`UPDATE users SET is_admin=$2 WHERE user_id=$1 RETURNING *`, [userId, isAdmin]);
+    return r.rows[0] ? rowToUser(r.rows[0]) : null;
   }
 
   async deactivateUser(userId: string, q: Queryable = this.db): Promise<void> {
@@ -237,6 +266,7 @@ function rowToUserToken(r: any): UserTokenRecord {
     user_id: r.user_id,
     name: r.name,
     scopes: r.scopes ?? null,
+    access: tokenAccess(r.scopes ?? null),
     created_at: toIso(r.created_at),
     expires_at: toIso(r.expires_at),
     revoked_at: r.revoked_at ? toIso(r.revoked_at) : null,

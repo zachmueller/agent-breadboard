@@ -49,9 +49,37 @@ export async function register(app: FastifyInstance, services: Services): Promis
     if (!HANDLE_RE.test(handle)) throw new BreadboardError('validation-failed', 'handle must be 1-64 chars of letters, digits, ".", "_" or "-"');
     if (body.display_name !== undefined && typeof body.display_name !== 'string') throw new BreadboardError('validation-failed', "field 'display_name' must be a string");
     if (body.is_admin !== undefined && typeof body.is_admin !== 'boolean') throw new BreadboardError('validation-failed', "field 'is_admin' must be a boolean");
+    // The admin flag of an existing user changes only through its own guarded route below.
+    const existing = await identity.getUserByHandle(team_id, handle);
+    if (existing && body.is_admin !== undefined && body.is_admin !== existing.is_admin) {
+      throw new BreadboardError('conflict', `user ${handle} exists; change its admin flag with POST ${ADMIN}/users/${existing.user_id}/admin`, { user_id: existing.user_id });
+    }
     const user = await identity.upsertUser({ team_id, handle, display_name: body.display_name, is_admin: body.is_admin });
     reply.status(201);
     return user;
+  });
+
+  // Grant or revoke admin ([12] §4). Never your own flag, and never the last active admin, so no one is locked out.
+  app.post(`${ADMIN}/users/:id/admin`, adminOnly, async (req) => {
+    const { id } = req.params as { id: string };
+    const body = requireBody(req);
+    const is_admin = requireField<boolean>(body, 'is_admin', 'boolean');
+    const by = principalOf(req);
+    const user = await identity.getUser(id);
+    if (!user || user.team_id !== team_id) throw new BreadboardError('not-found', `user ${id} not found`);
+    if (user.deactivated_at) throw new BreadboardError('invalid-state', `user ${user.handle} is deactivated`);
+    if (by.user?.user_id === id) throw new BreadboardError('validation-failed', 'you cannot change your own admin flag');
+    if (user.is_admin === is_admin) return user;
+    if (!is_admin) {
+      const admins = (await identity.listUsers(team_id)).filter((u) => u.is_admin && !u.deactivated_at);
+      if (admins.length <= 1) throw new BreadboardError('invalid-state', `${user.handle} is the last active admin`);
+    }
+    const updated = (await identity.setAdmin(id, is_admin))!;
+    // Cached principals carry the old flag: an admin's full-access tokens must stop working at once.
+    services.auth.invalidate?.();
+    services.log.info({ user: updated.handle, is_admin, by: by.actor }, 'admin flag changed');
+    await services.events.publish('user.admin-changed', { user_id: id, handle: updated.handle, is_admin, by: by.actor }, { scope: 'team' });
+    return updated;
   });
 
   app.post(`${ADMIN}/users/:id/deactivate`, adminOnly, async (req) => {

@@ -5,8 +5,8 @@ import { useCurrentUser } from '../../lib/auth';
 import { useCreateMyToken, useMyTokens, useRevokeMyToken } from '../../lib/queries';
 import { formatDateTime } from '../../lib/format';
 import { toast } from '../../lib/toast';
-import type { CreatedPersonalTokenDto, PersonalTokenDto } from '../../lib/types';
-import { Badge, Button, Callout, Checkbox, ConfirmDialog, CopyButton, DataTable, Dialog, EmptyState, ErrorState, Input, Loading, MetaList, PageBody, PageHeader, Panel, Select, TimeAgo, type Column } from '../../components';
+import type { CreatedPersonalTokenDto, PersonalTokenDto, TokenAccess } from '../../lib/types';
+import { Badge, Button, Callout, ConfirmDialog, CopyButton, DataTable, Dialog, EmptyState, ErrorState, Input, Loading, MetaList, PageBody, PageHeader, Panel, Select, TimeAgo, type Column } from '../../components';
 
 const EXPIRY_OPTIONS = [
   { value: '30', label: '30 days' },
@@ -14,6 +14,15 @@ const EXPIRY_OPTIONS = [
   { value: '180', label: '180 days' },
   { value: '365', label: '1 year' },
 ];
+
+/** The token tiers ([12] §3); `full` is offered to admins only (the server refuses it to members). */
+export const ACCESS_OPTIONS: Array<{ value: TokenAccess; label: string; description: string; adminOnly?: boolean }> = [
+  { value: 'read-only', label: 'Read-only', description: 'Reads sessions, transcripts, content, knowledge, configuration and evals, but cannot create, edit, run or propose anything. Recommended for investigating.' },
+  { value: 'editor', label: 'Editor', description: 'Also writes content and knowledge, proposes configuration changes, runs circuits and evals, and calls team tools. Never merges a proposal or records a gate verdict.' },
+  { value: 'full', label: 'Full (admins)', description: 'Acts exactly as you, including admin actions, proposal merges and gate verdicts. Stops working if you stop being an admin.', adminOnly: true },
+];
+
+const ACCESS_TONE: Record<TokenAccess, 'warn' | 'accent' | undefined> = { full: 'warn', editor: 'accent', 'read-only': undefined };
 
 /** The command a member pastes into a terminal to connect Claude Code (docs/mcp.md). */
 export function claudeMcpAddCommand(mcpUrl: string, secret: string): string {
@@ -69,7 +78,7 @@ function TokensPanel() {
   const [revoking, setRevoking] = useState<PersonalTokenDto | null>(null);
   const columns: Column<PersonalTokenDto>[] = [
     { key: 'name', header: 'Name', cell: (t) => <span className="font-medium">{t.name}</span>, sortValue: (t) => t.name },
-    { key: 'access', header: 'Access', cell: (t) => (t.scopes === null ? <Badge size="xs" tone="warn">full access</Badge> : <Badge size="xs">read-only</Badge>), width: '7rem' },
+    { key: 'access', header: 'Access', cell: (t) => <Badge size="xs" tone={ACCESS_TONE[t.access]}>{t.access}</Badge>, width: '7rem' },
     { key: 'used', header: 'Last used', cell: (t) => (t.last_used_at ? <TimeAgo at={t.last_used_at} className="text-fg-muted" /> : <span className="text-fg-subtle">Never</span>), width: '7rem', hideBelow: 'md' },
     { key: 'expires', header: 'Expires', cell: (t) => <span className="text-fg-muted">{formatDateTime(t.expires_at)}</span>, width: '10rem', hideBelow: 'lg' },
     { key: 'created', header: 'Created', cell: (t) => <TimeAgo at={t.created_at} className="text-fg-subtle" />, width: '7rem', hideBelow: 'lg' },
@@ -99,7 +108,7 @@ function TokensPanel() {
   return (
     <Panel
       title="Personal access tokens"
-      description="Bearer tokens that act as you from your own tools, such as Claude Code connected to this Breadboard’s MCP server. A read-only token can inspect everything you can see but changes nothing. The secret is shown once."
+      description="Bearer tokens that act as you from your own tools, such as Claude Code connected to this Breadboard’s MCP server. A read-only token inspects everything you can see; an editor token also works and proposes; only an admin’s full token merges and approves. The secret is shown once."
       actions={
         <Button size="sm" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
           Create token
@@ -166,7 +175,7 @@ function TokensPanel() {
                 Run it in a terminal, then check with <code className="font-mono">claude mcp list</code>. The tools appear as <code className="font-mono">mcp__breadboard__…</code>.
               </p>
             </div>
-            {created.scopes === null && <Callout tone="warn">This token has your full access: anything it does is done as you.</Callout>}
+            {created.access === 'full' && <Callout tone="warn">This token has your full access: anything it does is done as you, merges and gate verdicts included.</Callout>}
           </div>
         ) : (
           <Callout tone="warn">The server did not return a secret.</Callout>
@@ -195,7 +204,8 @@ function TokensPanel() {
 
 function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (t: CreatedPersonalTokenDto) => void }) {
   const [name, setName] = useState('');
-  const [readOnly, setReadOnly] = useState(true);
+  const me = useCurrentUser();
+  const [access, setAccess] = useState<TokenAccess>('read-only');
   const [days, setDays] = useState('90');
   const create = useCreateMyToken();
   return (
@@ -207,20 +217,21 @@ function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCrea
       confirmDisabled={!name.trim()}
       onConfirm={async () => {
         try {
-          onCreated(await create.mutateAsync({ name: name.trim(), read_only: readOnly, expires_in_days: Number(days) }));
+          onCreated(await create.mutateAsync({ name: name.trim(), access, expires_in_days: Number(days) }));
         } catch (e) {
           toast.error('Could not create token', e);
         }
       }}
     >
       <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus placeholder="e.g. Claude Code on my laptop" />
-      <Checkbox
-        label="Read-only"
-        description="Can read sessions, transcripts, content, knowledge, configuration and evals, but cannot create, edit, run or propose anything. Recommended for investigating."
-        checked={readOnly}
-        onChange={(e) => setReadOnly(e.target.checked)}
+      <Select
+        label="Access"
+        value={access}
+        onChange={(e) => setAccess(e.target.value as TokenAccess)}
+        options={ACCESS_OPTIONS.filter((o) => !o.adminOnly || me.is_admin).map((o) => ({ value: o.value, label: o.label }))}
       />
-      {!readOnly && <Callout tone="warn">A full-access token acts exactly as you, including review verdicts and configuration merges.</Callout>}
+      <p className="-mt-1 text-[12px] text-fg-subtle">{ACCESS_OPTIONS.find((o) => o.value === access)?.description}</p>
+      {access === 'full' && <Callout tone="warn">A full-access token acts exactly as you, including admin actions, configuration merges and gate verdicts. Use it for your own end-to-end work, not day to day.</Callout>}
       <Select label="Expires in" value={days} onChange={(e) => setDays(e.target.value)} options={EXPIRY_OPTIONS} />
     </ConfirmDialog>
   );

@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { validationFailed } from '@breadboard/shared';
 import type { Services } from '../core/services.js';
 import { requireScope } from '../core/principal.js';
+import { GATE_VERDICT_SCOPE } from '../identity/identity.js';
 import { API_PREFIX } from '../app.js';
 import { arrayParam, intParam, principalOf, requireBody, requireField, strParam, withIdempotency } from './util.js';
 
@@ -149,6 +150,7 @@ export async function register(app: FastifyInstance, services: Services): Promis
   // --- gate verdicts ([02] §5.4) -----------------------------------------------------------
   app.post<{ Params: UidParams }>(`${API_PREFIX}/nodes/:uid/gate-verdict`, async (req, reply) => {
     const by = write(req);
+    requireScope(by, GATE_VERDICT_SCOPE);
     const body = requireBody(req);
     const request_id = requireField<string>(body, 'request_id');
     const verdict = requireField<string>(body, 'verdict');

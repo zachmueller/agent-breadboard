@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-22.
+**As of:** 2026-10-23.
 **Branch:** `main`; the `cdk-aws-deploy` work was merged on 2026-10-10. The verification pass and its follow-ups start at `467a8b1` (`git log 467a8b1..HEAD`).
 **Read first when resuming:** this file, then the checklist at the end of [verification-plan.md](verification-plan.md).
 
@@ -25,7 +25,7 @@ Every roadmap phase (0–7) is implemented. The automated suites pass. On 2026-1
 
 | Suite | Command | Last result |
 |---|---|---|
-| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 84 files, 694 passed, 5 skipped (Docker-only, plus the Strands adapter checks without `PYTHON_BIN`); 2026-10-22 |
+| Root (all packages, PGlite, mock model, process sandbox) | `npx vitest run` | 84 files, 706 passed, 5 skipped (Docker-only, plus the Strands adapter checks without `PYTHON_BIN`); 2026-10-23 |
 | Server on real Postgres | `cd packages/server && TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npx vitest run` | 46 files, 393 passed, 1 failed (2026-10-15). The failure, `src/mcp/http.test.ts` "MCP conversations left by an earlier process", is a race that predates the reasoning/caching work (it fails with it stashed too): the test asserts before the endpoint's startup cleanup finishes on the slower database |
 | Toolbox on the Docker runner | see [verification-plan.md](verification-plan.md) §1.2 (Colima needs the egress relay) | 20 of 20 (2026-10-22) |
 | CDK template | `cd deploy/aws && npm test` | 29 passed |
@@ -259,6 +259,18 @@ Prompted by agents iterating on circuits from a local harness. Over MCP they cou
 3. **Grants unchanged.** Users and services get it with the scope, so a read-only token never lists it. A subagent needs it in `primitives` and an execute grant on the circuit, which `startRun` already enforced. Tool code reaches it through `ctx.primitive`; there is no typed SDK method, so the sandbox images are unchanged.
 
 Deployed to the instance behind a load balancer as server `f07ffc5`, sandboxes unchanged. The diff changed only the `SERVER_IMAGE` line of `deploy.env`: same host, health ok. Over MCP from a local harness, `start_eval_run` on a three-fixture circuit returned `running` at once under the calling user, and `read_eval_run` showed it completed with every fixture scored. An unknown circuit answers `not-found`. Not yet exercised: `proposal_id` and `model_overrides` through MCP (unit-tested; the REST path they share ran live on 2026-10-01).
+
+## Decisions made 2026-10-23: three personal-token tiers
+
+Prompted by moving work from an existing codebase into a Breadboard. To test end to end from a local harness, an admin needs to merge proposals and approve gates over MCP. That power must stay out of everyday tokens. Before this, a personal token was either read-only or acted fully as its user, and any member could mint either. Recorded in specs [12](../specs/12-security-deployment.md) §3–§4, [11](../specs/11-api-mcp.md) §4–§5 and [02](../specs/02-sessions-orchestrator.md) §5.4.
+
+1. **Three tiers** (`access` on `POST /me/tokens`; legacy `read_only: false` now means editor). **Read-only** is unchanged. **Editor** gets the read scopes plus the content, knowledge, propose, session, eval and tool-execute writes, with no `config:merge`. **Full** is unscoped, mintable only by an admin, and refused (401) as soon as its owner is no longer an admin.
+2. **Gate verdicts need `gates:verdict`**, which no scope list grants, so only a browser sign-in or a full token records one. This covers the REST gate-verdict route and also a verdict on a gate-created need-input request: before this, that route let any `nodes:write` token clear a gate's request without the gate seeing it.
+3. **New primitives:** `discard_proposal` (editor), `merge_proposal` and `record_gate_verdict` (admin, so in practice a full token). All three are human-only: no subagent grant or tool code reaches them. Gate targeting is unchanged, with no admin bypass.
+4. **Admin control:** an Admin › Users toggle (`POST /admin/users/:id/admin`) that refuses your own flag and the last active admin, invalidates cached principals, and publishes `user.admin-changed`. `POST /admin/users` no longer flips an existing user's flag. The active admins appear in the startup `admin sign-in paths` line and in `get_breadboard_overview`.
+5. **Migration 0008** turns members' existing full-access tokens into editor tokens; admins' tokens stay full.
+
+**Not deployed.** Upgrading applies 0008 at startup. After the upgrade, check `get_breadboard_overview.admins`, demote or deactivate any leftover seed admin rows, and mint a full token for the admin's own harness. A full token of a former admin stops working.
 
 ## Next steps (in priority order)
 

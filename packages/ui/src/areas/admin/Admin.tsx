@@ -1,6 +1,6 @@
 /** Admin ([12] §2-§5): users, roles + membership, service tokens, credential broker, health. Admins only. */
 import { useMemo, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, KeyRound, Lock, Plus, ShieldCheck, Trash2, UserMinus, Users, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, KeyRound, Lock, Plus, ShieldCheck, ShieldMinus, ShieldPlus, Trash2, UserMinus, Users, XCircle } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAdminList, useAdminMutation, del, get, post } from '../../lib/queries';
 import { useCurrentUser } from '../../lib/auth';
@@ -78,6 +78,8 @@ function UsersTab() {
   const [creating, setCreating] = useState(false);
   const [deactivate, setDeactivate] = useState<UserDto | null>(null);
   const deact = useAdminMutation((id: string) => post(`/admin/users/${id}/deactivate`, {}), ['users', 'roles']);
+  const [adminChange, setAdminChange] = useState<UserDto | null>(null);
+  const setAdmin = useAdminMutation(({ id, is_admin }: { id: string; is_admin: boolean }) => post(`/admin/users/${id}/admin`, { is_admin }), ['users']);
   const columns: Column<UserDto>[] = [
     {
       key: 'handle',
@@ -114,11 +116,16 @@ function UsersTab() {
       align: 'right',
       cell: (u) =>
         !u.deactivated_at && u.user_id !== me.user_id ? (
-          <Button size="xs" variant="ghost" icon={<UserMinus size={12} />} onClick={() => setDeactivate(u)}>
-            Deactivate
-          </Button>
+          <span className="flex justify-end gap-1">
+            <Button size="xs" variant="ghost" icon={u.is_admin ? <ShieldMinus size={12} /> : <ShieldPlus size={12} />} onClick={() => setAdminChange(u)}>
+              {u.is_admin ? 'Remove admin' : 'Make admin'}
+            </Button>
+            <Button size="xs" variant="ghost" icon={<UserMinus size={12} />} onClick={() => setDeactivate(u)}>
+              Deactivate
+            </Button>
+          </span>
         ) : null,
-      width: '8rem',
+      width: '16rem',
     },
   ];
   return (
@@ -148,6 +155,27 @@ function UsersTab() {
             setDeactivate(null);
           } catch (e) {
             toast.error('Could not deactivate', e);
+          }
+        }}
+      />
+      <ConfirmDialog
+        open={!!adminChange}
+        onClose={() => setAdminChange(null)}
+        title={adminChange?.is_admin ? `Remove admin from @${adminChange?.handle}?` : `Make @${adminChange?.handle} an admin?`}
+        description={
+          adminChange?.is_admin
+            ? 'They keep their membership but lose user, token and credential management, and their full-access personal tokens stop working at once.'
+            : 'Admins manage users, roles, service tokens and broker credentials, and may mint full-access personal tokens that merge proposals and record gate verdicts.'
+        }
+        confirmLabel={adminChange?.is_admin ? 'Remove admin' : 'Make admin'}
+        variant={adminChange?.is_admin ? 'danger' : undefined}
+        onConfirm={async () => {
+          try {
+            await setAdmin.mutateAsync({ id: adminChange!.user_id, is_admin: !adminChange!.is_admin });
+            toast.success(adminChange!.is_admin ? 'Admin removed' : 'Admin granted');
+            setAdminChange(null);
+          } catch (e) {
+            toast.error('Could not change admin', e);
           }
         }}
       />

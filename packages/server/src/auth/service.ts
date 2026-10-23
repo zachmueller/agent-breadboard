@@ -181,6 +181,8 @@ export class AuthServiceImpl implements AuthService {
       const t = await this.deps.identity.findUserToken(token);
       if (!t || t.team_id !== this.deps.team_id) throw new BreadboardError('unauthorized', 'invalid personal access token');
       const user = await this.activeUser(t.user_id);
+      // A full-access token is an admin's ([12] §3): once its owner is no longer one, it stops working rather than shrinking.
+      if (t.scopes === null && !user.is_admin) throw new BreadboardError('unauthorized', 'full-access personal tokens need an admin owner; mint an editor token');
       const roles = await this.deps.identity.rolesOfUser(user.user_id);
       return { principal: userPrincipal(user, roles, { scopes: t.scopes, token_kind: 'personal' }), expiresAtMs: Date.parse(t.expires_at) };
     }
@@ -368,8 +370,9 @@ export class AuthServiceImpl implements AuthService {
           'Recover by setting BREADBOARD_BOOTSTRAP_ADMIN_TOKEN again (deploy/aws: cdk deploy -c bootstrapAdmin=true).',
       );
     } else {
+      const admins = (await this.deps.identity.listUsers(this.deps.team_id)).filter((u) => u.is_admin && !u.deactivated_at).map((u) => u.handle);
       this.deps.log.info(
-        { bootstrap_admin: !!this.deps.bootstrapAdminToken, trusted_proxy_user: this.deps.trustedProxy?.user ?? null, load_balancer: this.deps.albAuth?.signerArn ?? null, admin_sign_in: paths },
+        { bootstrap_admin: !!this.deps.bootstrapAdminToken, trusted_proxy_user: this.deps.trustedProxy?.user ?? null, load_balancer: this.deps.albAuth?.signerArn ?? null, admin_sign_in: paths, admins },
         'admin sign-in paths',
       );
     }

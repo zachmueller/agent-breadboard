@@ -10,7 +10,7 @@ import type { Services } from '../core/services.js';
 import { API_PREFIX } from '../app.js';
 import { principalOf, requireBody, requireField } from './util.js';
 import { requireUser, type Principal } from '../core/principal.js';
-import { READ_ONLY_SCOPES, type UserRecord } from '../identity/identity.js';
+import { scopesForAccess, TOKEN_ACCESS_LEVELS, type TokenAccess, type UserRecord } from '../identity/identity.js';
 import { randomToken, USER_TOKEN_TTL_S } from '../auth/service.js';
 
 const TOKEN_DEFAULT_DAYS = 90;
@@ -123,11 +123,11 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const body = requireBody(req);
     const name = requireField<string>(body, 'name').trim();
     if (!name) throw new BreadboardError('validation-failed', "field 'name' must be non-empty");
-    const read_only = body.read_only === undefined ? true : body.read_only;
-    if (typeof read_only !== 'boolean') throw new BreadboardError('validation-failed', "field 'read_only' must be a boolean");
+    const access = tokenAccessOf(body);
+    if (access === 'full' && !user.is_admin) throw new BreadboardError('forbidden', 'full-access tokens are for admins; mint an editor or read-only token');
     const days = body.expires_in_days === undefined ? TOKEN_DEFAULT_DAYS : Number(body.expires_in_days);
     if (!Number.isInteger(days) || days < 1 || days > TOKEN_MAX_DAYS) throw new BreadboardError('validation-failed', `field 'expires_in_days' must be an integer from 1 to ${TOKEN_MAX_DAYS}`);
-    const { token, secret } = await services.identity.createUserToken({ team_id: p.team_id, user_id: user.user_id, name, scopes: read_only ? [...READ_ONLY_SCOPES] : null, expires_at: new Date(Date.now() + days * 864e5).toISOString() });
+    const { token, secret } = await services.identity.createUserToken({ team_id: p.team_id, user_id: user.user_id, name, scopes: scopesForAccess(access), expires_at: new Date(Date.now() + days * 864e5).toISOString() });
     reply.status(201);
     return { ...token, secret, mcp_url: mcpUrl() };
   });
@@ -141,4 +141,15 @@ export async function register(app: FastifyInstance, services: Services): Promis
     services.auth.invalidate?.();
     return token;
   });
+}
+
+/** `access` (default read-only); the legacy `read_only` boolean maps `false` to editor, never to full. */
+function tokenAccessOf(body: Record<string, unknown>): TokenAccess {
+  if (body.access !== undefined) {
+    if (!(TOKEN_ACCESS_LEVELS as readonly unknown[]).includes(body.access)) throw new BreadboardError('validation-failed', `field 'access' must be one of ${TOKEN_ACCESS_LEVELS.join(', ')}`);
+    return body.access as TokenAccess;
+  }
+  if (body.read_only === undefined) return 'read-only';
+  if (typeof body.read_only !== 'boolean') throw new BreadboardError('validation-failed', "field 'read_only' must be a boolean");
+  return body.read_only ? 'read-only' : 'editor';
 }

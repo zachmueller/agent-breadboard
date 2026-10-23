@@ -80,11 +80,15 @@ export interface CreatedServiceTokenDto extends Partial<ServiceTokenDto> {
   secret?: string;
 }
 
+/** A personal token's tier ([12] §3): `full` (unscoped) is for admins only. */
+export type TokenAccess = 'read-only' | 'editor' | 'full';
+
 /** `GET /me/tokens`: a member's personal access tokens ([12] §3). `scopes` null = full access. */
 export interface PersonalTokenDto {
   token_id: string;
   name: string;
   scopes: string[] | null;
+  access: TokenAccess;
   created_at: string;
   expires_at: string;
   revoked_at: string | null;

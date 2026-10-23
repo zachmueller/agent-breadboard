@@ -38,12 +38,12 @@ import type { Db, Queryable } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import type { ObjectStore } from '../core/object-store.js';
 import type { ContentService, EventBus, KnowledgeService, SessionStore } from '../core/services.js';
-import { canReadDomains, canSeeSession, canWriteDomains, type Principal } from '../core/principal.js';
+import { canReadDomains, canSeeSession, canWriteDomains, requireScope, type Principal } from '../core/principal.js';
 import type { NodeStore, ListNodesFilter, PatchNodeInput } from './nodes.js';
 import type { EdgeStore } from './edges.js';
 import type { GraphQueries } from './graph-queries.js';
 import type { LinkIndexer } from './link-indexer.js';
-import type { IdentityStore } from '../identity/identity.js';
+import { GATE_VERDICT_SCOPE, type IdentityStore } from '../identity/identity.js';
 import { assertNoNarrowing, propagatedScope } from './scope.js';
 
 type StoredNode = NodeRecord & { session_id: string | null };
@@ -917,6 +917,8 @@ export class ContentServiceImpl implements ContentService {
     if (req.gate && !input.verdict) {
       throw invalidState(`request ${req.request_id} was created by a gate; record a verdict via POST /nodes/${input.uid}/gate-verdict`, { use: `/nodes/${input.uid}/gate-verdict`, gate: req.gate });
     }
+    // A gate request's verdict is a gate verdict, whichever route records it: an editor token may not ([12] §3).
+    if (req.gate) requireScope(by, GATE_VERDICT_SCOPE);
     // Targeting ([09] §3, [02] §5.4): only targeted reviewers resolve; services bypass; admins bypass non-gate requests.
     const bypass = by.actor.kind === 'service' || (by.is_admin && !req.gate);
     if (!bypass && !requestTargetsUser(req, { handle: by.user?.handle ?? '', roles: by.user ? by.roles : [] })) {

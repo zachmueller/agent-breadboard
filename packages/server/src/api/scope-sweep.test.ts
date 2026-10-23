@@ -1,10 +1,11 @@
 /**
  * Every mutating route refuses a read-only personal token ([12] §3) before touching anything: the full app
  * is built from the shipped seed, every registered route is collected, and each non-GET route under /api/v1
- * is called with a read-only `bbu_` token.
+ * is called with a read-only `bbu_` token. Editor tokens are refused merges, gate verdicts and admin routes, and
+ * an admin's full token closes the loop (propose → merge).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -106,5 +107,55 @@ describe('read-only personal tokens', () => {
     expect(ok.statusCode, ok.body).toBe(200);
     expect(ok.headers['mcp-session-id']).toBeTruthy();
     await app.inject({ method: 'DELETE', url: '/api/v1/mcp', headers: { ...bearer(readOnly), 'mcp-session-id': String(ok.headers['mcp-session-id']) } });
+  });
+});
+
+describe('editor personal tokens', () => {
+  let editor: string;
+  /** What only a full (admin) token or a browser sign-in may do: merges, direct commits, gate verdicts, admin. */
+  const FULL_ONLY = ['/api/v1/config/proposals/x/merge', '/api/v1/config/commit', '/api/v1/config/revert', '/api/v1/nodes/x/gate-verdict', '/api/v1/admin/users', '/api/v1/admin/service-tokens', '/api/v1/me/tokens'];
+
+  it("are minted by an admin, and are a member's writes without the full tier", async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/v1/me/tokens', headers: bearer(ADMIN), payload: { name: 'sweep-editor', access: 'editor' } });
+    expect(r.statusCode, r.body).toBe(201);
+    expect(r.json().access).toBe('editor');
+    editor = r.json().secret;
+  });
+
+  it('are refused merges, direct commits, gate verdicts and admin routes, with the scope check first', async () => {
+    expect(routes.some((r) => r.method === 'POST' && r.url === '/api/v1/config/proposals/:id/merge')).toBe(true);
+    const failures: string[] = [];
+    for (const url of FULL_ONLY) {
+      const res = await app.inject({ method: 'POST', url, headers: { ...bearer(editor), 'content-type': 'application/json' }, payload: '{}' });
+      if (res.statusCode !== 403) failures.push(`POST ${url} → ${res.statusCode} ${res.body.slice(0, 160)}`);
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('pass the scope check on everyday writes', async () => {
+    // Past the scope check, each route fails on its (empty) input instead.
+    for (const url of ['/api/v1/tasks', '/api/v1/config/proposals', '/api/v1/config/proposals/x/discard', '/api/v1/evals/runs', '/api/v1/primitives/create_note']) {
+      const res = await app.inject({ method: 'POST', url, headers: { ...bearer(editor), 'content-type': 'application/json' }, payload: '{}' });
+      expect(res.statusCode, `${url} ${res.body}`).not.toBe(403);
+    }
+  });
+});
+
+describe("an admin's full personal token", () => {
+  it('proposes and merges through the primitives, and main advances', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/v1/me/tokens', headers: bearer(ADMIN), payload: { name: 'sweep-full', access: 'full' } });
+    expect(r.statusCode, r.body).toBe(201);
+    const full = r.json().secret as string;
+    const call = (name: string, payload: unknown) => app.inject({ method: 'POST', url: `/api/v1/primitives/${name}`, headers: bearer(full), payload: payload as any });
+    const before = await services.config.mainCommit();
+    const text = readFileSync(resolve(ROOT, 'config-seed/tenets.md'), 'utf8');
+    const proposed = await call('propose_config_change', { changes: [{ path: 'tenets.md', content: `${text}\n<!-- sweep -->\n` }], message: 'sweep: touch tenets' });
+    expect(proposed.statusCode, proposed.body).toBe(200);
+    const id = proposed.json().proposal_id as string;
+    const merged = await call('merge_proposal', { proposal_id: id });
+    expect(merged.statusCode, merged.body).toBe(200);
+    expect(merged.json()).toMatchObject({ proposal_id: id, status: 'merged' });
+    expect(merged.json().diff).toBeUndefined();
+    expect(await services.config.mainCommit()).not.toBe(before);
   });
 });

@@ -39,6 +39,7 @@ import type {
   RoleDto,
   PersonalTokenDto,
   CreatedPersonalTokenDto,
+  TokenAccess,
 } from './types';
 
 // ------------------------------------------------------------ query keys ---
@@ -504,7 +505,7 @@ export function useMyTokens() {
 export function useCreateMyToken() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (b: { name: string; read_only: boolean; expires_in_days: number }) => post<CreatedPersonalTokenDto>('/me/tokens', b),
+    mutationFn: (b: { name: string; access: TokenAccess; expires_in_days: number }) => post<CreatedPersonalTokenDto>('/me/tokens', b),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.myTokens }),
   });
 }

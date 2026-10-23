@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { migrate } from './migrate.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { migrate, migrationsDir } from './migrate.js';
 import { connectTestDb } from '../test/harness.js';
+import { EDITOR_SCOPES } from '../identity/identity.js';
 
 describe('migrations (PGlite, or Postgres with TEST_DATABASE_URL)', () => {
   it('applies all migrations and is idempotent', async () => {
@@ -43,6 +46,23 @@ describe('migrations (PGlite, or Postgres with TEST_DATABASE_URL)', () => {
     expect(await udt()).toBe('vector');
     const sim = await db.query<{ d: number }>(`SELECT embedding <=> '[0.6,0.8]'::vector AS d FROM knowledge_chunks`);
     expect(sim.rows[0]!.d).toBeCloseTo(0);
+    await db.close();
+  });
+
+  it("0008 turns members' full-access personal tokens into editor tokens and leaves admins' full", async () => {
+    const db = await connectTestDb();
+    await migrate(db);
+    await db.query(`INSERT INTO teams (team_id, name) VALUES ('T0000000000000000000', 'team')`);
+    await db.query(`INSERT INTO users (user_id, team_id, handle, display_name, is_admin) VALUES ('UADMIN00000000000000','T0000000000000000000','boss','Boss',true), ('UMEMBER0000000000000','T0000000000000000000','pat','Pat',false)`);
+    const token = (id: string, user: string, scopes: string[] | null) =>
+      db.query(`INSERT INTO user_tokens (token_id, team_id, user_id, name, token_hash, scopes, expires_at) VALUES ($1,'T0000000000000000000',$2,$3,$4,$5, now() + interval '1 day')`, [id, user, id, `hash-${id}`, scopes]);
+    await token('ptk_admin_full', 'UADMIN00000000000000', null);
+    await token('ptk_member_full', 'UMEMBER0000000000000', null);
+    await token('ptk_member_ro', 'UMEMBER0000000000000', ['nodes:read', 'mcp:call']);
+    // Already applied to the empty table above; replay its statement over the tokens that existed before it.
+    await db.query(readFileSync(join(migrationsDir(), '0008_personal_token_tiers.sql'), 'utf8'));
+    const rows = (await db.query<{ token_id: string; scopes: string[] | null }>(`SELECT token_id, scopes FROM user_tokens ORDER BY token_id`)).rows;
+    expect(Object.fromEntries(rows.map((r) => [r.token_id.trim(), r.scopes]))).toEqual({ ptk_admin_full: null, ptk_member_full: [...EDITOR_SCOPES], ptk_member_ro: ['nodes:read', 'mcp:call'] });
     await db.close();
   });
 });

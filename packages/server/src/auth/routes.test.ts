@@ -95,6 +95,41 @@ describe('auth + admin routes', () => {
     expect((await h.app.inject({ method: 'POST', url: '/api/v1/admin/users/NOPE/deactivate', headers: bearer(adminTok) })).statusCode).toBe(404);
   });
 
+  it('admin flag: grant and revoke, never your own or the last admin, announced on the event stream', async () => {
+    const u = (await h.app.inject({ method: 'POST', url: '/api/v1/admin/users', headers: bearer(adminTok), payload: { handle: 'deputy' } })).json();
+    const grant = await h.app.inject({ method: 'POST', url: `/api/v1/admin/users/${u.user_id}/admin`, headers: bearer(adminTok), payload: { is_admin: true } });
+    expect(grant.statusCode).toBe(200);
+    expect(grant.json()).toMatchObject({ handle: 'deputy', is_admin: true });
+    const events = await h.events.replay(null, 500);
+    expect(events.filter((e) => e.topic === 'user.admin-changed').at(-1)?.payload).toMatchObject({ user_id: u.user_id, handle: 'deputy', is_admin: true, by: { kind: 'user', id: f.admin.user_id } });
+
+    // Members and your own flag are off limits; the upsert route cannot flip an existing user's flag either.
+    expect((await h.app.inject({ method: 'POST', url: `/api/v1/admin/users/${u.user_id}/admin`, headers: bearer(memberTok), payload: { is_admin: false } })).statusCode).toBe(403);
+    const self = await h.app.inject({ method: 'POST', url: `/api/v1/admin/users/${f.admin.user_id}/admin`, headers: bearer(adminTok), payload: { is_admin: false } });
+    expect(self.statusCode).toBe(400);
+    expect(self.json().error.message).toMatch(/your own admin flag/);
+    const upsert = await h.app.inject({ method: 'POST', url: '/api/v1/admin/users', headers: bearer(adminTok), payload: { handle: 'deputy', is_admin: false } });
+    expect(upsert.statusCode).toBe(409);
+    expect(upsert.json().error.detail).toEqual({ user_id: u.user_id });
+    expect((await h.app.inject({ method: 'POST', url: `/api/v1/admin/users/${u.user_id}/admin`, headers: bearer(adminTok), payload: {} })).statusCode).toBe(400);
+    expect((await h.app.inject({ method: 'POST', url: '/api/v1/admin/users/NOPE/admin', headers: bearer(adminTok), payload: { is_admin: true } })).statusCode).toBe(404);
+
+    const revoke = await h.app.inject({ method: 'POST', url: `/api/v1/admin/users/${u.user_id}/admin`, headers: bearer(adminTok), payload: { is_admin: false } });
+    expect(revoke.statusCode).toBe(200);
+    expect(revoke.json().is_admin).toBe(false);
+    expect(revoke.json().deactivated_at).toBeNull();
+
+    // An admin service token has no user, so only the last-admin guard stands between it and a lockout.
+    const svc = (await h.app.inject({ method: 'POST', url: '/api/v1/admin/service-tokens', headers: bearer(adminTok), payload: { name: 'ops', scopes: ['admin'] } })).json().secret as string;
+    const admins = (await f.identity.listUsers(f.team_id)).filter((x) => x.is_admin && !x.deactivated_at);
+    for (const a of admins.slice(1)) await f.identity.setAdmin(a.user_id, false);
+    const last = await h.app.inject({ method: 'POST', url: `/api/v1/admin/users/${admins[0]!.user_id}/admin`, headers: bearer(svc), payload: { is_admin: false } });
+    expect(last.statusCode).toBe(409);
+    expect(last.json().error.message).toMatch(/last active admin/);
+    for (const a of admins.slice(1)) await f.identity.setAdmin(a.user_id, true);
+    h.auth.invalidate();
+  });
+
   it('roles: create, membership, public read-only list, delete', async () => {
     const c = await h.app.inject({ method: 'POST', url: '/api/v1/admin/roles', headers: bearer(adminTok), payload: { slug: 'legal', description: 'Legal reviewers' } });
     expect(c.statusCode).toBe(201);

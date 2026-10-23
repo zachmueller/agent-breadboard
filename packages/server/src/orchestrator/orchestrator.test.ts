@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { SERVICE_ACTOR, mintUid, type Circuit } from '@breadboard/shared';
 import { createKit, ARTIFACT_REF, type Kit } from './testkit.js';
+import { EDITOR_SCOPES } from '../identity/identity.js';
 
 const BY = SERVICE_ACTOR('test');
 let k: Kit;
@@ -262,6 +263,11 @@ describe('orchestrator: gates', () => {
 
     await expect(k.orch.gateVerdict({ node_uid: req.uid, request_id: req.request_id, verdict: 'approve', by: k.f.adminPrincipal })).rejects.toMatchObject({ code: 'forbidden' });
     await expect(k.orch.gateVerdict({ node_uid: req.uid, request_id: req.request_id, verdict: 'approve', edits: { priority: 'high' }, by: k.f.memberPrincipal })).rejects.toMatchObject({ code: 'validation-failed' });
+
+    // The targeted reviewer's editor token is not enough: a gate verdict needs an unscoped credential ([12] §3).
+    const editor = { ...k.f.memberPrincipal, scopes: [...EDITOR_SCOPES], token_kind: 'personal' as const };
+    await expect(k.orch.gateVerdict({ node_uid: req.uid, request_id: req.request_id, verdict: 'approve', by: editor })).rejects.toMatchObject({ code: 'forbidden' });
+    expect((await k.sessions.mustGet(s.session_id)).state_detail.verdicts).toEqual([]);
 
     const v = await k.orch.gateVerdict({ node_uid: req.uid, request_id: req.request_id, verdict: 'approve', comment: 'lgtm', by: k.f.memberPrincipal });
     expect(v).toEqual({ resolved: true, session_id: s.session_id });

@@ -1,7 +1,7 @@
-// Personal access tokens ([12] §3): minted from a browser session, resolve to the user, optionally read-only.
+// Personal access tokens ([12] §3): minted from a browser session, resolve to the user; read-only, editor, or full (admins).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createFoundation, type Foundation } from '../test/harness.js';
-import { READ_ONLY_SCOPES } from '../identity/identity.js';
+import { EDITOR_SCOPES, READ_ONLY_SCOPES } from '../identity/identity.js';
 import { buildRouteHarness, type RouteHarness } from './route-harness.js';
 
 const PROXY_SECRET = 'p'.repeat(40);
@@ -33,7 +33,7 @@ describe('personal access tokens', () => {
     expect(r.statusCode).toBe(201);
     const body = r.json();
     expect(body.secret).toMatch(/^bbu_[A-Za-z0-9_-]{40,}$/);
-    expect(body).toMatchObject({ name: 'laptop', user_id: f.member.user_id, scopes: [...READ_ONLY_SCOPES], revoked_at: null, last_used_at: null, mcp_url: 'http://localhost:4000/api/v1/mcp' });
+    expect(body).toMatchObject({ name: 'laptop', user_id: f.member.user_id, scopes: [...READ_ONLY_SCOPES], access: 'read-only', revoked_at: null, last_used_at: null, mcp_url: 'http://localhost:4000/api/v1/mcp' });
     expect(body.token_id).toMatch(/^ptk_/);
     expect(Date.parse(body.expires_at) - Date.now()).toBeGreaterThan(89 * 864e5);
 
@@ -57,20 +57,64 @@ describe('personal access tokens', () => {
     expect((await h.app.inject({ method: 'GET', url: '/api/v1/admin/users', headers: bearer(ro) })).statusCode).toBe(403);
     expect((await h.app.inject({ method: 'POST', url: '/api/v1/admin/users', headers: bearer(ro), payload: { handle: 'x' } })).statusCode).toBe(403);
     expect((await h.app.inject({ method: 'GET', url: '/api/v1/roles', headers: bearer(ro) })).statusCode).toBe(200);
-    const escalate = await mint(bearer(ro), { name: 'escalate', read_only: false });
+    const escalate = await mint(bearer(ro), { name: 'escalate', access: 'full' });
     expect(escalate.statusCode).toBe(403);
     expect(escalate.json().error.message).toMatch(/sign in through the browser/);
   });
 
-  it('a full-access token acts as the user, and still cannot mint tokens', async () => {
-    const r = await mint(bearer(adminTok), { name: 'full', read_only: false, expires_in_days: 7 });
+  it("an admin's full-access token acts as the user, and still cannot mint tokens", async () => {
+    const r = await mint(bearer(adminTok), { name: 'full', access: 'full', expires_in_days: 7 });
     expect(r.statusCode).toBe(201);
-    expect(r.json().scopes).toBeNull();
+    expect(r.json()).toMatchObject({ scopes: null, access: 'full' });
     expect(Date.parse(r.json().expires_at) - Date.now()).toBeLessThan(7.1 * 864e5);
     const full = r.json().secret as string;
     expect((await h.app.inject({ method: 'GET', url: '/api/v1/admin/users', headers: bearer(full) })).statusCode).toBe(200);
     expect((await mint(bearer(full), { name: 'again' })).statusCode).toBe(403);
     expect((await h.app.inject({ method: 'GET', url: '/api/v1/me/tokens', headers: bearer(full) })).statusCode).toBe(200);
+  });
+
+  it('a member mints read-only or editor tokens, never full; legacy read_only: false means editor', async () => {
+    const ed = await mint(bearer(memberTok), { name: 'editor', access: 'editor' });
+    expect(ed.statusCode).toBe(201);
+    expect(ed.json()).toMatchObject({ scopes: [...EDITOR_SCOPES], access: 'editor' });
+    expect((await me(bearer(ed.json().secret))).json()).toMatchObject({ user: { handle: 'member' }, token_kind: 'personal', scopes: [...EDITOR_SCOPES] });
+    // An editor token is still a member's: no admin, no merge scope, and no token minting.
+    expect(EDITOR_SCOPES).not.toContain('config:merge');
+    expect(EDITOR_SCOPES).not.toContain('admin');
+    expect((await mint(bearer(ed.json().secret), { name: 'again' })).statusCode).toBe(403);
+
+    const full = await mint(bearer(memberTok), { name: 'full', access: 'full' });
+    expect(full.statusCode).toBe(403);
+    expect(full.json().error.message).toMatch(/full-access tokens are for admins/);
+
+    const legacy = await mint(bearer(memberTok), { name: 'legacy', read_only: false });
+    expect(legacy.statusCode).toBe(201);
+    expect(legacy.json().access).toBe('editor');
+    expect((await mint(bearer(memberTok), { name: 'legacy-ro', read_only: true })).json().access).toBe('read-only');
+
+    const list = (await h.app.inject({ method: 'GET', url: '/api/v1/me/tokens', headers: bearer(memberTok) })).json();
+    expect(list.items.find((t: any) => t.name === 'editor').access).toBe('editor');
+  });
+
+  it('a full-access token stops working once its owner is no longer an admin, and a member never holds one', async () => {
+    const boss = await f.identity.upsertUser({ team_id: f.team_id, handle: 'boss', display_name: 'Boss', is_admin: true });
+    const bossTok = await h.auth.mintUserToken(boss);
+    const full = (await mint(bearer(bossTok), { name: 'full', access: 'full' })).json().secret as string;
+    expect((await h.app.inject({ method: 'GET', url: '/api/v1/admin/users', headers: bearer(full) })).statusCode).toBe(200);
+
+    // Demoted through the admin route, which drops cached principals: the very next call is refused.
+    const demote = await h.app.inject({ method: 'POST', url: `/api/v1/admin/users/${boss.user_id}/admin`, headers: bearer(adminTok), payload: { is_admin: false } });
+    expect(demote.statusCode).toBe(200);
+    const after = await me(bearer(full));
+    expect(after.statusCode).toBe(401);
+    expect(after.json().error.message).toMatch(/need an admin owner/);
+    // Promoted again, the same token works again: the check is the owner's flag at each use.
+    expect((await h.app.inject({ method: 'POST', url: `/api/v1/admin/users/${boss.user_id}/admin`, headers: bearer(adminTok), payload: { is_admin: true } })).statusCode).toBe(200);
+    expect((await me(bearer(full))).statusCode).toBe(200);
+
+    // An unscoped token of a member (as before migration 0008) is refused outright.
+    const stale = await f.identity.createUserToken({ team_id: f.team_id, user_id: f.member.user_id, name: 'stale', scopes: null, expires_at: new Date(Date.now() + 864e5).toISOString() });
+    expect((await me(bearer(stale.secret))).statusCode).toBe(401);
   });
 
   it("an authenticating edge's identity may mint: that is the member's browser session on such a deployment", async () => {
@@ -92,6 +136,7 @@ describe('personal access tokens', () => {
     expect((await mint(bearer(memberTok), { name: 'x', expires_in_days: 400 })).statusCode).toBe(400);
     expect((await mint(bearer(memberTok), { name: 'x', expires_in_days: 0 })).statusCode).toBe(400);
     expect((await mint(bearer(memberTok), { name: 'x', read_only: 'yes' })).statusCode).toBe(400);
+    expect((await mint(bearer(memberTok), { name: 'x', access: 'admin' })).statusCode).toBe(400);
     expect((await mint({}, { name: 'x' })).statusCode).toBe(401);
   });
 
@@ -112,7 +157,7 @@ describe('personal access tokens', () => {
     expect((await me(bearer(old.secret))).statusCode).toBe(401);
     expect((await me(bearer('bbu_not-a-real-token'))).statusCode).toBe(401);
     const leaver = await f.identity.upsertUser({ team_id: f.team_id, handle: 'leaver', display_name: 'Leaver' });
-    const t = await f.identity.createUserToken({ team_id: f.team_id, user_id: leaver.user_id, name: 'x', scopes: null, expires_at: new Date(Date.now() + 864e5).toISOString() });
+    const t = await f.identity.createUserToken({ team_id: f.team_id, user_id: leaver.user_id, name: 'x', scopes: [...EDITOR_SCOPES], expires_at: new Date(Date.now() + 864e5).toISOString() });
     expect((await me(bearer(t.secret))).statusCode).toBe(200);
     await f.identity.deactivateUser(leaver.user_id);
     h.auth.invalidate();

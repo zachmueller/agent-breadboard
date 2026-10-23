@@ -7,9 +7,10 @@
  * themselves; this layer adds the primitive-level gates (which names a principal may call, `run_circuit`
  * execute grants, circuit read grants on `read_config`, session visibility on `get_session_summary`).
  */
-import { BreadboardError, EFFORT_LEVELS, validateAgainst, type ConfigDefinitionDto, type JsonSchema } from '@breadboard/shared';
+import { BreadboardError, EFFORT_LEVELS, validateAgainst, type ConfigDefinitionDto, type JsonSchema, type ProposalDto } from '@breadboard/shared';
 import { proposalToolChecks } from './proposal-checks.js';
-import { hasScope, requireScope, type Principal } from '../core/principal.js';
+import { hasAdmin, hasScope, requireScope, type Principal } from '../core/principal.js';
+import { GATE_VERDICT_SCOPE } from '../identity/identity.js';
 import type { ChatMessage, Primitives, SessionStore, ToolSpec } from '../core/services.js';
 import { usageColumns } from '../gateway/pricing.js';
 import { obj, sessionVisible, STRING_ARRAY, UID, type PrimitiveCallCtx, type PrimitiveDef, type PrimitivesDeps } from './primitive-defs.js';
@@ -30,6 +31,10 @@ const NEVER_MODEL_DIRECT = new Set(['broker_fetch', 'model_converse']);
 export const MODEL_CAPABILITY = 'model';
 /** Always available to subagent principals. */
 const ALWAYS_FOR_SUBAGENTS = new Set(['read_node']);
+/** Primitives only a signed-in person may call, never a subagent or tool code: humans shape, AI proposes ([00] §1.2). */
+const HUMAN_ONLY = new Set(['merge_proposal', 'discard_proposal', 'record_gate_verdict']);
+/** Human-only primitives that also need admin rights ([12] §3: an admin's full-access token, or an admin's own sign-in). */
+const ADMIN_ONLY = new Set(['merge_proposal', 'record_gate_verdict']);
 
 const EDGE_TYPES = ['derived-from', 'attached-to', 'blocks', 'depends-on', 'references'] as const;
 const OWNED_EDGE_TYPES = new Set(['produces', 'updates']);
@@ -96,7 +101,10 @@ export class PrimitivesImpl implements Primitives {
     const def = this.defs.get(name);
     if (!def) throw new BreadboardError('not-found', `unknown primitive '${name}'`);
     // Who may call comes before what they sent: an unauthorized caller learns nothing about the schema.
-    if (!this.allowed(name, principal)) throw new BreadboardError('grant-denied', `primitive '${name}' is not available to ${principal.actor.kind}:${principal.actor.id}`);
+    if (!this.allowed(name, principal)) {
+      if (ADMIN_ONLY.has(name) && principal.actor.kind === 'user' && !isToolCode(principal)) throw new BreadboardError('forbidden', `'${name}' needs an admin's full-access token or browser sign-in`);
+      throw new BreadboardError('grant-denied', `primitive '${name}' is not available to ${principal.actor.kind}:${principal.actor.id}`);
+    }
     if (def.scope) requireScope(principal, def.scope);
     const v = validateAgainst(def.input_schema, args ?? {});
     if (!v.ok) throw new BreadboardError('validation-failed', `invalid arguments for '${name}': ${v.errors.join('; ')}`, { errors: v.errors });
@@ -107,6 +115,7 @@ export class PrimitivesImpl implements Primitives {
   /** Primitive-level gate by principal kind (resource-level grants are enforced by handlers/services). */
   private allowed(name: string, p: Principal): boolean {
     if (!this.defs.has(name)) return false;
+    if (HUMAN_ONLY.has(name)) return p.actor.kind === 'user' && !isToolCode(p) && p.token_kind !== 'actor' && (!ADMIN_ONLY.has(name) || hasAdmin(p));
     if (isToolCode(p)) return true;
     if (p.actor.kind === 'subagent') {
       if (NEVER_MODEL_DIRECT.has(name)) return false;
@@ -726,6 +735,41 @@ export class PrimitivesImpl implements Primitives {
         },
       },
 
+      {
+        name: 'discard_proposal',
+        scope: 'config:propose',
+        description: 'Discard an open configuration proposal (its branch is kept for history; main is untouched).',
+        input_schema: obj({ proposal_id: { type: 'string', minLength: 1, description: 'The `prp_…` proposal id.' } }, ['proposal_id']),
+        handler: async (a, p) => proposalOutcome(await d.config.discardProposal(a.proposal_id, p)),
+      },
+      {
+        name: 'merge_proposal',
+        scope: 'config:merge',
+        description:
+          'Merge an open configuration proposal into main, exactly as its review page does: the branch head is validated, then replayed over current main, and a conflict or failed check refuses the merge. Admins only. Read it first (`read_proposal`, and an eval run on its branch with `start_eval_run {proposal_id}` where the circuit has fixtures).',
+        input_schema: obj({ proposal_id: { type: 'string', minLength: 1, description: 'The `prp_…` proposal id.' } }, ['proposal_id']),
+        handler: async (a, p) => proposalOutcome(await d.config.mergeProposal(a.proposal_id, p)),
+      },
+
+      // ---------------- Gates ([02] §5.4) ----------------
+      {
+        name: 'record_gate_verdict',
+        scope: GATE_VERDICT_SCOPE,
+        description:
+          "Record your verdict on a hard gate's review request: `approve`, or `request-changes` with an optional `comment` and structured `edits` (merged into the gate output and validated against its schema). Only the reviewers a gate targets may record one (by handle or review role); the gate resolves once every request has a verdict. Admins only. Find open gate requests with `get_review_queue`.",
+        input_schema: obj(
+          {
+            uid: UID,
+            request_id: { type: 'string', minLength: 1, description: 'The gate-flagged `nir_…` request id on that node.' },
+            verdict: { type: 'string', enum: ['approve', 'request-changes'], description: 'Your verdict.' },
+            comment: { type: 'string', description: 'Optional comment (the feedback a `request-changes` loop sees).' },
+            edits: { type: 'object', description: 'With `request-changes` only: fields merged into the gate output, validated against its output schema.' },
+          },
+          ['uid', 'request_id', 'verdict'],
+        ),
+        handler: async (a, p) => d.orchestrator.gateVerdict({ node_uid: a.uid, request_id: a.request_id, verdict: a.verdict, comment: a.comment ?? null, edits: a.edits, by: p }),
+      },
+
       // ---------------- Inspection ([11] §4) ----------------
       ...inspectionCatalog(d),
       ...repoCatalog(d),
@@ -761,6 +805,12 @@ function subFileOf(def: ConfigDefinitionDto, ref: string) {
     throw new BreadboardError('not-found', `no file '${sub}' in ${def.kind} ${def.slug ?? def.uid} at ${def.commit.slice(0, 12)}; its files: ${names.join(', ')}`);
   }
   return { path: `${dir}/${sub}`, commit: def.commit, owner: { uid: def.uid, kind: def.kind, slug: def.slug, title: def.title, path: def.path }, text };
+}
+
+/** A merged or discarded proposal without its patch, which the caller can read with `read_proposal`. */
+function proposalOutcome(dto: ProposalDto) {
+  const { diff: _diff, ...rest } = dto;
+  return rest;
 }
 
 /** Sandboxed tool code (actor token with an execution key) or a code-step actor. */

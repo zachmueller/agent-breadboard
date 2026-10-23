@@ -8,7 +8,7 @@ import type { Principal } from '../core/principal.js';
 import type { Services } from '../core/services.js';
 import { createPrimitives } from '../toolbox/primitives.js';
 import { register, MCP_PATH } from './http.js';
-import { READ_ONLY_SCOPES } from '../identity/identity.js';
+import { EDITOR_SCOPES, READ_ONLY_SCOPES } from '../identity/identity.js';
 import { createSessionStore } from '../orchestrator/session-store.js';
 
 const ECHO_TOOL = '01J8FQ2ZK7XW9MBT4PVE';
@@ -86,7 +86,7 @@ beforeAll(async () => {
     orchestrator: proxy as any,
     sessions: sessions as any,
     evals: proxy as any,
-    config: { definition: async (ref: string) => ({ uid: ref, kind: 'tool', raw: 'r' }) } as any,
+    config: { definition: async (ref: string) => ({ uid: ref, kind: 'tool', raw: 'r' }), mergeProposal: async (id: string) => ({ proposal_id: id, status: 'merged', merged_commit: 'm', diff: 'patch' }) } as any,
     toolbox: () => toolbox,
     broker: proxy as any,
     gateway: proxy as any,
@@ -238,6 +238,31 @@ describe('Breadboard MCP over streamable HTTP', () => {
       expect(JSON.parse((write.content as any)[0].text)).toMatchObject({ code: 'forbidden' });
       await transport.terminateSession();
       await client.close();
+    } finally {
+      principal = before;
+    }
+  });
+
+  it('an editor token proposes but cannot merge or record verdicts; an admin full token lists and calls both', async () => {
+    const before = principal;
+    const tiers = async (p: Principal) => {
+      principal = p;
+      const { client, transport } = await connect();
+      const names = (await client.listTools()).tools.map((t) => t.name);
+      const merge = await client.callTool({ name: 'merge_proposal', arguments: { proposal_id: 'prp_1' } });
+      await transport.terminateSession();
+      await client.close();
+      return { names, merge: JSON.parse((merge.content as any)[0].text) };
+    };
+    try {
+      const editor = await tiers({ ...f.adminPrincipal, token_kind: 'personal', scopes: [...EDITOR_SCOPES] });
+      expect(editor.names).toEqual(expect.arrayContaining(['propose_config_change', 'discard_proposal', 'create_task', 'echo']));
+      for (const n of ['merge_proposal', 'record_gate_verdict']) expect(editor.names).not.toContain(n);
+      expect(editor.merge).toMatchObject({ code: 'forbidden', message: "'merge_proposal' needs an admin's full-access token or browser sign-in" });
+
+      const full = await tiers({ ...f.adminPrincipal, token_kind: 'personal', scopes: null });
+      expect(full.names).toEqual(expect.arrayContaining(['merge_proposal', 'record_gate_verdict', 'discard_proposal']));
+      expect(full.merge).toEqual({ proposal_id: 'prp_1', status: 'merged', merged_commit: 'm' });
     } finally {
       principal = before;
     }

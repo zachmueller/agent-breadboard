@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mintUid, zBreadboardConfig, SCHEMA_TAGS, type BreadboardConfig, type SessionRecord } from '@breadboard/shared';
 import { createFoundation, type Foundation } from '../test/harness.js';
+import { EDITOR_SCOPES } from '../identity/identity.js';
 import type { EventBus, SessionStore } from '../core/services.js';
 import type { Principal } from '../core/principal.js';
 import { createContentService, locateQuote, type ContentServiceImpl } from './service.js';
@@ -240,6 +241,9 @@ describe('need-input', () => {
     const gq = await svc.reviewQueue(f.memberPrincipal);
     expect(gq[0]!.node.uid).toBe(art.uid);
     expect(gq[0]!.gating_session).toEqual({ session_id: SES_A, circuit_uid: CIRCUIT, state: 'running', kind: 'circuit-run' });
+    // A verdict on a gate request is a gate verdict on any route: an editor token (no gates:verdict) may not record it.
+    const editor = { ...f.memberPrincipal, scopes: [...EDITOR_SCOPES], token_kind: 'personal' as const };
+    await expect(svc.resolveNeedInput({ uid: art.uid, request_id: gate.request_id, verdict: 'approve', by: editor })).rejects.toMatchObject({ code: 'forbidden' });
     const gr = await svc.resolveNeedInput({ uid: art.uid, request_id: gate.request_id, verdict: 'approve', by: f.memberPrincipal });
     expect(gr.resolved.gate).toEqual({ session_id: SES_A, step_id: 'review#1' });
 

@@ -6,6 +6,7 @@
  */
 import { BreadboardError, NODE_TYPES, SESSION_KINDS, SESSION_STATES, resultText, toBlocks, type NodeDto, type SessionRecord, type Turn } from '@breadboard/shared';
 import { canSeeSession, type Principal } from '../core/principal.js';
+import { tokenAccess } from '../identity/identity.js';
 import { buildDashboard } from '../core/dashboard.js';
 import { ANALYSIS_VIEWS } from '../evals/analysis.js';
 import { proposalToolChecks } from './proposal-checks.js';
@@ -121,7 +122,8 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'whoami',
       scope: null,
-      description: 'Who this connection acts as: user, review roles, admin flag, token kind, scopes (`read_only` when the token cannot write), and the Breadboard session this connection is logged on.',
+      description:
+        "Who this connection acts as: user, review roles, admin flag, token kind, scopes, a personal token's `access` tier (`read-only`, `editor`, or `full`, which only an admin holds and which alone may merge proposals and record gate verdicts; `read_only` when the token cannot write), and the Breadboard session this connection is logged on.",
       input_schema: obj({}),
       handler: async (_a, p) => ({
         actor: p.actor,
@@ -130,6 +132,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
         is_admin: p.is_admin,
         token_kind: p.token_kind,
         scopes: p.scopes,
+        ...(p.token_kind === 'personal' ? { access: tokenAccess(p.scopes) } : {}),
         read_only: p.scopes !== null && p.scopes.every((s) => s.endsWith(':read') || s === 'mcp:call'),
         session_id: p.session_id,
         team_id: p.team_id,
@@ -138,7 +141,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'get_breadboard_overview',
       scope: 'sessions:read',
-      description: 'One-call health picture of this Breadboard: instance (name, version, database, sandbox, model providers, public URL), config main commit and definition counts by kind, dispatcher capacity and hourly spend, session counts by state, open proposals, your review-queue size, knowledge domains, need-input rate over 30 days, eval dashboard, recent model fallbacks, connector status and the repository mirrors you can search (`search_repo`).',
+      description: 'One-call health picture of this Breadboard: instance (name, version, database, sandbox, model providers, public URL), config main commit and definition counts by kind, dispatcher capacity and hourly spend, session counts by state, the active admins, open proposals, your review-queue size, knowledge domains, need-input rate over 30 days, eval dashboard, recent model fallbacks, connector status and the repository mirrors you can search (`search_repo`).',
       input_schema: obj({}),
       handler: async (_a, p) => {
         const quiet = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => {
@@ -149,7 +152,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
             return null;
           }
         };
-        const [dash, main_commit, tree, open, domains, providers, repos] = await Promise.all([
+        const [dash, main_commit, tree, open, domains, providers, repos, users] = await Promise.all([
           buildDashboard({ content: d.content, dispatcher: d.dispatcher(), sessions: d.sessions, evals: d.evals, gateway: d.gateway, connectors: d.connectors() }, p, d.log),
           quiet('config.main', () => d.config.mainCommit()),
           quiet('config.tree', () => d.config.tree()),
@@ -157,6 +160,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
           quiet('knowledge', () => d.knowledge.domains()),
           quiet('providers', async () => d.gateway.providers()),
           quiet('repos', () => d.mirrors().status(p)),
+          quiet('users', () => d.identity.listUsers(d.team_id)),
         ]);
         const definitions: Record<string, number> = {};
         for (const e of tree ?? []) definitions[e.kind] = (definitions[e.kind] ?? 0) + 1;
@@ -168,6 +172,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
           config: { main_commit, definitions },
           capacity: dash.capacity,
           sessions: dash.sessions,
+          admins: users ? users.filter((u) => u.is_admin && !u.deactivated_at).map((u) => u.handle) : null,
           open_proposals: open ? open.length : null,
           review_count: dash.review_count,
           knowledge: domains ? { domains: domains.length, by_domain: domains.map((x) => ({ slug: x.slug, note_count: x.note_count })) } : null,
