@@ -283,6 +283,8 @@ Prompted by a team whose tools share one bucket. A read tool needs GET on query 
 
 Caveat: a server older than this change ignores stored rules and enforces only the envelope. Before rolling back past it, delete or flatten any capability that relies on rules.
 
+Deployed to the instance behind a load balancer as server `f30bd01`, sandboxes unchanged. The diff changed only the `SERVER_IMAGE` line of `deploy.env`: same host, 2+2 warm sandboxes, health ok. The admin script that defined the capability first checked `checkScope` in the running build: on the previous image a write-scoped DELETE outside its rule passed, so it refused to define anything. On the new image it stored both rules. In an eval run, a read-scoped Python tool then made 114 ranged S3 GETs through it (all 206, none denied), where the previous run had failed at the first read. Not yet exercised live: a write-scoped DELETE through a rule (unit-tested).
+
 ## Next steps (in priority order)
 
 0. **Roll out reasoning, caching and Strands Harness** (decisions of 2026-10-15, above). Build the Python sandbox image with `strands-harness==0.3.1`, then run a `spawn-harness` step with `harness: strands-harness` in Docker on Bedrock and a designer chat of three or more messages, checking cache reads and reasoning in the transcript. Upgrades apply migration 0007 at startup; seed changes (`spawn-harness` manifest and sources) reach only new config repos, so existing instances need the tool updated in their config repo. Then compare `strands` and `strands-harness` (and effort settings) on the same fixtures.
