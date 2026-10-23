@@ -5,7 +5,8 @@
  *   32-byte key derived from `BROKER_MASTER_KEY`; they are never returned by list/get and never leave the server.
  *   The `aws-role` kind stores no secret at all: the server's own AWS credentials sign, optionally as an assumed role.
  * - Capabilities bind a credential (or none, for allowlist-only `raw` use) to a scope
- *   `{hosts (exact | *.wildcard), methods, path_prefixes, scopes}`.
+ *   `{hosts (exact | *.wildcard), methods, path_prefixes, scopes, rules?}`. Optional `rules` narrow the envelope per
+ *   declared tool scope (e.g. `read` may GET under one prefix, `write` may DELETE under another); they never widen it.
  * - `fetch()` validates that the calling tool's manifest declares the capability ∧ the request is within scope,
  *   attaches the credential, executes the request itself, and audits every call (allowed or denied).
  * - `withRepoAuth()` authenticates a repository mirror's git fetch ([06] §7.1): the server runs git itself, so the
@@ -25,12 +26,24 @@ import { codecommitGitCredentials, signSigV4, type SigV4Credentials } from './si
 export const CREDENTIAL_KINDS = ['bearer', 'header', 'basic', 'query', 'aws-sigv4', 'aws-role', 'raw'] as const;
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
 
+/** One per-scope rule: a tool declaring one of `scopes` may use these methods under these path prefixes. */
+export interface CapabilityRule {
+  scopes: string[];
+  methods?: string[];
+  path_prefixes?: string[];
+}
+
 export interface CapabilityScope {
   hosts: string[];
   methods?: string[];
   path_prefixes?: string[];
   scopes?: string[];
+  /** When present, a request must also match a rule for the tool's declared scope. Rules only narrow the envelope. */
+  rules?: CapabilityRule[];
 }
+
+const SCOPE_KEYS = new Set(['hosts', 'methods', 'path_prefixes', 'scopes', 'rules']);
+const RULE_KEYS = new Set(['scopes', 'methods', 'path_prefixes']);
 
 export const BROKER_FETCH_TIMEOUT_MS = 30_000;
 export const BROKER_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -137,6 +150,17 @@ export function checkScope(scope: CapabilityScope, toolScope: string, req: { met
   if (!(scope.hosts ?? []).some((p) => hostMatches(p, host))) return { ok: false, reason: `host ${host} not in capability scope` };
   if (scope.methods?.length && !scope.methods.map((m) => m.toUpperCase()).includes(method)) return { ok: false, reason: `method ${method} not in capability scope` };
   if (scope.path_prefixes?.length && !scope.path_prefixes.some((p) => req.url.pathname.startsWith(p))) return { ok: false, reason: `path ${req.url.pathname} not in capability scope` };
+  return checkRules(scope, toolScope, [method], req.url.pathname);
+}
+
+/** The per-scope rules: with any rules, one naming `toolScope` must allow every method in `methods` under `path`. */
+function checkRules(scope: CapabilityScope, toolScope: string, methods: string[], path: string): ScopeCheck {
+  if (!scope.rules?.length) return { ok: true };
+  const ruled = scope.rules.filter((r) => r.scopes.includes(toolScope));
+  if (!ruled.length) return { ok: false, reason: `no capability rule for scope '${toolScope}'` };
+  const fits = (r: CapabilityRule) =>
+    (!r.methods?.length || methods.every((m) => r.methods!.map((x) => x.toUpperCase()).includes(m))) && (!r.path_prefixes?.length || r.path_prefixes.some((p) => path.startsWith(p)));
+  if (!ruled.some(fits)) return { ok: false, reason: `no capability rule for scope '${toolScope}' allows ${methods.join(', ')} ${path}` };
   return { ok: true };
 }
 
@@ -161,7 +185,33 @@ export function checkRepoScope(scope: CapabilityScope, url: URL): ScopeCheck {
   if (missing.length) return { ok: false, reason: `method ${missing.join(', ')} not in capability scope (a git fetch needs GET and POST)` };
   const path = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
   if (scope.path_prefixes?.length && !scope.path_prefixes.some((p) => path.startsWith(p))) return { ok: false, reason: `path ${url.pathname} not in capability scope` };
-  return { ok: true };
+  return checkRules(scope, 'read', GIT_FETCH_METHODS, path);
+}
+
+/** Validate and normalize `scope.rules`: each rule must sit inside the envelope, so the stored scope reads honestly. */
+function normalizeRules(input: unknown, envelope: CapabilityScope): CapabilityRule[] {
+  const bad = (msg: string) => new BreadboardError('validation-failed', `capability scope.rules: ${msg}`);
+  if (input === undefined) return [];
+  if (!Array.isArray(input)) throw bad('must be an array');
+  const strings = (v: unknown, field: string, i: number): string[] | undefined => {
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || !v.every((x) => typeof x === 'string' && x.trim())) throw bad(`rule ${i} ${field} must be an array of non-empty strings`);
+    return v.map((x: string) => x.trim());
+  };
+  return input.map((raw, i) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad(`rule ${i} must be an object`);
+    const extra = Object.keys(raw).filter((k) => !RULE_KEYS.has(k));
+    if (extra.length) throw bad(`rule ${i} has unknown field(s) ${extra.join(', ')} (expected ${[...RULE_KEYS].join(', ')})`);
+    const r = raw as Record<string, unknown>;
+    const scopes = strings(r.scopes, 'scopes', i);
+    if (!scopes?.length) throw bad(`rule ${i} must name at least one scope`);
+    const methods = strings(r.methods, 'methods', i)?.map((m) => m.toUpperCase());
+    const prefixes = strings(r.path_prefixes, 'path_prefixes', i);
+    for (const s of scopes) if (envelope.scopes?.length && !envelope.scopes.includes(s)) throw bad(`rule ${i} scope '${s}' is not in scope.scopes (${envelope.scopes.join(', ')})`);
+    for (const m of methods ?? []) if (envelope.methods?.length && !envelope.methods.includes(m)) throw bad(`rule ${i} method ${m} is not in scope.methods (${envelope.methods.join(', ')})`);
+    for (const p of prefixes ?? []) if (envelope.path_prefixes?.length && !envelope.path_prefixes.some((e) => p.startsWith(e))) throw bad(`rule ${i} path prefix '${p}' is not under scope.path_prefixes (${envelope.path_prefixes.join(', ')})`);
+    return { scopes, ...(methods?.length ? { methods } : {}), ...(prefixes?.length ? { path_prefixes: prefixes } : {}) };
+  });
 }
 
 export class CredentialBrokerImpl implements CredentialBroker {
@@ -245,6 +295,9 @@ export class CredentialBrokerImpl implements CredentialBroker {
   async defineCapability(input: { name: string; credential: string | null; description?: string; scope: CapabilityScope; by: Principal }): Promise<{ capability_id: string; name: string }> {
     requireAdmin(input.by);
     if (!/^[a-z0-9][a-z0-9._-]{0,99}$/i.test(input.name)) throw new BreadboardError('validation-failed', 'capability name must be 1-100 chars of [A-Za-z0-9._-]');
+    // A misspelled field would otherwise be dropped silently, leaving the capability wider than intended.
+    const extra = Object.keys(input.scope ?? {}).filter((k) => !SCOPE_KEYS.has(k));
+    if (extra.length) throw new BreadboardError('validation-failed', `capability scope has unknown field(s) ${extra.join(', ')} (expected ${[...SCOPE_KEYS].join(', ')})`);
     const hosts = (input.scope?.hosts ?? []).map((h) => h.trim()).filter(Boolean);
     if (!hosts.length) throw new BreadboardError('validation-failed', 'capability scope.hosts must list at least one host pattern');
     for (const h of hosts) if (h === '*' || (h.includes('*') && !/^\*\.[^*]+$/.test(h))) throw new BreadboardError('validation-failed', `invalid host pattern '${h}' (exact host or leading '*.' wildcard)`);
@@ -260,6 +313,8 @@ export class CredentialBrokerImpl implements CredentialBroker {
       ...(input.scope.path_prefixes?.length ? { path_prefixes: input.scope.path_prefixes } : {}),
       ...(input.scope.scopes?.length ? { scopes: input.scope.scopes } : {}),
     };
+    const rules = normalizeRules(input.scope.rules, scope);
+    if (rules.length) scope.rules = rules;
     const r = await this.deps.db.query<{ capability_id: string }>(
       `INSERT INTO broker_capabilities (capability_id, team_id, name, credential_id, description, scope)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb)

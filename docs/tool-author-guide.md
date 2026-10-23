@@ -73,6 +73,27 @@ Python methods are the snake_case twins of the table above (`read_note`, `list_k
 
 Declare hosts in `egress.allow`; everything else is blocked by the proxy and logged. For authenticated APIs declare a `capability` and call `ctx.fetch('<capability>', { url, method, headers, body })`; an admin binds the capability to a credential and scope (hosts, methods, path prefixes) in the broker. The credential never enters the container.
 
+Your manifest's `scope` for the capability (`read`, `write`, `query`, …) is what the broker checks: a `read` declaration may only send GET, HEAD and OPTIONS, and an admin can add per-scope rules that narrow it further. For example, an S3 bucket behind an `aws-role` credential with `service: s3` (`POST /admin/broker/capabilities`):
+
+```json
+{
+  "name": "reports-bucket",
+  "credential": "s3-reports-role",
+  "scope": {
+    "hosts": ["my-bucket.s3.us-east-1.amazonaws.com"],
+    "methods": ["GET", "DELETE"],
+    "path_prefixes": ["/reports/", "/data/"],
+    "scopes": ["read", "write"],
+    "rules": [
+      { "scopes": ["read"], "methods": ["GET"], "path_prefixes": ["/reports/", "/data/"] },
+      { "scopes": ["write"], "methods": ["DELETE"], "path_prefixes": ["/data/tmp/"] }
+    ]
+  }
+}
+```
+
+A tool declaring it `read` may then GET objects (a `range` header passes through and `content-range` comes back, which is how to read objects larger than the broker's 4 MB response cap), and one declaring `write` may DELETE only under `/data/tmp/`. The broker matches the URL path, so use virtual-hosted URLs (`https://<bucket>.s3.<region>.amazonaws.com/<key>`). Response bodies come back as UTF-8 text.
+
 To call a model, do not add a provider endpoint to `egress.allow` or ship provider credentials: declare `capabilities: [{ name: model, scope: invoke }]` and call `ctx.converse({ messages, system?, tools?, preset?, model_id?, max_tokens?, temperature?, effort?, force_tool? })` (Python: `ctx.converse(messages, system=..., preset=...)`). Messages and the reply use the gateway's chat format (`text`, `tool_use`, `tool_result` and `reasoning` blocks); append the reply's content to your history unchanged, `reasoning` blocks included, so the next turn replays them and hits the prompt cache. The turn resolves the preset (default `medium`) with fallback, counts against the Session's budget, and shows up in the Session's cost; the seeded `spawn-harness` is the worked example.
 
 ## Idempotency

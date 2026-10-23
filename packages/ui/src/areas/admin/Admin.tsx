@@ -555,6 +555,11 @@ function BrokerTab() {
             </span>
           )}
           {!!c.scope.scopes?.length && <span className="text-fg-subtle">scopes: {c.scope.scopes.join(', ')}</span>}
+          {(c.scope.rules ?? []).map((r, i) => (
+            <span key={i} className="text-fg-subtle">
+              rule {r.scopes.join(', ')}: {(r.methods ?? ['*']).join('|')} {(r.path_prefixes ?? []).join(', ')}
+            </span>
+          ))}
         </span>
       ),
     },
@@ -757,7 +762,7 @@ function CapabilityDialog({ credentials, onClose }: { credentials: string[]; onC
         <Input label="Methods (optional)" value={methods} onChange={(e) => setMethods(e.target.value)} placeholder="GET, POST" />
         <Input label="Path prefixes (optional)" value={paths} onChange={(e) => setPaths(e.target.value)} placeholder="/repos/" />
       </div>
-      <Input label="Tool scopes (optional)" value={scopes} onChange={(e) => setScopes(e.target.value)} placeholder="read, query" hint="The scopes a tool manifest may declare for this capability. A 'read' declaration only ever allows GET/HEAD/OPTIONS." />
+      <Input label="Tool scopes (optional)" value={scopes} onChange={(e) => setScopes(e.target.value)} placeholder="read, query" hint="The scopes a tool manifest may declare for this capability. A 'read' declaration only ever allows GET/HEAD/OPTIONS. Per-scope rules (scope.rules) are set through POST /admin/broker/capabilities." />
     </ConfirmDialog>
   );
 }

@@ -192,12 +192,14 @@ export async function register(app: FastifyInstance, services: Services): Promis
       const v = scope[k];
       if (v !== undefined && !(Array.isArray(v) && v.every((x) => typeof x === 'string'))) throw new BreadboardError('validation-failed', `field 'scope.${k}' must be an array of strings`);
     }
+    // Per-scope rules: the broker validates each rule against the envelope.
+    if (scope.rules !== undefined && !(Array.isArray(scope.rules) && scope.rules.every((r) => r && typeof r === 'object' && !Array.isArray(r)))) throw new BreadboardError('validation-failed', "field 'scope.rules' must be an array of objects");
     const credential = body.credential === undefined || body.credential === null ? null : requireField<string>(body, 'credential');
     const out = await services.broker.defineCapability({
       name,
       credential,
       description: typeof body.description === 'string' ? body.description : undefined,
-      scope: scope as { hosts: string[]; methods?: string[]; path_prefixes?: string[]; scopes?: string[] },
+      scope: scope as { hosts: string[]; methods?: string[]; path_prefixes?: string[]; scopes?: string[]; rules?: Array<{ scopes: string[]; methods?: string[]; path_prefixes?: string[] }> },
       by: principalOf(req),
     });
     reply.status(201);

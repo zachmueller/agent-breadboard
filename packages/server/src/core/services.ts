@@ -525,7 +525,7 @@ export interface CredentialBroker {
   registerCredential(input: { name: string; kind: string; secret: Record<string, string> | string; by: Principal }): Promise<{ credential_id: string; name: string }>;
   deleteCredential(name: string, by: Principal): Promise<void>;
   listCredentials(): Promise<Array<{ credential_id: string; name: string; kind: string; created_at: string }>>;
-  defineCapability(input: { name: string; credential: string | null; description?: string; scope: { hosts: string[]; methods?: string[]; path_prefixes?: string[]; scopes?: string[] }; by: Principal }): Promise<{ capability_id: string; name: string }>;
+  defineCapability(input: { name: string; credential: string | null; description?: string; scope: { hosts: string[]; methods?: string[]; path_prefixes?: string[]; scopes?: string[]; rules?: Array<{ scopes: string[]; methods?: string[]; path_prefixes?: string[] }> }; by: Principal }): Promise<{ capability_id: string; name: string }>;
   deleteCapability(name: string, by: Principal): Promise<void>;
   listCapabilities(): Promise<Array<{ capability_id: string; name: string; credential: string | null; description: string; scope: Record<string, unknown> }>>;
   /** Execute an outbound request on behalf of tool code ([12] §5): validate, attach credential, audit. */

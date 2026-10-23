@@ -272,6 +272,17 @@ Prompted by moving work from an existing codebase into a Breadboard. To test end
 
 Deployed to the instance behind a load balancer as server `bd51c99`, sandboxes unchanged. The diff changed only the `SERVER_IMAGE` line of `deploy.env`: same host, 2+2 warm sandboxes, health ok, and 0008 applied at startup. The `admin sign-in paths` line lists the active admins. Over MCP, the admin's existing unscoped token reports `access: full` and lists the three new tools. Still to do there: demote or deactivate the leftover seed admin row, and record a gate verdict over MCP on a real gated run (unit- and orchestrator-tested only). After any upgrade, check `get_breadboard_overview.admins`. A full token of a former admin stops working.
 
+## Decisions made 2026-10-23: per-scope broker rules
+
+Prompted by a team whose tools share one bucket. A read tool needs GET on query results, and a write tool needs DELETE under one table prefix. A capability had one flat scope, so a `write` declaration could also DELETE everywhere a `read` one could GET. Worse, `defineCapability` rebuilt the scope from known fields, so a narrower-looking definition was silently stored wide. Recorded in spec [12](../specs/12-security-deployment.md) §5 and the [tool author guide](tool-author-guide.md).
+
+1. **`scope.rules: [{scopes, methods?, path_prefixes?}]`.** With rules, a request must also match a rule naming the tool's declared scope. They only narrow: each rule must sit inside the envelope (its scopes, methods and path prefixes), checked when the capability is defined. Without rules, behaviour is unchanged.
+2. **Unknown scope or rule fields are rejected** rather than dropped. No migration: scope is JSONB.
+3. **Repository mirrors** apply `read` rules too (GET and POST under the repository path).
+4. **S3 needed no new code.** An `aws-role` credential with `service: s3` already signs (including `x-amz-content-sha256`), and ranged reads already work through `range` / `content-range`.
+
+Caveat: a server older than this change ignores stored rules and enforces only the envelope. Before rolling back past it, delete or flatten any capability that relies on rules.
+
 ## Next steps (in priority order)
 
 0. **Roll out reasoning, caching and Strands Harness** (decisions of 2026-10-15, above). Build the Python sandbox image with `strands-harness==0.3.1`, then run a `spawn-harness` step with `harness: strands-harness` in Docker on Bedrock and a designer chat of three or more messages, checking cache reads and reasoning in the transcript. Upgrades apply migration 0007 at startup; seed changes (`spawn-harness` manifest and sources) reach only new config repos, so existing instances need the tool updated in their config repo. Then compare `strands` and `strands-harness` (and effort settings) on the same fixtures.

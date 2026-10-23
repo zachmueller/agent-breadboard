@@ -198,6 +198,7 @@ describe('auth + admin routes', () => {
     expect(JSON.stringify(c.json())).not.toContain('abc');
     expect((await h.app.inject({ method: 'DELETE', url: '/api/v1/admin/broker/credentials/gh', headers: auth })).statusCode).toBe(204);
     expect((await h.app.inject({ method: 'POST', url: '/api/v1/admin/broker/capabilities', headers: auth, payload: { name: 'gh-api', scope: { hosts: [] } } })).statusCode).toBe(400);
+    expect((await h.app.inject({ method: 'POST', url: '/api/v1/admin/broker/capabilities', headers: auth, payload: { name: 'gh-api', scope: { hosts: ['api.github.com'], rules: ['read'] } } })).statusCode).toBe(400);
     expect((await h.app.inject({ method: 'POST', url: '/api/v1/admin/broker/capabilities', headers: auth, payload: { name: 'gh-api', credential: 'gh', scope: { hosts: ['api.github.com'], methods: ['GET'] } } })).statusCode).toBe(201);
     expect((await h.app.inject({ method: 'DELETE', url: '/api/v1/admin/broker/capabilities/gh-api', headers: auth })).statusCode).toBe(204);
     expect((await h.app.inject({ method: 'GET', url: '/api/v1/admin/broker/audit?limit=7', headers: auth })).json().items).toEqual([{ limit: 7 }]);

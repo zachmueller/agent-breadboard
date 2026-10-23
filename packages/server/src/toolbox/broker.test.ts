@@ -321,3 +321,79 @@ describe('repository mirror auth', () => {
     expect(JSON.stringify(audit)).not.toMatch(/SECRET/);
   });
 });
+
+describe('per-scope capability rules', () => {
+  const S3 = 'https://my-bucket.s3.us-east-1.amazonaws.com';
+  const scope = {
+    hosts: ['my-bucket.s3.us-east-1.amazonaws.com'],
+    methods: ['GET', 'DELETE'],
+    path_prefixes: ['/reports/', '/data/'],
+    scopes: ['read', 'write'],
+    rules: [
+      { scopes: ['read'], methods: ['GET'], path_prefixes: ['/reports/', '/data/'] },
+      { scopes: ['write'], methods: ['DELETE'], path_prefixes: ['/data/tmp/'] },
+    ],
+  };
+  const req = (method: string, path: string) => ({ method, url: new URL(`${S3}${path}`) });
+
+  it('narrows the envelope per declared scope', () => {
+    expect(checkScope(scope, 'read', req('GET', '/reports/q1.csv'))).toEqual({ ok: true });
+    expect(checkScope(scope, 'write', req('DELETE', '/data/tmp/part-0.parquet'))).toEqual({ ok: true });
+    // inside the envelope, outside the write rule
+    expect(checkScope(scope, 'write', req('DELETE', '/reports/q1.csv')).reason).toMatch(/no capability rule for scope 'write' allows DELETE \/reports\/q1.csv/);
+    expect(checkScope(scope, 'write', req('GET', '/data/tmp/x')).reason).toMatch(/allows GET/);
+    // a rule never widens the envelope, nor the read-only method rule
+    expect(checkScope({ ...scope, rules: [{ scopes: ['read'], methods: ['GET'], path_prefixes: ['/other/'] }] }, 'read', req('GET', '/other/x')).reason).toMatch(/path \/other\/x not in capability scope/);
+    expect(checkScope({ ...scope, rules: [{ scopes: ['read'] }] }, 'read', req('DELETE', '/data/x')).reason).toMatch(/read-scoped/);
+    expect(checkScope({ ...scope, scopes: undefined, rules: [{ scopes: ['read'] }] }, 'query', req('GET', '/data/x')).reason).toMatch(/no capability rule for scope 'query'/);
+    // no rules: the envelope alone, as before
+    expect(checkScope({ ...scope, rules: undefined }, 'write', req('DELETE', '/reports/q1.csv'))).toEqual({ ok: true });
+  });
+
+  it('applies read rules to repository mirrors', () => {
+    const repo = { hosts: ['git.example.com'], path_prefixes: ['/team/'] };
+    expect(checkRepoScope({ ...repo, rules: [{ scopes: ['read'], path_prefixes: ['/team/app.git/'] }] }, new URL('https://git.example.com/team/app.git'))).toEqual({ ok: true });
+    expect(checkRepoScope({ ...repo, rules: [{ scopes: ['read'], path_prefixes: ['/team/app.git/'] }] }, new URL('https://git.example.com/team/other.git')).reason).toMatch(/no capability rule/);
+    expect(checkRepoScope({ ...repo, rules: [{ scopes: ['read'], methods: ['GET'] }] }, new URL('https://git.example.com/team/app.git')).reason).toMatch(/GET, POST/);
+  });
+
+  it('stores rules and rejects ones outside the envelope or with unknown fields', async () => {
+    const by = f.adminPrincipal;
+    await broker.defineCapability({ name: 'bucket', credential: null, scope: { ...scope, rules: [{ scopes: ['read'], methods: ['get'] }, ...scope.rules.slice(1)] }, by });
+    const stored = (await broker.listCapabilities()).find((c) => c.name === 'bucket')!.scope;
+    expect(stored.rules).toEqual([{ scopes: ['read'], methods: ['GET'] }, scope.rules[1]]);
+    await broker.defineCapability({ name: 'bucket-flat', credential: null, scope: { hosts: scope.hosts, rules: [] }, by });
+    expect((await broker.listCapabilities()).find((c) => c.name === 'bucket-flat')!.scope).toEqual({ hosts: scope.hosts });
+
+    const define = (s: Record<string, unknown>) => broker.defineCapability({ name: 'bad', credential: null, scope: { hosts: scope.hosts, ...s } as any, by });
+    await expectError(define({ rule: [] }), 'validation-failed', /unknown field\(s\) rule/);
+    await expectError(define({ rules: {} }), 'validation-failed', /must be an array/);
+    await expectError(define({ rules: [{ methods: ['GET'] }] }), 'validation-failed', /at least one scope/);
+    await expectError(define({ rules: [{ scopes: ['read'], path: ['/x/'] }] }), 'validation-failed', /unknown field\(s\) path/);
+    await expectError(define({ scopes: ['read'], rules: [{ scopes: ['write'] }] }), 'validation-failed', /scope 'write' is not in scope.scopes/);
+    await expectError(define({ methods: ['GET'], rules: [{ scopes: ['read'], methods: ['DELETE'] }] }), 'validation-failed', /method DELETE is not in scope.methods/);
+    await expectError(define({ path_prefixes: ['/data/'], rules: [{ scopes: ['read'], path_prefixes: ['/reports/'] }] }), 'validation-failed', /'\/reports\/' is not under scope.path_prefixes/);
+    expect((await broker.listCapabilities()).some((c) => c.name === 'bad')).toBe(false);
+  });
+
+  it('signs an S3 range read through a rule and refuses a delete the rule does not cover', async () => {
+    const b = await createCredentialBroker({ db: f.db, team_id: f.team_id, masterKey: MASTER, log: f.log, awsRoleResolver: async () => ({ access_key_id: 'ASIAS3EXAMPLE', secret_access_key: 's3-SECRET' }) });
+    const by = f.adminPrincipal;
+    await b.registerCredential({ name: 's3-role', kind: 'aws-role', secret: { region: 'us-east-1', service: 's3', role_arn: 'arn:aws:iam::123456789012:role/data' }, by });
+    await b.defineCapability({ name: 's3-rules', credential: 's3-role', scope: { ...scope, hosts: ['127.0.0.1'] }, by });
+    const s3Tool = (await makeToolDir({ language: 'typescript', entrypoint: 'src/index.ts', capabilities: [{ name: 's3-rules', scope: 'read' }] }, { 'src/index.ts': '' })).tool;
+    const s3Writer = (await makeToolDir({ language: 'typescript', entrypoint: 'src/index.ts', capabilities: [{ name: 's3-rules', scope: 'write' }] }, { 'src/index.ts': '' })).tool;
+    const go = (t: Tool, method: string, path: string, headers?: Record<string, string>) =>
+      b.fetch({ capability: 's3-rules', request: { url: `${base}${path}`, method, headers }, tool: t, principal: by, execution_key: 'ses_X:s:1:0' });
+
+    seen.length = 0;
+    expect((await go(s3Tool, 'GET', '/reports/q1.csv', { range: 'bytes=0-99' })).status).toBe(200);
+    expect(seen[0]!.headers.range).toBe('bytes=0-99');
+    expect(seen[0]!.headers['x-amz-content-sha256']).toMatch(/^[0-9a-f]{64}$/);
+    expect(seen[0]!.headers.authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=ASIAS3EXAMPLE\/\d{8}\/us-east-1\/s3\/aws4_request/);
+    expect((await go(s3Writer, 'DELETE', '/data/tmp/part-0')).status).toBe(200);
+    await expectError(go(s3Writer, 'DELETE', '/reports/q1.csv'), 'grant-denied', /no capability rule for scope 'write'/);
+    expect(seen.length).toBe(2);
+    expect((await b.audit(20)).some((r) => r.capability === 's3-rules' && r.ok === false && String(r.error).includes('no capability rule'))).toBe(true);
+  });
+});

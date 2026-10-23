@@ -116,7 +116,7 @@ export interface BrokerCapabilityDto {
   credential?: string | null;
   credential_id?: string | null;
   description: string;
-  scope: { hosts?: string[]; methods?: string[]; path_prefixes?: string[]; scopes?: string[]; [k: string]: unknown };
+  scope: { hosts?: string[]; methods?: string[]; path_prefixes?: string[]; scopes?: string[]; rules?: Array<{ scopes: string[]; methods?: string[]; path_prefixes?: string[] }>; [k: string]: unknown };
   created_at?: string;
 }
 
