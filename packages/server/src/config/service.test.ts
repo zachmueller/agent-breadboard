@@ -613,6 +613,15 @@ describe('ConfigService proposals and commits', () => {
     const t = await svc.propose({ changes: [{ path: CONFIG_PATHS.tenets, content: 'Be brief.\n' }], message: 'tenets', by: f.memberPrincipal, draft: true });
     expect((await svc.affectedCircuits(t.proposal_id)).map((c) => c.via)).toEqual([['tenets'], ['tenets']]);
     await svc.discardProposal(t.proposal_id, f.memberPrincipal);
+    // Editing the child circuit reaches its parent through the sub-circuit step, which is not itself changed.
+    const child = await svc.propose({ changes: [{ path: CONFIG_PATHS.circuit(CHILD), content: childCircuitYaml().replace('Polish', 'Polish carefully') }], message: 'child', by: f.memberPrincipal, draft: true });
+    expect((await svc.affectedCircuits(child.proposal_id)).map((c) => [c.uid, c.via])).toEqual(
+      expect.arrayContaining([
+        [CHILD, ['changed']],
+        [CIRC, ['sub-circuit polish']],
+      ]),
+    );
+    await svc.discardProposal(child.proposal_id, f.memberPrincipal);
   });
 
   it('rejects invalid proposals and amendments up front', async () => {

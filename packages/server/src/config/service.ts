@@ -1350,7 +1350,9 @@ export class ConfigServiceImpl implements ConfigService {
       const def = head.byUid.get(uid);
       if (!def || def.kind !== 'circuit') return;
       const cur = out.get(uid) ?? { uid, slug: def.slug, title: def.title, fixtures: 0, via: [] };
-      if (!cur.via.includes(via)) cur.via.push(via);
+      // An edited circuit is affected because it changed; paths back to it through reference cycles add nothing.
+      if (via === 'changed') cur.via = ['changed'];
+      else if (!cur.via.includes('changed') && !cur.via.includes(via)) cur.via.push(via);
       out.set(uid, cur);
     };
     // Changed definitions seed a walk up the reference graph: tool → subagent → circuit, sub-circuit → parent.
@@ -1381,9 +1383,11 @@ export class ConfigServiceImpl implements ConfigService {
       if (seen.has(key)) continue;
       seen.add(key);
       hit(uid, via);
+      // A parent of an edited circuit is reached through it, not changed itself.
+      const onward = via === 'changed' ? `sub-circuit ${head.byUid.get(uid)?.slug ?? uid}` : via;
       for (const r of head.refs) {
         if (r.to !== uid || !r.from.uid || r.from.uid === uid) continue;
-        if (r.from.kind === 'circuit' || r.from.kind === 'subagent' || r.from.kind === 'tool') queue.push({ uid: r.from.uid, via });
+        if (r.from.kind === 'circuit' || r.from.kind === 'subagent' || r.from.kind === 'tool') queue.push({ uid: r.from.uid, via: onward });
       }
     }
     if (allCircuits) for (const d of head.defs) if (d.kind === 'circuit' && d.uid) hit(d.uid, allCircuits);
