@@ -300,6 +300,15 @@ Prompted by two needs. The Sessions page loaded history 50 rows at a time and ke
 5. **A branch run uses everything on the branch.** The gateway resolves presets at the run's commit (`ModelRequest.config_commit`). Nested `run_tool` / `run_circuit` calls inherit the caller's commit. `run_circuit` takes `proposal_id` or `ref`, records `state_detail.proposal_id`, and those runs are listed with `list_sessions {proposal_id}`. Only `breadboard.yaml` settings stay at main.
 6. **Affected circuits.** `affectedCircuits` walks references from the changed definitions up to circuits (tool → subagent → circuit, sub-circuit → parent, preset tier → its subagents' circuits, tenets → all), with fixture counts. It is exposed as `GET /config/proposals/:id/affected-circuits` and `read_proposal.affected_circuits`. "Run evals" on the review page and on every designer's card offers those circuits, not only edited ones. Each branch run shows beside the circuit's latest main-line run (`/evals/runs?proposal=none`).
 
+Deployed to the instance behind a load balancer as server `53ad6d8`, sandboxes unchanged. `47e709a` went first; the first live draft showed that a parent of an edited circuit inherited the "changed" label, and `53ad6d8` fixed that. Each diff changed only the `SERVER_IMAGE` line of `deploy.env`: same host, 2+2 warm sandboxes, health ok, and 0009 applied at startup. The `admin sign-in paths` line now lists only the one human admin. Over MCP:
+- `list_sessions` with a date window, `offset` and `order: asc` returned a `total`.
+- A comment-only draft stayed out of `list_proposals {status: open}` and the overview (`draft_proposals: 1`), and `read_proposal` listed its `affected_circuits`.
+- `start_eval_run {proposal_id}` ran its two fixtures at the draft's head ($0.25). `list_eval_runs {proposal_id: "none"}` found the baseline, and the draft was then discarded.
+
+The three designer prompts there were identical to the old seed. A proposal updating them to the new seed text waits for review.
+
+Not yet exercised live: `run_circuit {proposal_id}`, or a preset change on a branch (both run end to end in the e2e suite), and the UI pager in a browser against that instance (checked on a local server with 300 seeded sessions).
+
 ## Next steps (in priority order)
 
 0. **Roll out reasoning, caching and Strands Harness** (decisions of 2026-10-15, above). Build the Python sandbox image with `strands-harness==0.3.1`, then run a `spawn-harness` step with `harness: strands-harness` in Docker on Bedrock and a designer chat of three or more messages, checking cache reads and reasoning in the transcript. Upgrades apply migration 0007 at startup; seed changes (`spawn-harness` manifest and sources) reach only new config repos, so existing instances need the tool updated in their config repo. Then compare `strands` and `strands-harness` (and effort settings) on the same fixtures.
