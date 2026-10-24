@@ -18,7 +18,7 @@ import {
 import type { Db } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import { canSeeSession, requireUser, servicePrincipal, type Principal } from '../core/principal.js';
-import type { ChatContent, ChatMessage, ConfigService, ContentService, ConversationService, EventBus, ResolvedSubagent, SessionStore, SubagentRuntime, TaskService } from '../core/services.js';
+import type { ChatContent, ChatMessage, ConfigService, ContentService, ConversationService, EventBus, ResolvedSubagent, SessionFilter, SessionStore, SubagentRuntime, TaskService } from '../core/services.js';
 import { totalTokens, usageColumns } from '../gateway/pricing.js';
 
 export const CONVERSATION_STEP_ID = 'conversation';
@@ -349,19 +349,36 @@ export class ConversationServiceImpl implements ConversationService {
 
   async list(input: Parameters<ConversationService['list']>[0]): Promise<SessionRecord[]> {
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
-    const page = await this.d.sessions.list({ kind: input.kind ? [input.kind] : [...CONVERSATION_KINDS], limit: 200 });
     const me = input.by.actor;
     const own = (s: SessionRecord) => {
       const a = ((s.state_detail as any)?.started_by ?? (s as any).created_by) as { kind?: string; id?: string } | undefined;
       return a?.kind === me.kind && a?.id === me.id;
     };
-    const visible = page.items
-      .filter((s) => s.team_id === undefined || s.team_id === this.d.team_id)
-      .filter((s) => !input.by.grants || canSeeSession(input.by, s.session_id))
-      .filter((s) => !input.definition_uid || (s.state_detail as any)?.context?.definition_uid === input.definition_uid);
+    // Filters run in SQL, so an older chat is not lost behind the newest 200 sessions.
+    const page = await this.d.sessions.list(this.filterOf(input, limit));
+    const visible = this.visibleOf(page.items, input.by);
     if (input.mine) return visible.filter(own).slice(0, limit);
     // The user's own sessions first; all team sessions visible. Stable within each group (store order).
     return [...visible.filter(own), ...visible.filter((s) => !own(s))].slice(0, limit);
+  }
+
+  async page(input: Parameters<ConversationService['page']>[0]): Promise<{ items: SessionRecord[]; total: number }> {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+    const page = await this.d.sessions.list({ ...this.filterOf(input, limit), offset: Math.max(0, input.offset ?? 0) });
+    return { items: this.visibleOf(page.items, input.by), total: page.total ?? 0 };
+  }
+
+  private filterOf(input: { kind?: 'intake' | 'conversation'; by: Principal; definition_uid?: string; mine?: boolean }, limit: number): SessionFilter {
+    return {
+      kind: input.kind ? [input.kind] : [...CONVERSATION_KINDS],
+      ...(input.definition_uid ? { definition: input.definition_uid } : {}),
+      ...(input.mine ? { created_by: input.by.actor.id } : {}),
+      limit,
+    };
+  }
+
+  private visibleOf(items: SessionRecord[], by: Principal): SessionRecord[] {
+    return items.filter((s) => s.team_id === undefined || s.team_id === this.d.team_id).filter((s) => !by.grants || canSeeSession(by, s.session_id));
   }
 
   async draftTask(sessionId: string): Promise<Record<string, unknown> | null> {
@@ -485,7 +502,8 @@ export class ConversationServiceImpl implements ConversationService {
         const p = await this.d.config.getProposal(context.proposal_id);
         const changes = (p.changes ?? []).map((c) => `- ${c.status} ${c.path}`).join('\n');
         // The id sticks in the session context; once merged or discarded the diff is only cost.
-        if (p.status === 'open') parts.push(`[Open proposal] ${p.proposal_id} (${p.status}) on branch ${p.branch}: ${p.message}\n${changes}\n\`\`\`diff\n${cap(p.diff ?? '', DIFF_CAP)}\n\`\`\``);
+        if (p.status === 'open' || p.status === 'draft')
+          parts.push(`[${p.status === 'draft' ? 'Draft' : 'Open'} proposal] ${p.proposal_id} (${p.status}) on branch ${p.branch}: ${p.message}\n${changes}\n\`\`\`diff\n${cap(p.diff ?? '', DIFF_CAP)}\n\`\`\``);
         else parts.push(`[Proposal] ${p.proposal_id} was ${p.status}; open a new proposal for further changes.`);
       } catch (e) {
         parts.push(`[Open proposal] ${context.proposal_id} (unavailable: ${errMsg(e)})`);

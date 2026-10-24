@@ -1,8 +1,18 @@
 /** URL search-param state helpers. All search values are normalized to strings by the router. */
 import { useCallback } from 'react';
-import { useNavigate, useSearch } from '@tanstack/react-router';
+import { parseSearchWith, stringifySearchWith, useNavigate, useSearch } from '@tanstack/react-router';
 
 export type SearchRecord = Record<string, string | undefined>;
+
+/**
+ * Router search serialization. Every search value is a string here, so scalars stay as typed in the URL (`?page=2`,
+ * not the default `?page=%222%22`) and are never coerced back to numbers; only objects and arrays go through JSON.
+ */
+export const parseSearch = parseSearchWith((v) => {
+  if (/^[[{]/.test(v)) return JSON.parse(v);
+  throw new Error('scalar');
+});
+export const stringifySearch = stringifySearchWith(JSON.stringify);
 
 /** Router `validateSearch`: keep non-empty scalar values as strings. */
 export function stringSearch(raw: Record<string, unknown>): SearchRecord {

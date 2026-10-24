@@ -59,7 +59,7 @@ function takeChatParam(): string | null {
 
 const userTurns = (turns: ConversationTurn[]) => turns.filter((t) => t.role === 'user').length;
 
-export function DesignerChatPanel({ kind, canRunEvals, placeholder }: { kind: DesignerKind; canRunEvals?: boolean; placeholder?: string }) {
+export function DesignerChatPanel({ kind, placeholder }: { kind: DesignerKind; placeholder?: string }) {
   const wt = useWorkingTree();
   const qc = useQueryClient();
   const settings = useBreadboardSettings();
@@ -301,7 +301,7 @@ export function DesignerChatPanel({ kind, canRunEvals, placeholder }: { kind: De
           it.t === 'turn' ? (
             <TurnView key={it.turn.turn_id ?? i} turn={it.turn} toolNames={toolNames} outcomes={outcomeById} />
           ) : (
-            <ProposalCard key={`p:${it.id}`} proposalId={it.id} amended={it.amended} canRunEvals={canRunEvals} busy={busy} onRevise={(msg, proposal_id) => void send(msg, { proposal_id })} />
+            <ProposalCard key={`p:${it.id}`} proposalId={it.id} amended={it.amended} busy={busy} onRevise={(msg, proposal_id) => void send(msg, { proposal_id })} />
           ),
         )}
         {pending !== null && <UserBubble text={pending} />}

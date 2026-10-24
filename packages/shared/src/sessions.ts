@@ -98,7 +98,7 @@ export interface AmbientContext {
 }
 
 /** Breadboard event-stream topics ([11] §5). */
-export const EVENT_TOPICS = ['session.state', 'session.event', 'task.status', 'need-input.tagged', 'need-input.resolved', 'config.committed', 'eval.run-completed', 'node.updated', 'user.admin-changed'] as const;
+export const EVENT_TOPICS = ['session.state', 'session.event', 'task.status', 'need-input.tagged', 'need-input.resolved', 'config.committed', 'proposal.state', 'eval.run-completed', 'node.updated', 'user.admin-changed'] as const;
 export type EventTopic = (typeof EVENT_TOPICS)[number];
 
 export interface StreamEvent {

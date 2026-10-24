@@ -17,7 +17,8 @@ export interface FallbackEvent {
 
 export interface ModelGatewayDeps {
   providers: ModelProvider[];
-  presets: () => Promise<Presets>;
+  /** Presets at a config commit (default main): a branch run resolves tiers from its own commit. */
+  presets: (commit?: string) => Promise<Presets>;
   log: Logger;
   onFallback?: (e: FallbackEvent & { session_id?: string; step_id?: string }) => void;
 }
@@ -82,8 +83,8 @@ export class ModelGatewayImpl implements ModelGateway {
   }
 
   /** Ordered candidates before capability filtering. */
-  private async candidates(preset: string, overrides?: Record<string, string> | null): Promise<Candidate[]> {
-    const presets = await this.deps.presets();
+  private async candidates(preset: string, overrides?: Record<string, string> | null, commit?: string | null): Promise<Candidate[]> {
+    const presets = await this.deps.presets(commit ?? undefined);
     const entries = presets.presets[preset];
     const override = overrides?.[preset];
     if (override) {
@@ -109,8 +110,8 @@ export class ModelGatewayImpl implements ModelGateway {
     return out;
   }
 
-  async resolvePreset(preset: string, requires?: ModelRequest['requires'], overrides?: Record<string, string> | null): Promise<Array<{ provider: string; model_id: string }>> {
-    const all = await this.candidates(preset, overrides);
+  async resolvePreset(preset: string, requires?: ModelRequest['requires'], overrides?: Record<string, string> | null, commit?: string | null): Promise<Array<{ provider: string; model_id: string }>> {
+    const all = await this.candidates(preset, overrides, commit);
     return all.filter((c) => this.satisfies(c, requires ?? [])).map(({ provider, model_id }) => ({ provider, model_id }));
   }
 
@@ -140,7 +141,7 @@ export class ModelGatewayImpl implements ModelGateway {
       if (!provider) throw validationFailed(`unknown model provider '${req.provider}'`);
       candidates = [{ provider, model_id: req.model_id }];
     } else if (req.preset) {
-      candidates = await this.candidates(req.preset, req.model_overrides);
+      candidates = await this.candidates(req.preset, req.model_overrides, req.config_commit);
     } else {
       throw validationFailed('model request needs a preset or model_id');
     }

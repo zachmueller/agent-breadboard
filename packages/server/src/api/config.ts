@@ -3,10 +3,10 @@
  * ConfigService owns validation and the propose-review-commit state machine.
  */
 import type { FastifyInstance } from 'fastify';
-import { BreadboardError } from '@breadboard/shared';
+import { BreadboardError, PROPOSAL_STATUSES, validationFailed } from '@breadboard/shared';
 import type { Services, FileChange } from '../core/services.js';
 import { requireScope, type Principal } from '../core/principal.js';
-import { intParam, principalOf, requireBody, requireField, strParam } from './util.js';
+import { arrayParam, intParam, offsetParam, principalOf, requireBody, requireField, strParam } from './util.js';
 import { API_PREFIX } from '../app.js';
 import { proposalToolChecks } from '../toolbox/proposal-checks.js';
 
@@ -91,7 +91,7 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const p = principalOf(req);
     requireScope(p, 'config:propose');
     const body = requireBody(req);
-    const dto = await config.propose({ changes: changesOf(body), message: requireField(body, 'message'), by: p, base: strParam(body.base), session_id: strParam(body.session_id) ?? p.session_id });
+    const dto = await config.propose({ changes: changesOf(body), message: requireField(body, 'message'), by: p, base: strParam(body.base), session_id: strParam(body.session_id) ?? p.session_id, draft: body.draft === true });
     reply.status(201);
     return dto;
   });
@@ -99,7 +99,14 @@ export async function register(app: FastifyInstance, services: Services): Promis
   app.get(`${base}/proposals`, async (req) => {
     requireRead(principalOf(req));
     const q = req.query as any;
-    return config.listProposals({ status: strParam(q.status), limit: intParam(q.limit, 50), session_id: strParam(q.session_id), definition: strParam(q.definition) });
+    const status = arrayParam(q.status);
+    if (status?.some((s) => !(PROPOSAL_STATUSES as readonly string[]).includes(s))) throw validationFailed(`status must be one of ${PROPOSAL_STATUSES.join(', ')}`);
+    const filter = { status, limit: intParam(q.limit, 50), session_id: strParam(q.session_id), definition: strParam(q.definition) };
+    const offset = offsetParam(q.offset);
+    // Offset mode returns a page with `total` ([11] §2); without it, the bare array older callers expect.
+    if (offset === undefined) return config.listProposals(filter);
+    const page = await config.pageProposals({ ...filter, offset });
+    return { items: page.proposals, next_cursor: null, total: page.total };
   });
 
   app.get(`${base}/proposals/:id`, async (req) => {
@@ -119,6 +126,17 @@ export async function register(app: FastifyInstance, services: Services): Promis
     requireScope(p, 'config:propose');
     const body = requireBody(req);
     return config.amendProposal((req.params as any).id, changesOf(body), requireField(body, 'message'), p);
+  });
+
+  app.post(`${base}/proposals/:id/submit`, async (req) => {
+    const p = principalOf(req);
+    requireScope(p, 'config:propose');
+    return config.submitProposal((req.params as any).id, p);
+  });
+
+  app.get(`${base}/proposals/:id/affected-circuits`, async (req) => {
+    requireRead(principalOf(req));
+    return { items: await config.affectedCircuits((req.params as any).id), next_cursor: null };
   });
 
   app.post(`${base}/proposals/:id/merge`, async (req) => {

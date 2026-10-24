@@ -570,6 +570,51 @@ describe('ConfigService proposals and commits', () => {
     expect(hist[2]!.author).toBe('Member <member@breadboard.local>');
   });
 
+  it('a draft is staged outside the review queue until submitted, and cannot be merged as a draft', async () => {
+    const src = `${CONFIG_PATHS.toolDir(TOOL_A)}/src/index.ts`;
+    const before = bus.events.length;
+    const d = await svc.propose({ changes: [{ path: src, content: 'export async function handler() { return { exit: "pass", output: { ok: false } }; }\n' }], message: 'try stricter check', by: f.memberPrincipal, draft: true });
+    expect(d.status).toBe('draft');
+    expect(d.validation.ok).toBe(true);
+    expect((await svc.listProposals({ status: 'open' })).map((x) => x.proposal_id)).not.toContain(d.proposal_id);
+    expect((await svc.listProposals({ status: 'draft' })).map((x) => x.proposal_id)).toContain(d.proposal_id);
+    expect((await svc.pageProposals({ status: ['draft', 'open'] })).proposals.map((x) => x.proposal_id)).toContain(d.proposal_id);
+    // It runs like any proposal: the branch resolves, and amendments land on it.
+    expect((await svc.tool(TOOL_A, d.branch)).dir).toBeTruthy();
+    const amended = await svc.amendProposal(d.proposal_id, [{ path: src, content: 'export async function handler() { return { exit: "fail", output: { ok: false } }; }\n' }], 'fail instead', f.memberPrincipal);
+    expect(amended.status).toBe('draft');
+    await expect(svc.mergeProposal(d.proposal_id, f.adminPrincipal)).rejects.toMatchObject({ code: 'invalid-state', message: expect.stringContaining('submit it for review first') });
+
+    // The tool reaches the circuit directly (code step) and through the subagent that is granted it; the child circuit is untouched.
+    const affected = await svc.affectedCircuits(d.proposal_id);
+    expect(affected.map((c) => [c.uid, c.fixtures])).toEqual([[CIRC, 1]]);
+    expect(affected[0]!.via).toEqual(['tool check-citations']);
+
+    const open = await svc.submitProposal(d.proposal_id, f.memberPrincipal);
+    expect(open.status).toBe('open');
+    expect((await svc.listProposals({ status: 'open' })).map((x) => x.proposal_id)).toContain(d.proposal_id);
+    await expect(svc.submitProposal(d.proposal_id, f.memberPrincipal)).rejects.toMatchObject({ code: 'invalid-state' });
+    const states = bus.events.slice(before).filter((e) => e.topic === 'proposal.state' && e.payload.proposal_id === d.proposal_id);
+    expect(states.map((e) => [e.payload.status, e.payload.prior])).toEqual([
+      ['draft', null],
+      ['open', 'draft'],
+    ]);
+    await svc.discardProposal(d.proposal_id, f.memberPrincipal);
+    expect(bus.events.at(-1)).toMatchObject({ topic: 'proposal.state', payload: { proposal_id: d.proposal_id, status: 'discarded', prior: 'open' } });
+  });
+
+  it('affected circuits follow preset tiers and tenets', async () => {
+    const presets = (medium: string) => toYaml({ schema: SCHEMA_TAGS.presets, presets: { small: [{ provider: 'mock', model_id: 'mock-small' }], medium: [{ provider: 'mock', model_id: medium }] } });
+    const tier = await svc.propose({ changes: [{ path: CONFIG_PATHS.presets, content: presets('mock-medium-2') }], message: 'new medium model', by: f.memberPrincipal, draft: true });
+    // Both subagents run on `medium`: the parent circuit (both) and the child (the writer) are affected.
+    expect((await svc.affectedCircuits(tier.proposal_id)).map((c) => c.uid).sort()).toEqual([CIRC, CHILD].sort());
+    expect((await svc.affectedCircuits(tier.proposal_id)).find((c) => c.uid === CHILD)!.via).toEqual(['preset medium']);
+    await svc.discardProposal(tier.proposal_id, f.memberPrincipal);
+    const t = await svc.propose({ changes: [{ path: CONFIG_PATHS.tenets, content: 'Be brief.\n' }], message: 'tenets', by: f.memberPrincipal, draft: true });
+    expect((await svc.affectedCircuits(t.proposal_id)).map((c) => c.via)).toEqual([['tenets'], ['tenets']]);
+    await svc.discardProposal(t.proposal_id, f.memberPrincipal);
+  });
+
   it('rejects invalid proposals and amendments up front', async () => {
     await expect(svc.propose({ changes: [{ path: CONFIG_PATHS.tool(TOOL_A), content: null }], message: 'rm tool', by: f.memberPrincipal })).rejects.toMatchObject({ code: 'validation-failed' });
     await expect(svc.propose({ changes: [], message: 'empty', by: f.memberPrincipal })).rejects.toMatchObject({ code: 'validation-failed' });

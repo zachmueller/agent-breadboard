@@ -6,15 +6,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProposalDto } from '@breadboard/shared';
-import { ArrowLeft, FlaskConical, GitMerge, GitPullRequest, MessageSquare, Send, Trash2 } from 'lucide-react';
-import { configApi, convApi, evalsApi, qk, proposalDefinitions, type ConversationSnapshot } from '../lib/configApi';
+import { ArrowLeft, GitMerge, GitPullRequest, MessageSquare, Send, Trash2 } from 'lucide-react';
+import { configApi, convApi, qk, proposalDefinitions, type ConversationSnapshot } from '../lib/configApi';
+import { useSessions } from '../../../lib/queries';
+import { SessionChip } from '../../../components';
 import { Btn, Confirm, ErrorBox, Md, Spin, TabBar, TextAreaInput, errorMessage, notify, useLiveEvents, payloadSessionId } from '../ui';
 import { AppLink } from '../components/AppLink';
 import { RawPatch } from '../components/Diff';
 import { ValidationList } from '../components/fields';
 import { fmtDate, fmtRelative, hrefFor, shortCommit } from '../lib/format';
 import { blocksOf, conversationEnded } from '../chat/turns';
-import { EvalRunSummary, ProposalAuthor, ProposalChanges, ProposalPills, ToolChecks, useDefinitionLabels } from './ProposalParts';
+import { BranchEvalLauncher, EvalRunSummary, ProposalAuthor, ProposalChanges, ProposalPills, ToolChecks, isLiveProposal, useDefinitionLabels } from './ProposalParts';
 
 const NO_PROPOSAL = { changes: [] } as unknown as ProposalDto;
 
@@ -45,15 +47,16 @@ export function ProposalReviewPage({ id }: { id: string }) {
     },
     onError: (e) => notify(errorMessage(e), 'danger'),
   });
-  const runEvals = useMutation({
-    mutationFn: (circuit: string) => evalsApi.launch({ circuit, ref: p!.branch, proposal_id: id }),
-    onSuccess: (r) => {
-      if (r.eval_run_id) setRunIds((ids) => [...new Set([...ids, r.eval_run_id])]);
-      notify('Eval run started on the proposal branch', 'ok');
-      void qc.invalidateQueries({ queryKey: ['evals'] });
+  const submit = useMutation({
+    mutationFn: () => configApi.submit(id),
+    onSuccess: () => {
+      notify('Submitted for review', 'ok');
+      settled();
     },
     onError: (e) => notify(errorMessage(e), 'danger'),
   });
+  // Circuit runs on the branch (`run_circuit {proposal_id}`), alongside its eval runs.
+  const branchRuns = useSessions({ proposal: id, kind: 'circuit-run' }, { offset: 0, size: 25 }, { enabled: !!p, live: false });
 
   if (q.isLoading)
     return (
@@ -64,7 +67,8 @@ export function ProposalReviewPage({ id }: { id: string }) {
   if (q.error || !p) return <ErrorBox error={q.error ?? new Error('proposal not found')} title={`Proposal ${id}`} onRetry={() => void q.refetch()} />;
 
   const open = p.status === 'open';
-  const circuits = defs.filter((d) => d.kind === 'circuit' && d.exists);
+  const draft = p.status === 'draft';
+  const live = isLiveProposal(p);
   const runs = [...new Set([...(p.eval_runs ?? []), ...runIds])];
   const primary = defs.find((d) => d.exists) ?? null;
 
@@ -104,20 +108,21 @@ export function ProposalReviewPage({ id }: { id: string }) {
                 <ArrowLeft className="size-3.5" aria-hidden /> {primary.label}
               </AppLink>
             )}
-            {open && circuits.map((c) => (
-              <Btn key={c.uid} size="sm" variant="ghost" icon={<FlaskConical className="size-3.5" />} loading={runEvals.isPending} onClick={() => runEvals.mutate(c.uid)}>
-                Run evals{circuits.length > 1 ? ` (${c.label})` : ''}
+            <BranchEvalLauncher p={p} onStarted={(r) => setRunIds((ids) => [...new Set([...ids, r])])} />
+            {live && (
+              <Btn size="sm" variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={() => setConfirmDiscard(true)}>
+                Discard
               </Btn>
-            ))}
+            )}
+            {draft && (
+              <Btn size="sm" variant="primary" icon={<Send className="size-3.5" />} loading={submit.isPending} onClick={() => submit.mutate()}>
+                Submit for review
+              </Btn>
+            )}
             {open && (
-              <>
-                <Btn size="sm" variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={() => setConfirmDiscard(true)}>
-                  Discard
-                </Btn>
-                <Btn size="sm" variant="primary" icon={<GitMerge className="size-3.5" />} loading={merge.isPending} disabled={!p.validation?.ok} onClick={() => merge.mutate()}>
-                  Merge
-                </Btn>
-              </>
+              <Btn size="sm" variant="primary" icon={<GitMerge className="size-3.5" />} loading={merge.isPending} disabled={!p.validation?.ok} onClick={() => merge.mutate()}>
+                Merge
+              </Btn>
             )}
           </div>
         </div>
@@ -130,7 +135,12 @@ export function ProposalReviewPage({ id }: { id: string }) {
           </div>
         )}
         {p.status === 'discarded' && <div className="rounded-md border border-line bg-sunken px-3 py-2 text-sm text-fg-muted">Discarded. Nothing from this proposal reached main.</div>}
-        {open && !p.validation?.ok && (
+        {draft && (
+          <div className="rounded-md border border-warn/40 bg-warn-soft px-3 py-2 text-sm text-warn-fg">
+            Draft: not in the review queue yet. Its branch runs and evaluates like any proposal; run its evals, then submit it for review once it behaves as intended.
+          </div>
+        )}
+        {live && !p.validation?.ok && (
           <section className="rounded-md border border-danger/40 bg-danger-soft p-3">
             <h3 className="mb-1 text-sm font-semibold text-danger-fg">Fails validation, so it cannot be merged yet</h3>
             <ValidationList errors={p.validation?.errors ?? []} warnings={p.validation?.warnings ?? []} />
@@ -141,11 +151,21 @@ export function ProposalReviewPage({ id }: { id: string }) {
           <section className="space-y-1 rounded-md border border-line bg-surface p-3">
             <h3 className="mb-1 text-sm font-semibold">Eval runs on this branch</h3>
             {runs.map((r) => (
-              <EvalRunSummary key={r} id={r} />
+              <EvalRunSummary key={r} id={r} baseline />
             ))}
           </section>
         )}
-        {open && <RevisionRequest p={p} />}
+        {branchRuns.items.length > 0 && (
+          <section className="rounded-md border border-line bg-surface p-3">
+            <h3 className="mb-1.5 text-sm font-semibold">Circuit runs on this branch</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {branchRuns.items.map((s) => (
+                <SessionChip key={s.session_id} id={s.session_id} state={s.state} kind={s.kind} />
+              ))}
+            </div>
+          </section>
+        )}
+        {live && <RevisionRequest p={p} />}
 
         <TabBar
           value={p.status === 'discarded' ? 'raw' : view}

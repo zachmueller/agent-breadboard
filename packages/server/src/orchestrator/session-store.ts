@@ -177,14 +177,33 @@ export class PgSessionStore implements SessionStore {
       where.push(`(created_by->>'id' = ${who} OR state_detail->'started_by'->>'id' = ${who})`);
     }
     if (f.definition) where.push(`state_detail->'context'->>'definition_uid' = ${p(f.definition)}`);
+    if (f.proposal) where.push(`state_detail->>'proposal_id' = ${p(f.proposal)}`);
     if (f.created_after) where.push(`created_at >= ${p(f.created_after)}::timestamptz`);
     if (f.created_before) where.push(`created_at <= ${p(f.created_before)}::timestamptz`);
-    const cur = decodeCursor(f.cursor);
-    if (cur) where.push(`(created_at, session_id) < (${p(cur.created_at)}::timestamptz, ${p(cur.key)})`);
+    const asc = f.order === 'asc';
+    const dir = asc ? 'ASC' : 'DESC';
     const limit = clampLimit(f.limit);
-    const r = await this.db.query(`SELECT ${SESSION_COLS} FROM sessions WHERE ${where.join(' AND ')} ORDER BY created_at DESC, session_id DESC LIMIT ${limit + 1}`, params);
-    const items = r.rows.slice(0, limit).map(rowToSession);
-    const next_cursor = r.rows.length > limit ? encodeCursor({ created_at: items[items.length - 1]!.created_at, key: items[items.length - 1]!.session_id }) : null;
+    // Offset mode ([11] §2): numbered pages with a total over the same filters.
+    if (f.offset !== undefined && f.offset !== null) {
+      const offset = Math.max(0, Math.floor(Number(f.offset) || 0));
+      const cond = where.join(' AND ');
+      const [rows, count] = await Promise.all([
+        this.db.query(`SELECT ${SESSION_COLS} FROM sessions WHERE ${cond} ORDER BY created_at ${dir}, session_id ${dir} LIMIT ${limit} OFFSET ${offset}`, params),
+        this.db.query(`SELECT count(*)::int AS n FROM sessions WHERE ${cond}`, params),
+      ]);
+      return { items: rows.rows.map(rowToSession), next_cursor: null, total: Number(count.rows[0]?.n ?? 0) };
+    }
+    const cur = decodeCursor(f.cursor);
+    if (cur) where.push(`(created_at, session_id) ${asc ? '>' : '<'} (${p(cur.created_at)}::timestamptz, ${p(cur.key)})`);
+    // The cursor keeps created_at at full (microsecond) precision; an ISO string would drop rows sharing a millisecond.
+    const r = await this.db.query(
+      `SELECT ${SESSION_COLS}, created_at::text AS cursor_ts FROM sessions WHERE ${where.join(' AND ')} ORDER BY created_at ${dir}, session_id ${dir} LIMIT ${limit + 1}`,
+      params,
+    );
+    const page = r.rows.slice(0, limit);
+    const items = page.map(rowToSession);
+    const last = page[page.length - 1];
+    const next_cursor = r.rows.length > limit && last ? encodeCursor({ created_at: String(last.cursor_ts), key: String(last.session_id) }) : null;
     return { items, next_cursor };
   }
 
@@ -369,6 +388,23 @@ export class PgSessionStore implements SessionStore {
   /** Walks the session tree at query time — never stored ([02] §6). */
   async costIncludingChildren(id: string): Promise<number> {
     return (await this.treeCost(id)).cost_usd;
+  }
+
+  /** `costIncludingChildren` for many sessions in one tree walk (list pages). */
+  async costsIncludingChildren(ids: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>(ids.map((id) => [id, 0]));
+    if (!ids.length) return out;
+    const r = await this.db.query(
+      `WITH RECURSIVE tree AS (
+         SELECT session_id AS root, session_id FROM sessions WHERE session_id = ANY($1::text[])
+         UNION SELECT t.root, s.session_id FROM sessions s JOIN tree t ON s.parent_session = t.session_id
+       )
+       SELECT t.root, coalesce(sum(st.cost_usd),0) AS c
+       FROM tree t LEFT JOIN session_turns st ON st.session_id = t.session_id GROUP BY t.root`,
+      [ids],
+    );
+    for (const row of r.rows) out.set(String(row.root).trim(), Number(row.c ?? 0));
+    return out;
   }
 
   /** Cost + tokens over a session and all its descendants (query-time tree walk). */

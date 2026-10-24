@@ -5,6 +5,7 @@ import { Activity, PauseCircle } from 'lucide-react';
 import { SESSION_KINDS, SESSION_STATES, type SessionRecord } from '@breadboard/shared';
 import { useConfigTree, useSessions } from '../../lib/queries';
 import { useUrlSearch } from '../../lib/url';
+import { dayEndIso, dayStartIso, pageState } from '../../lib/paging';
 import { durationMs, formatDuration, humanize } from '../../lib/format';
 import { RUN_KINDS, sessionStateMeta } from '../../lib/states';
 import {
@@ -19,7 +20,7 @@ import {
   NodeChip,
   PageBody,
   PageHeader,
-  Pagination,
+  Pager,
   StateBadge,
   TimeAgo,
   type Column,
@@ -28,7 +29,10 @@ import {
 
 type Row = SessionRecord & { cost_usd?: number | string; cost_usd_including_children?: number };
 
-type Search = { state?: string; kind?: string; circuit?: string; task?: string; created_after?: string };
+type Search = { state?: string; kind?: string; circuit?: string; task?: string; created_after?: string; created_before?: string; order?: string; page?: string; size?: string };
+
+/** Search keys that narrow the list; changing one returns to page 1. */
+const FILTER_KEYS = ['state', 'kind', 'circuit', 'task', 'created_after', 'created_before', 'order'] as const;
 
 export function SessionsList() {
   const [search, setSearch] = useUrlSearch<Search>();
@@ -49,7 +53,8 @@ export function SessionsList() {
     { key: 'kind', label: 'Kind', type: 'select', options: [{ value: RUN_KINDS, label: 'Runs (circuit + eval)' }, ...SESSION_KINDS.map((k) => ({ value: k, label: humanize(k) }))] },
     { key: 'circuit', label: 'Circuit', type: 'select', options: circuitOptions },
     { key: 'task', label: 'Task', type: 'text', placeholder: 'Task UID', mono: true },
-    { key: 'created_after', label: 'Since', type: 'date' },
+    { key: 'created', label: 'Created', type: 'daterange', fromKey: 'created_after', toKey: 'created_before' },
+    { key: 'order', label: 'Order', type: 'select', allLabel: 'Newest first', options: [{ value: 'asc', label: 'Oldest first' }] },
   ];
 
   const filter = {
@@ -57,9 +62,12 @@ export function SessionsList() {
     kind: search.kind,
     circuit: search.circuit,
     task: search.task?.trim().toUpperCase() || undefined,
-    created_after: search.created_after ? new Date(search.created_after).toISOString() : undefined,
+    created_after: dayStartIso(search.created_after),
+    created_before: dayEndIso(search.created_before),
+    order: search.order === 'asc' ? ('asc' as const) : undefined,
   };
-  const list = useSessions(filter, { limit: 50 });
+  const paging = pageState(search);
+  const list = useSessions(filter, paging);
   const rows = list.items as Row[];
 
   const columns: Column<Row>[] = [
@@ -74,14 +82,13 @@ export function SessionsList() {
       ),
       width: '9.5rem',
     },
-    { key: 'kind', header: 'Kind', cell: (r) => <Badge size="xs">{r.kind}</Badge>, sortValue: (r) => r.kind, width: '7.5rem' },
+    { key: 'kind', header: 'Kind', cell: (r) => <Badge size="xs">{r.kind}</Badge>, width: '7.5rem' },
     {
       key: 'circuit',
       header: 'Circuit',
       cell: (r) => (r.circuit_uid ? <ConfigLink uid={r.circuit_uid} slug={r.circuit_slug} kind="circuit" /> : <span className="text-fg-subtle">—</span>),
-      sortValue: (r) => r.circuit_slug ?? r.circuit_uid ?? '',
     },
-    { key: 'state', header: 'State', cell: (r) => <StateBadge state={r.state} detail={r.state_detail} size="xs" />, sortValue: (r) => r.state, width: '9.5rem' },
+    { key: 'state', header: 'State', cell: (r) => <StateBadge state={r.state} detail={r.state_detail} size="xs" />, width: '9.5rem' },
     {
       key: 'task',
       header: 'Task',
@@ -93,27 +100,25 @@ export function SessionsList() {
       header: 'Cost',
       align: 'right',
       cell: (r) => <CostInline usd={r.cost_usd_including_children ?? r.cost_usd} />,
-      sortValue: (r) => Number(r.cost_usd_including_children ?? r.cost_usd ?? 0),
       width: '6rem',
     },
-    { key: 'created', header: 'Created', cell: (r) => <TimeAgo at={r.created_at} className="text-fg-muted" />, sortValue: (r) => r.created_at, width: '7rem', hideBelow: 'md' },
+    { key: 'created', header: 'Created', cell: (r) => <TimeAgo at={r.created_at} className="text-fg-muted" />, width: '7rem', hideBelow: 'md' },
     {
       key: 'duration',
       header: 'Duration',
       align: 'right',
       cell: (r) => <span className="tabular text-fg-muted">{r.started_at ? formatDuration(durationMs(r.started_at, r.ended_at)) : '—'}</span>,
-      sortValue: (r) => durationMs(r.started_at, r.ended_at) ?? -1,
       width: '6rem',
       hideBelow: 'md',
     },
   ];
 
-  const anyFilter = Object.values(search).some(Boolean);
+  const anyFilter = FILTER_KEYS.some((k) => search[k]);
 
   return (
     <>
       <PageHeader icon={<Activity size={16} />} title="Sessions" subtitle="Every circuit run, eval run, and conversation, with the config versions each used and what it produced.">
-        <FilterBar filters={filters} value={search} onChange={(v) => setSearch({ state: v.state, kind: v.kind, circuit: v.circuit, task: v.task, created_after: v.created_after })} />
+        <FilterBar filters={filters} value={search} onChange={(v) => setSearch({ ...Object.fromEntries(FILTER_KEYS.map((k) => [k, v[k]])), page: undefined })} />
       </PageHeader>
       <PageBody wide>
         {list.isPending ? (
@@ -138,7 +143,15 @@ export function SessionsList() {
                 />
               }
             />
-            <Pagination hasMore={!!list.hasNextPage} loading={list.isFetchingNextPage} onLoadMore={() => list.fetchNextPage()} shown={rows.length} />
+            <Pager
+              page={paging.page}
+              size={paging.size}
+              total={list.total}
+              shown={rows.length}
+              loading={list.isPlaceholderData}
+              onPage={(p) => setSearch({ page: p > 1 ? String(p) : undefined })}
+              onSize={(n) => setSearch({ size: String(n), page: undefined })}
+            />
           </>
         )}
       </PageBody>

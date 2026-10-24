@@ -25,7 +25,7 @@ import {
 import type { Db } from '../db/index.js';
 import type { Logger } from '../core/logger.js';
 import { servicePrincipal, type Principal } from '../core/principal.js';
-import type { ChatMessage, ConfigService, ContentService, EvalService, EventBus, Orchestrator, SessionStore, SubagentRuntime, ToolSpec, Toolbox } from '../core/services.js';
+import type { ChatMessage, ConfigService, ContentService, EvalService, EventBus, Orchestrator, RunListFilter, SessionStore, SubagentRuntime, ToolSpec, Toolbox } from '../core/services.js';
 import { usageColumns } from '../gateway/pricing.js';
 import { buildAggregate, mean, overridesKey, round, validateDimValue, type AggregateValue, type DimValue, type ProgrammaticValue } from './scoring.js';
 import { buildAnalysis, buildDashboard, loadRunStats, type AnalysisOptions, type AnalysisView } from './analysis.js';
@@ -624,7 +624,12 @@ export class EvalServiceImpl implements EvalService {
     return { ...run, variant: overridesKey(run.model_overrides), results: [...byFixture.values()] };
   }
 
-  async listRuns(opts: { circuit?: string; limit?: number; status?: string } = {}): Promise<Array<Record<string, unknown>>> {
+  async listRuns(opts: RunListFilter = {}): Promise<Array<Record<string, unknown>>> {
+    return (await this.pageRuns(opts)).items;
+  }
+
+  /** `listRuns` with offset paging and the `total` over the same filters ([11] §2). */
+  async pageRuns(opts: RunListFilter & { offset?: number } = {}): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
     const params: unknown[] = [this.d.team_id];
     let where = 'team_id=$1';
     if (opts.circuit) {
@@ -635,12 +640,23 @@ export class EvalServiceImpl implements EvalService {
       params.push(opts.status);
       where += ` AND status=$${params.length}`;
     }
-    params.push(Math.min(Math.max(opts.limit ?? 50, 1), 200));
-    const r = await this.d.db.query(`SELECT * FROM eval_runs WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`, params);
-    return r.rows.map((row) => {
+    // `none`: runs on main or a commit, the baseline a branch run is compared with.
+    if (opts.proposal === 'none') where += ' AND proposal_id IS NULL';
+    else if (opts.proposal) {
+      params.push(opts.proposal);
+      where += ` AND proposal_id=$${params.length}`;
+    }
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+    const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+    const [r, count] = await Promise.all([
+      this.d.db.query(`SELECT * FROM eval_runs WHERE ${where} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`, params),
+      this.d.db.query(`SELECT count(*)::int AS n FROM eval_runs WHERE ${where}`, params),
+    ]);
+    const items = r.rows.map((row) => {
       const run = runRow(row);
       return { ...run, variant: overridesKey(run.model_overrides) };
     });
+    return { items, total: Number(count.rows[0]?.n ?? 0) };
   }
 
   // -------------------------------------------------------------------------

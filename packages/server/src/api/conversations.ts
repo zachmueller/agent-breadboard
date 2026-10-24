@@ -3,7 +3,7 @@ import { validationFailed } from '@breadboard/shared';
 import type { Services } from '../core/services.js';
 import { requireScope, requireUser } from '../core/principal.js';
 import { API_PREFIX } from '../app.js';
-import { intParam, principalOf, requireBody, requireField, strParam, withIdempotency } from './util.js';
+import { intParam, offsetParam, principalOf, requireBody, requireField, strParam, withIdempotency } from './util.js';
 
 const KINDS = ['intake', 'conversation'] as const;
 type Kind = (typeof KINDS)[number];
@@ -51,8 +51,11 @@ export async function register(app: FastifyInstance, services: Services): Promis
     requireScope(by, 'sessions:read');
     const q = req.query as Record<string, unknown>;
     const mine = strParam(q.mine);
-    const items = await services.conversations.list({ kind: kindOf(strParam(q.kind), false), limit: intParam(q.limit, 50), by, definition_uid: strParam(q.definition), mine: mine === '1' || mine === 'true' });
-    return { items, next_cursor: null };
+    const filter = { kind: kindOf(strParam(q.kind), false), limit: intParam(q.limit, 50), by, definition_uid: strParam(q.definition), mine: mine === '1' || mine === 'true' };
+    const offset = offsetParam(q.offset);
+    if (offset === undefined) return { items: await services.conversations.list(filter), next_cursor: null };
+    const page = await services.conversations.page({ ...filter, offset });
+    return { items: page.items, next_cursor: null, total: page.total };
   });
 
   app.get(`${P}/:id`, async (req) => {

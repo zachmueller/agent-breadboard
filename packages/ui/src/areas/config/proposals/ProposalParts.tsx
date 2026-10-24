@@ -2,12 +2,12 @@
  * Pieces of proposal review ([10] §4 propose-review-commit) shared by the review page, the proposals list and the
  * designer chat's proposal card: status pills, author, tool checks, and each changed definition's native diff.
  */
-import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, FlaskConical, XCircle } from 'lucide-react';
-import { owningDefinition, type ProposalDto } from '@breadboard/shared';
-import { configApi, evalsApi, isRunTerminal, proposalDefinitions, qk, useTreeIndex, type EvalRunDto } from '../lib/configApi';
-import { ActorLabel, Pill, Spin, ErrorBox } from '../ui';
+import { owningDefinition, type AffectedCircuitDto, type ProposalDto } from '@breadboard/shared';
+import { configApi, evalsApi, isRunTerminal, proposalDefinitions, qk, useAffectedCircuits, useTreeIndex, type EvalRunDto } from '../lib/configApi';
+import { ActorLabel, Btn, Pill, Spin, ErrorBox, errorMessage, notify } from '../ui';
 import { RawPatch } from '../components/Diff';
 import { AppLink } from '../components/AppLink';
 import { useSnapshot, type DiffRenderer } from '../components/snapshot';
@@ -21,13 +21,13 @@ type DefKind = 'circuit' | 'tool' | 'subagent' | 'mcp';
 
 const RENDERERS: Record<DefKind, DiffRenderer> = { circuit: circuitDiffRenderer, tool: toolDiffRenderer, subagent: subagentDiffRenderer, mcp: plainDiffRenderer };
 const KIND_LABEL: Record<DefKind, string> = { circuit: 'Circuit', tool: 'Tool', subagent: 'Subagent', mcp: 'MCP server' };
-const STATUS_TONE = { open: 'info', merged: 'ok', discarded: 'neutral' } as const;
+const STATUS_TONE = { draft: 'warn', open: 'info', merged: 'ok', discarded: 'neutral' } as const;
 
 export function ProposalPills({ p }: { p: ProposalDto }) {
   return (
     <>
       <Pill tone={STATUS_TONE[p.status] ?? 'neutral'}>{p.status}</Pill>
-      {p.status === 'open' && <Pill tone={p.validation?.ok ? 'ok' : 'danger'}>{p.validation?.ok ? 'valid' : `${p.validation?.errors.length ?? 0} error(s)`}</Pill>}
+      {(p.status === 'open' || p.status === 'draft') && <Pill tone={p.validation?.ok ? 'ok' : 'danger'}>{p.validation?.ok ? 'valid' : `${p.validation?.errors.length ?? 0} error(s)`}</Pill>}
     </>
   );
 }
@@ -54,7 +54,7 @@ export function useToolChecks(p: ProposalDto | undefined) {
   return useQuery({
     queryKey: [...qk.proposal(p?.proposal_id ?? ''), 'checks', p?.head_commit ?? ''],
     queryFn: () => configApi.proposalChecks(p!.proposal_id),
-    enabled: !!p && p.status === 'open' && tools.length > 0,
+    enabled: !!p && (p.status === 'open' || p.status === 'draft') && tools.length > 0,
     staleTime: Infinity, // keyed by head commit, which never changes underneath
   });
 }
@@ -139,8 +139,8 @@ function DefinitionDiff({ p, kind, uid }: { p: ProposalDto; kind: DefKind; uid: 
   return <div className="p-1">{RENDERERS[kind](base.data, head.data)}</div>;
 }
 
-/** Live summary of one eval run, polled until terminal. */
-export function EvalRunSummary({ id }: { id: string }) {
+/** Live summary of one eval run, polled until terminal; `baseline` adds the circuit's latest main-line run beside it. */
+export function EvalRunSummary({ id, baseline }: { id: string; baseline?: boolean }) {
   const q = useQuery({
     queryKey: qk.run(id),
     queryFn: () => evalsApi.run(id),
@@ -148,6 +148,8 @@ export function EvalRunSummary({ id }: { id: string }) {
   });
   const r = q.data;
   const done = r && isRunTerminal(r.status);
+  const main = useMainBaseline(baseline ? r?.circuit_uid || undefined : undefined);
+  const idx = useTreeIndex();
   return (
     <div className="flex items-center gap-2 text-xs">
       <FlaskConical className="size-3.5 text-fg-subtle" />
@@ -158,11 +160,76 @@ export function EvalRunSummary({ id }: { id: string }) {
         <>
           <Pill tone={r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'danger' : 'info'}>{r.status}</Pill>
           {!done && <Spin />}
+          {baseline && r.circuit_uid && <span className="font-mono text-fg-muted">{idx.get('circuit', r.circuit_uid)?.slug ?? r.circuit_uid}</span>}
           <span>aggregate {fmtScore(r.aggregate)}</span>
           <span>pass {fmtPct(r.pass_rate)}</span>
           <span className="text-fg-subtle">{fmtUsd(r.cost_usd)}</span>
+          {baseline && main.data && (
+            <span className="text-fg-subtle" title={`Latest completed run on main: ${main.data.eval_run_id}`}>
+              · main {fmtScore(main.data.aggregate)} / pass {fmtPct(main.data.pass_rate)}
+            </span>
+          )}
         </>
       )}
     </div>
   );
+}
+
+/** Proposals a branch run may still change: drafts (staged before review) and open ones. */
+export const isLiveProposal = (p: Pick<ProposalDto, 'status'>) => p.status === 'open' || p.status === 'draft';
+
+/**
+ * "Run evals" on a proposal's branch for each circuit its changes reach ([04] §7): an edited circuit, or one using a
+ * changed tool, subagent, preset or tenets. Circuits without fixtures are left out; with several, pick one first.
+ */
+export function BranchEvalLauncher({ p, onStarted, size = 'sm' }: { p: ProposalDto; onStarted?: (runId: string) => void; size?: 'sm' | 'md' }) {
+  const qc = useQueryClient();
+  const affected = useAffectedCircuits(p.proposal_id, isLiveProposal(p));
+  const runnable = (affected.data ?? []).filter((c) => c.fixtures > 0);
+  const [picked, setPicked] = useState<string>('');
+  const circuit = runnable.find((c) => c.uid === picked)?.uid ?? runnable[0]?.uid;
+  const launch = useMutation({
+    mutationFn: (uid: string) => evalsApi.launch({ circuit: uid, proposal_id: p.proposal_id }),
+    onSuccess: (r) => {
+      if (r.eval_run_id) onStarted?.(r.eval_run_id);
+      notify('Eval run started on the proposal branch', 'ok');
+      void qc.invalidateQueries({ queryKey: ['evals'] });
+      void qc.invalidateQueries({ queryKey: qk.proposal(p.proposal_id) });
+    },
+    onError: (e) => notify(errorMessage(e), 'danger'),
+  });
+  if (!isLiveProposal(p) || !runnable.length) return null;
+  const label = (c: AffectedCircuitDto) => `${c.slug ?? c.uid} (${c.fixtures} fixture${c.fixtures === 1 ? '' : 's'})`;
+  return (
+    <span className="inline-flex items-center gap-1">
+      {runnable.length > 1 && (
+        <select
+          aria-label="Circuit to evaluate"
+          value={circuit}
+          onChange={(e) => setPicked(e.target.value)}
+          title={runnable.find((c) => c.uid === circuit)?.via.join(', ')}
+          className="h-7 max-w-56 truncate rounded-md border border-line bg-surface px-1.5 text-xs text-fg outline-none focus:border-accent"
+        >
+          {runnable.map((c) => (
+            <option key={c.uid} value={c.uid}>
+              {label(c)}
+            </option>
+          ))}
+        </select>
+      )}
+      <Btn size={size} variant="secondary" icon={<FlaskConical className="size-3.5" />} loading={launch.isPending} onClick={() => circuit && launch.mutate(circuit)} title={runnable.length === 1 ? `${label(runnable[0]!)}: ${runnable[0]!.via.join(', ')}` : undefined}>
+        Run evals{runnable.length === 1 ? ` (${runnable[0]!.slug ?? 'circuit'})` : ''}
+      </Btn>
+    </span>
+  );
+}
+
+/** The latest completed eval run of a circuit made on main (not on any proposal branch): a branch run's baseline. */
+function useMainBaseline(circuit: string | undefined) {
+  return useQuery({
+    queryKey: [...qk.runs(circuit ?? ''), 'baseline'],
+    queryFn: async () => (await evalsApi.runPage({ circuit: circuit!, proposal: 'none', limit: 10 }, 0)).items.find((r) => r.status === 'completed') ?? null,
+    enabled: !!circuit,
+    staleTime: 60_000,
+  });
 }

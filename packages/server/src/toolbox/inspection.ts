@@ -4,7 +4,7 @@
  * a thin wrapper over the service method its REST route calls, so scope, session visibility and knowledge grants
  * are enforced identically. Long values are clipped (`max_chars`) and marked `truncated` ([primitive-defs]).
  */
-import { BreadboardError, NODE_TYPES, SESSION_KINDS, SESSION_STATES, resultText, toBlocks, type NodeDto, type SessionRecord, type Turn } from '@breadboard/shared';
+import { BreadboardError, NODE_TYPES, PROPOSAL_STATUSES, SESSION_KINDS, SESSION_STATES, resultText, toBlocks, type NodeDto, type SessionRecord, type Turn } from '@breadboard/shared';
 import { canSeeSession, type Principal } from '../core/principal.js';
 import { tokenAccess } from '../identity/identity.js';
 import { buildDashboard } from '../core/dashboard.js';
@@ -16,6 +16,12 @@ type TurnRow = Turn & { attempt?: number; latency_ms?: number | null; fallback_f
 
 const SESSION_ID = { type: 'string', minLength: 1, description: 'Session id (`ses_…`).' };
 const ISO = (what: string) => ({ type: 'string', description: `${what} (ISO 8601 timestamp).` });
+
+function isoArg(v: string | undefined, name: string): string | undefined {
+  if (v === undefined || v === '') return undefined;
+  if (Number.isNaN(Date.parse(v))) throw new BreadboardError('validation-failed', `${name} must be an ISO 8601 timestamp, got '${v}'`);
+  return new Date(v).toISOString();
+}
 const ENUM_ARRAY = (values: readonly string[], description: string) => ({ type: 'array', items: { type: 'string', enum: [...values] }, description });
 
 /** The session columns worth carrying in every listing; `state_detail` clipped (gate info, errors, chat context). */
@@ -141,7 +147,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'get_breadboard_overview',
       scope: 'sessions:read',
-      description: 'One-call health picture of this Breadboard: instance (name, version, database, sandbox, model providers, public URL), config main commit and definition counts by kind, dispatcher capacity and hourly spend, session counts by state, the active admins, open proposals, your review-queue size, knowledge domains, need-input rate over 30 days, eval dashboard, recent model fallbacks, connector status and the repository mirrors you can search (`search_repo`).',
+      description: 'One-call health picture of this Breadboard: instance (name, version, database, sandbox, model providers, public URL), config main commit and definition counts by kind, dispatcher capacity and hourly spend, session counts by state, the active admins, open and draft proposals, your review-queue size, knowledge domains, need-input rate over 30 days, eval dashboard, recent model fallbacks, connector status and the repository mirrors you can search (`search_repo`).',
       input_schema: obj({}),
       handler: async (_a, p) => {
         const quiet = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => {
@@ -152,11 +158,12 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
             return null;
           }
         };
-        const [dash, main_commit, tree, open, domains, providers, repos, users] = await Promise.all([
+        const [dash, main_commit, tree, open, drafts, domains, providers, repos, users] = await Promise.all([
           buildDashboard({ content: d.content, dispatcher: d.dispatcher(), sessions: d.sessions, evals: d.evals, gateway: d.gateway, connectors: d.connectors() }, p, d.log),
           quiet('config.main', () => d.config.mainCommit()),
           quiet('config.tree', () => d.config.tree()),
-          quiet('proposals', () => d.config.listProposals({ status: 'open', limit: 200 })),
+          quiet('proposals', () => d.config.pageProposals({ status: 'open', limit: 1 })),
+          quiet('drafts', () => d.config.pageProposals({ status: 'draft', limit: 1 })),
           quiet('knowledge', () => d.knowledge.domains()),
           quiet('providers', async () => d.gateway.providers()),
           quiet('repos', () => d.mirrors().status(p)),
@@ -173,7 +180,8 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
           capacity: dash.capacity,
           sessions: dash.sessions,
           admins: users ? users.filter((u) => u.is_admin && !u.deactivated_at).map((u) => u.handle) : null,
-          open_proposals: open ? open.length : null,
+          open_proposals: open ? open.total : null,
+          draft_proposals: drafts ? drafts.total : null,
           review_count: dash.review_count,
           knowledge: domains ? { domains: domains.length, by_domain: domains.map((x) => ({ slug: x.slug, note_count: x.note_count })) } : null,
           need_input_30d: dash.need_input ? { requests, deliverables, rate: deliverables ? requests / deliverables : null, by_circuit: dash.need_input.by_circuit } : null,
@@ -214,7 +222,7 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'list_sessions',
       scope: 'sessions:read',
-      description: 'List sessions newest first: circuit runs, intake chats, designer and MCP conversations, eval runs. Filter by state, kind, circuit (UID or slug), task, parent, creator (`me` or an actor id), the definition a designer chat was opened on, or a time window. Each row carries its cost including child sessions. Page with `cursor`.',
+      description: 'List sessions newest first (`order: asc` for oldest first): circuit runs, intake chats, designer and MCP conversations, eval runs. Filter by state, kind, circuit (UID or slug), task, parent, creator (`me` or an actor id), the definition a designer chat was opened on, runs on a proposal branch (`proposal_id`), or a time window (`created_after` / `created_before`). Each row carries its cost including child sessions. Page with `cursor`, or with `offset`, which also returns `total`.',
       input_schema: obj({
         state: ENUM_ARRAY(SESSION_STATES, 'Only these states.'),
         kind: ENUM_ARRAY(SESSION_KINDS, 'Only these kinds.'),
@@ -225,8 +233,11 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
         definition: { type: 'string', description: 'Designer chats opened on this configuration definition (UID).' },
         created_after: ISO('Only sessions created at or after'),
         created_before: ISO('Only sessions created at or before'),
+        proposal_id: { type: 'string', description: 'Only runs on this proposal branch (`run_circuit {proposal_id}`).' },
+        order: { type: 'string', enum: ['desc', 'asc'], description: 'Newest first (default) or oldest first.' },
         limit: LIMIT(200, 20, 'sessions'),
         cursor: { type: 'string', description: '`next_cursor` from the previous page.' },
+        offset: { type: 'integer', minimum: 0, description: 'Skip this many sessions instead of using `cursor`; the result then carries `total`.' },
       }),
       handler: async (a, p) => {
         const page = await d.sessions.list({
@@ -237,14 +248,18 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
           parent: a.parent,
           created_by: a.created_by === 'me' ? p.actor.id : a.created_by,
           definition: a.definition,
-          created_after: a.created_after,
-          created_before: a.created_before,
+          proposal: a.proposal_id,
+          created_after: isoArg(a.created_after, 'created_after'),
+          created_before: isoArg(a.created_before, 'created_before'),
+          order: a.order,
           cursor: a.cursor ?? null,
+          offset: a.offset,
           limit: a.limit ?? 20,
         });
         const visible = page.items.filter((s) => canSeeSession(p, s.session_id));
-        const sessions = await Promise.all(visible.map(async (s) => ({ ...sessionHeader(s), cost_usd: await d.sessions.costIncludingChildren(s.session_id) })));
-        return { sessions, next_cursor: page.next_cursor ?? null };
+        const costs = await d.sessions.costsIncludingChildren(visible.map((s) => s.session_id));
+        const sessions = visible.map((s) => ({ ...sessionHeader(s), cost_usd: costs.get(s.session_id) ?? 0 }));
+        return { sessions, next_cursor: page.next_cursor ?? null, ...(page.total !== undefined ? { total: page.total } : {}) };
       },
     },
     {
@@ -459,9 +474,9 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'list_proposals',
       scope: 'config:read',
-      description: 'Configuration proposals (propose-review-commit): status, message, author, base and head commits, changed files, validation and attached eval runs, without the patch. Filter by status, the conversation that opened one, or the definition it changes; page with `offset`. Read one with `read_proposal`.',
+      description: 'Configuration proposals (propose-review-commit): status, message, author, base and head commits, changed files, validation and attached eval runs, without the patch. `draft` proposals are staged branches not yet submitted for review; `open` ones are in the review queue. Filter by status, the conversation that opened one, or the definition it changes; page with `offset`. Read one with `read_proposal`.',
       input_schema: obj({
-        status: { type: 'string', enum: ['open', 'merged', 'discarded'], description: 'Only this status.' },
+        status: { type: 'string', enum: [...PROPOSAL_STATUSES], description: 'Only this status.' },
         session_id: { type: 'string', description: 'Only proposals opened by this conversation.' },
         definition: { type: 'string', description: 'Only proposals changing this definition (UID).' },
         limit: LIMIT(200, 50, 'proposals'),
@@ -481,13 +496,13 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'read_proposal',
       scope: 'config:read',
-      description: 'One proposal in full: metadata, changed files, validation, eval runs, the tool checks (manifest and syntax) at its head, and the unified patch (clipped; raise `max_chars` or set 0 for all of it).',
+      description: 'One proposal in full: metadata, changed files, validation, eval runs, the tool checks (manifest and syntax) at its head, `affected_circuits` (circuits its changes reach, directly or through a tool, subagent, preset or tenets, with fixture counts: what to evaluate with `start_eval_run {proposal_id}`), and the unified patch (clipped; raise `max_chars` or set 0 for all of it).',
       input_schema: obj({ proposal_id: { type: 'string', minLength: 1, description: 'Proposal id (`prp_…`).' }, include_diff: { type: 'boolean', description: 'Include the patch (default true).' }, max_chars: MAX_CHARS(20000) }, ['proposal_id']),
       handler: async (a) => {
         const dto = await d.config.getProposal(a.proposal_id);
-        const checks = await proposalToolChecks(d.toolbox(), dto);
+        const [checks, affected_circuits] = await Promise.all([proposalToolChecks(d.toolbox(), dto), d.config.affectedCircuits(dto.proposal_id).catch(() => [])]);
         const { diff, ...rest } = dto;
-        return { ...rest, ...(a.include_diff === false ? {} : { diff: clipText(diff, a.max_chars ?? 20000) }), tool_checks: checks.tools };
+        return { ...rest, ...(a.include_diff === false ? {} : { diff: clipText(diff, a.max_chars ?? 20000) }), tool_checks: checks.tools, affected_circuits };
       },
     },
     {
@@ -517,9 +532,19 @@ export function inspectionCatalog(d: PrimitivesDeps): PrimitiveDef[] {
     {
       name: 'list_eval_runs',
       scope: 'evals:read',
-      description: 'Eval runs newest first, optionally for one circuit or status: run id, circuit, config ref, model overrides, status, aggregate scores and cost.',
-      input_schema: obj({ circuit: { type: 'string', description: 'Circuit UID.' }, status: { type: 'string', description: 'Run status (running, completed, failed…).' }, limit: LIMIT(200, 20, 'runs') }),
-      handler: async (a) => ({ runs: await d.evals.listRuns({ circuit: a.circuit, status: a.status, limit: a.limit ?? 20 }) }),
+      description: 'Eval runs newest first, optionally for one circuit, status or proposal (`proposal_id`, or `none` for runs not on a proposal branch: the main-line baseline): run id, circuit, config ref, proposal, model overrides, status, aggregate scores and cost. Page with `offset`; the result carries `total`.',
+      input_schema: obj({
+        circuit: { type: 'string', description: 'Circuit UID.' },
+        status: { type: 'string', description: 'Run status (running, completed, failed…).' },
+        proposal_id: { type: 'string', description: 'Only runs on this proposal branch, or `none` for runs that were not.' },
+        limit: LIMIT(200, 20, 'runs'),
+        offset: { type: 'integer', minimum: 0, description: 'Skip this many runs (default 0).' },
+      }),
+      handler: async (a) => {
+        const offset = a.offset ?? 0;
+        const { items, total } = await d.evals.pageRuns({ circuit: a.circuit, status: a.status, proposal: a.proposal_id, limit: a.limit ?? 20, offset });
+        return { total, offset, next_offset: offset + items.length < total ? offset + items.length : null, runs: items };
+      },
     },
     {
       name: 'read_eval_run',

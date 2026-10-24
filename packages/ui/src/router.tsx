@@ -16,7 +16,7 @@ import { ContentInventory, ContentViewer, ReviewQueuePage } from './areas/conten
 import { Admin } from './areas/admin/Admin';
 import { Account } from './areas/account/Account';
 import { useAuth } from './lib/auth';
-import { stringSearch } from './lib/url';
+import { parseSearch, stringSearch, stringifySearch } from './lib/url';
 import { AppShell } from './shell/AppShell';
 import { LoginPage } from './shell/LoginPage';
 import { ConfigRedirect } from './shell/ConfigRedirect';
@@ -105,6 +105,8 @@ const routeTree = rootRoute.addChildren([
 
 export const router = createRouter({
   routeTree,
+  parseSearch,
+  stringifySearch,
   defaultPreload: 'intent',
   defaultNotFoundComponent: NotFound,
   scrollRestoration: true,

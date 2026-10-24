@@ -267,5 +267,8 @@ describe('ConversationService', () => {
     const ids = async (input: { by: typeof f.adminPrincipal; mine?: boolean }) => (await svc.list({ kind: 'conversation', definition_uid: CIRC, ...input })).map((x) => x.session_id);
     expect(await ids({ by: f.adminPrincipal, mine: true })).toEqual([newer.session_id, older.session_id]);
     expect(await ids({ by: f.adminPrincipal })).toEqual([newer.session_id, older.session_id, someoneElse.session_id]);
+    // Numbered pages: plain recency order with the total over the same filters.
+    const page = await svc.page({ kind: 'conversation', definition_uid: CIRC, by: f.adminPrincipal, limit: 2, offset: 1 });
+    expect([page.total, page.items.map((x) => x.session_id)]).toEqual([3, [newer.session_id, older.session_id]]);
   });
 });

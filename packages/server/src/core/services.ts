@@ -3,7 +3,7 @@
  * orchestrator, and sandbox primitives share one implementation of each behaviour.
  * Concrete classes live in their subsystem directories; `build.ts` wires them.
  */
-import type { Actor, ArtifactRef, BreadboardConfig, Circuit, EdgeRecord, Effort, Fixtures, McpServer, NodeRecord, NodeRevision, Page, Presets, Rubric, Scope, SessionBudget, SessionEvent, SessionKind, SessionRecord, SessionSummaryDto, StreamEvent, Subagent, Tool, Turn, EventTopic, ConfigTreeEntry, ConfigDefinitionDto, ProposalDto, ReviewQueueItemDto, LineageDto, NodeDto, NeedInputRequest } from '@breadboard/shared';
+import type { Actor, ArtifactRef, BreadboardConfig, Circuit, EdgeRecord, Effort, Fixtures, McpServer, NodeRecord, NodeRevision, Page, Presets, Rubric, Scope, SessionBudget, SessionEvent, SessionKind, SessionRecord, SessionSummaryDto, StreamEvent, Subagent, Tool, Turn, EventTopic, ConfigTreeEntry, ConfigDefinitionDto, AffectedCircuitDto, ProposalDto, ReviewQueueItemDto, LineageDto, NodeDto, NeedInputRequest } from '@breadboard/shared';
 import type { Db } from '../db/index.js';
 import type { Env } from './env.js';
 import type { Logger } from './logger.js';
@@ -119,17 +119,22 @@ export interface ConfigService {
   validateChanges(changes: FileChange[], base?: string): Promise<ValidationReport>;
   /** Direct commit to main (user editors). Validates first; rejects on errors. */
   commitDirect(opts: { changes: FileChange[]; message: string; by: Principal }): Promise<{ commit: string; validation: ValidationReport }>;
-  /** Propose-review-commit: write a branch, open a proposal. */
-  propose(opts: { changes: FileChange[]; message: string; by: Principal; base?: string; session_id?: string | null }): Promise<ProposalDto>;
+  /** Propose-review-commit: write a branch, open a proposal. `draft` stages it outside the review queue until `submitProposal`. */
+  propose(opts: { changes: FileChange[]; message: string; by: Principal; base?: string; session_id?: string | null; draft?: boolean }): Promise<ProposalDto>;
   getProposal(id: string): Promise<ProposalDto>;
   /** `definition` keeps proposals that change files of that definition (by UID); `session_id` those a conversation opened. */
-  listProposals(opts?: { status?: string; limit?: number; session_id?: string; definition?: string }): Promise<ProposalDto[]>;
+  listProposals(opts?: { status?: string | string[]; limit?: number; session_id?: string; definition?: string }): Promise<ProposalDto[]>;
   /** `listProposals` with `offset` paging and the `total` matching the filters (within the newest 500 when `definition` is set). */
-  pageProposals(opts?: { status?: string; limit?: number; offset?: number; session_id?: string; definition?: string }): Promise<{ total: number; proposals: ProposalDto[] }>;
-  /** Update an open proposal's branch with further changes (designer-chat revisions). */
+  pageProposals(opts?: { status?: string | string[]; limit?: number; offset?: number; session_id?: string; definition?: string }): Promise<{ total: number; proposals: ProposalDto[] }>;
+  /** Update a draft or open proposal's branch with further changes (designer-chat revisions). */
   amendProposal(id: string, changes: FileChange[], message: string, by: Principal): Promise<ProposalDto>;
+  /** Move a draft into the review queue (draft → open). */
+  submitProposal(id: string, by: Principal): Promise<ProposalDto>;
+  /** Refuses a draft: it must be submitted first. */
   mergeProposal(id: string, by: Principal): Promise<ProposalDto>;
   discardProposal(id: string, by: Principal): Promise<ProposalDto>;
+  /** Circuits the proposal's changes reach, with their fixture counts, so its evals can be chosen. */
+  affectedCircuits(id: string): Promise<AffectedCircuitDto[]>;
   attachEvalRun(proposalId: string, evalRunId: string): Promise<void>;
   revert(opts: { path?: string; to_commit: string; by: Principal; message?: string }): Promise<{ commit: string }>;
   history(opts?: { path?: string; ref?: string; limit?: number }): Promise<CommitInfo[]>;
@@ -206,6 +211,8 @@ export interface ModelRequest {
   effort?: Effort;
   /** Model overrides (eval comparison runs): preset → explicit model id. */
   model_overrides?: Record<string, string> | null;
+  /** Config commit whose `presets/models.yaml` resolves `preset` (a branch run's); default main. */
+  config_commit?: string | null;
   /** Logging context */
   session_id?: string;
   step_id?: string;
@@ -258,7 +265,7 @@ export interface ModelGateway {
   complete(req: ModelRequest): Promise<ModelResponse>;
   embed(texts: string[]): Promise<{ model_id: string; vectors: number[][] }>;
   capabilities(provider: string, modelId: string): ModelCapabilities;
-  resolvePreset(preset: string, requires?: ModelRequest['requires'], overrides?: Record<string, string> | null): Promise<Array<{ provider: string; model_id: string }>>;
+  resolvePreset(preset: string, requires?: ModelRequest['requires'], overrides?: Record<string, string> | null, commit?: string | null): Promise<Array<{ provider: string; model_id: string }>>;
   providers(): string[];
   /** Recent fallback events for the health dashboard. */
   fallbackEvents(): Array<{ at: string; from: string; to: string; reason: string }>;
@@ -294,9 +301,15 @@ export interface SessionFilter {
   created_by?: string;
   /** Designer chats opened on a definition (`state_detail.context.definition_uid`). */
   definition?: string;
+  /** Runs on a proposal's branch (`state_detail.proposal_id`). */
+  proposal?: string;
   created_after?: string;
   created_before?: string;
+  /** Newest first (default) or oldest first. */
+  order?: 'asc' | 'desc';
   cursor?: string | null;
+  /** Offset paging: the page also carries `total` ([11] §2). */
+  offset?: number | null;
   limit?: number;
 }
 
@@ -324,6 +337,8 @@ export interface SessionStore {
   /** Cost aggregates from turn rows (authoritative leaf) ([02] §6). */
   cost(id: string): Promise<SessionCost>;
   costIncludingChildren(id: string): Promise<number>;
+  /** Batched `costIncludingChildren` for list pages. */
+  costsIncludingChildren(ids: string[]): Promise<Map<string, number>>;
   children(id: string): Promise<SessionRecord[]>;
   /** Spend across all sessions within a rolling window ([02] §5.1). */
   spendSince(iso: string): Promise<number>;
@@ -338,6 +353,14 @@ export interface SessionStore {
   family(id: string): Promise<string[]>;
 }
 
+export interface RunListFilter {
+  circuit?: string;
+  status?: string;
+  /** A proposal id, or `none` for runs not made on a proposal branch. */
+  proposal?: string;
+  limit?: number;
+}
+
 export interface EnqueueRunInput {
   circuit_uid: string;
   input: unknown;
@@ -350,6 +373,8 @@ export interface EnqueueRunInput {
   kind?: 'circuit-run' | 'eval-run';
   /** Pin a config ref (branch or commit) — eval-on-branch; default main at admission. */
   config_ref?: string | null;
+  /** The proposal whose branch `config_ref` is (kept in `state_detail.proposal_id`, so its runs can be listed). */
+  proposal_id?: string | null;
   created_by: Actor;
   /** Pinned context for eval fixtures. */
   pinned_context?: Array<{ uid: string; revision_id: number }> | null;
@@ -739,7 +764,9 @@ export interface ContentService {
 export interface EvalService {
   startRun(input: { circuit: string; ref?: string | null; fixture_tags?: string[] | null; model_overrides?: Record<string, string> | null; by: Principal; proposal_id?: string | null; wait?: boolean }): Promise<Record<string, unknown>>;
   getRun(id: string): Promise<Record<string, unknown>>;
-  listRuns(opts?: { circuit?: string; limit?: number; status?: string }): Promise<Array<Record<string, unknown>>>;
+  listRuns(opts?: RunListFilter): Promise<Array<Record<string, unknown>>>;
+  /** `listRuns` with offset paging and a `total` ([11] §2). */
+  pageRuns(opts?: RunListFilter & { offset?: number }): Promise<{ items: Array<Record<string, unknown>>; total: number }>;
   analysis(circuitUid: string, view: 'model-regression' | 'cheapest-model' | 'circuit-regression' | 'trend' | 'dashboard', opts?: { base?: string; head?: string; circuit_commit?: string; variant?: string }): Promise<Record<string, unknown>>;
   recordScore(input: { eval_run_id: string; fixture_id: string; dimension: string; value: unknown; rationale?: string | null; by: Principal }): Promise<void>;
   getFixtureOutput(evalRunId: string, fixtureId: string): Promise<unknown>;
@@ -767,6 +794,8 @@ export interface ConversationService {
   turns(sessionId: string, by: Principal): Promise<Turn[]>;
   /** `definition_uid`: designer chats opened on that definition; `mine`: only the caller's own. */
   list(input: { kind?: 'intake' | 'conversation'; by: Principal; limit?: number; definition_uid?: string; mine?: boolean }): Promise<SessionRecord[]>;
+  /** `list` newest first with offset paging and a `total` (no own-first ordering). */
+  page(input: { kind?: 'intake' | 'conversation'; by: Principal; limit?: number; offset?: number; definition_uid?: string; mine?: boolean }): Promise<{ items: SessionRecord[]; total: number }>;
   /** Draft task panel state for an intake conversation ([08] §7.1). */
   draftTask(sessionId: string): Promise<Record<string, unknown> | null>;
 }

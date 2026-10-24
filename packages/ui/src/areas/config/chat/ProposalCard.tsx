@@ -5,19 +5,19 @@
  */
 import { useState } from 'react';
 import clsx from 'clsx';
-import { ArrowRight, GitMerge, Trash2, FlaskConical, Send, GitPullRequest } from 'lucide-react';
+import { ArrowRight, GitMerge, Trash2, Send, GitPullRequest } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProposalDto } from '@breadboard/shared';
-import { configApi, evalsApi, qk, proposalPath } from '../lib/configApi';
+import { configApi, qk, proposalPath } from '../lib/configApi';
 import { useWorkingTree } from '../model/workingTree';
 import { Btn, Pill, Spin, ErrorBox, Modal, notify, errorMessage, TextAreaInput, buttonClasses } from '../ui';
 import { ValidationList } from '../components/fields';
 import { AppLink } from '../components/AppLink';
 import { shortCommit, hrefFor } from '../lib/format';
 import { parseConfigPath } from '@breadboard/shared';
-import { EvalRunSummary, ProposalPills, useToolChecks } from '../proposals/ProposalParts';
+import { BranchEvalLauncher, EvalRunSummary, ProposalPills, isLiveProposal, useToolChecks } from '../proposals/ProposalParts';
 
-export function ProposalCard({ proposalId, canRunEvals, onRevise, busy, amended }: { proposalId: string; canRunEvals?: boolean; onRevise: (text: string, proposalId: string) => void; busy?: boolean; amended?: boolean }) {
+export function ProposalCard({ proposalId, onRevise, busy, amended }: { proposalId: string; onRevise: (text: string, proposalId: string) => void; busy?: boolean; amended?: boolean }) {
   const wt = useWorkingTree();
   const qc = useQueryClient();
   const q = useQuery({ queryKey: qk.proposal(proposalId), queryFn: () => configApi.proposal(proposalId), staleTime: 5_000 });
@@ -49,12 +49,11 @@ export function ProposalCard({ proposalId, canRunEvals, onRevise, busy, amended 
     },
     onError: (e) => notify(errorMessage(e), 'danger'),
   });
-  const runEvals = useMutation({
-    mutationFn: () => evalsApi.launch({ circuit: wt.uid, ref: p!.branch, proposal_id: proposalId }),
-    onSuccess: (r) => {
-      if (r.eval_run_id) setRunIds((ids) => [...new Set([...ids, r.eval_run_id])]);
-      notify('Eval run started on the proposal branch', 'ok');
-      void qc.invalidateQueries({ queryKey: ['evals'] });
+  const submit = useMutation({
+    mutationFn: () => configApi.submit(proposalId),
+    onSuccess: () => {
+      notify('Submitted for review', 'ok');
+      refresh();
     },
     onError: (e) => notify(errorMessage(e), 'danger'),
   });
@@ -70,10 +69,12 @@ export function ProposalCard({ proposalId, canRunEvals, onRevise, busy, amended 
 
   const allRuns = [...new Set([...(p.eval_runs ?? []), ...runIds])];
   const open = p.status === 'open';
+  const draft = p.status === 'draft';
+  const live = isLiveProposal(p);
   const failing = (checks.data?.tools ?? []).filter((t) => !t.ok).length;
   const review = proposalPath(p.proposal_id);
   return (
-    <div className={clsx('rounded-lg border bg-raised text-sm shadow-sm', open ? 'border-accent/40' : 'border-line')}>
+    <div className={clsx('rounded-lg border bg-raised text-sm shadow-sm', open ? 'border-accent/40' : draft ? 'border-warn/40' : 'border-line')}>
       <div className="flex items-start gap-2 border-b border-line px-3 py-2">
         <GitPullRequest className="mt-0.5 size-4 shrink-0 text-accent-text" />
         <div className="min-w-0 flex-1">
@@ -82,8 +83,8 @@ export function ProposalCard({ proposalId, canRunEvals, onRevise, busy, amended 
           </AppLink>
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-fg-subtle">
             <ProposalPills p={p} />
-            {open && checks.isLoading && <Pill>checking…</Pill>}
-            {open && checks.data && <Pill tone={failing ? 'danger' : 'ok'}>{failing ? `${failing} tool check${failing === 1 ? '' : 's'} failing` : 'checks pass'}</Pill>}
+            {live && checks.isLoading && <Pill>checking…</Pill>}
+            {live && checks.data && <Pill tone={failing ? 'danger' : 'ok'}>{failing ? `${failing} tool check${failing === 1 ? '' : 's'} failing` : 'checks pass'}</Pill>}
             {amended && <Pill tone="info">amended</Pill>}
             <span className="font-mono">{p.proposal_id}</span>
             <span>
@@ -94,7 +95,8 @@ export function ProposalCard({ proposalId, canRunEvals, onRevise, busy, amended 
       </div>
 
       <ChangedPaths p={p} />
-      {open && !p.validation?.ok && (
+      {draft && <p className="px-3 pb-2 text-[11.5px] text-fg-muted">Draft: not in the review queue. Run its evals, then submit it for review.</p>}
+      {live && !p.validation?.ok && (
         <div className="px-3 pb-2">
           <ValidationList errors={p.validation?.errors ?? []} warnings={p.validation?.warnings ?? []} max={6} />
         </div>
@@ -104,20 +106,21 @@ export function ProposalCard({ proposalId, canRunEvals, onRevise, busy, amended 
         <AppLink bare href={review} className={buttonClasses(open ? 'primary' : 'secondary', 'sm', 'gap-1.5')}>
           {open ? 'Review changes' : 'View changes'} <ArrowRight className="size-3.5" aria-hidden />
         </AppLink>
+        <BranchEvalLauncher p={p} onStarted={(r) => setRunIds((ids) => [...new Set([...ids, r])])} />
+        {draft && (
+          <Btn size="sm" variant="primary" icon={<Send className="size-3.5" />} loading={submit.isPending} onClick={() => submit.mutate()}>
+            Submit for review
+          </Btn>
+        )}
         {open && (
-          <>
-            <Btn size="sm" icon={<GitMerge className="size-3.5" />} loading={merge.isPending} disabled={!p.validation?.ok} onClick={() => (wt.state.dirty.size ? setMergeAsk(true) : merge.mutate(false))}>
-              Merge
-            </Btn>
-            <Btn size="sm" variant="ghost" icon={<Trash2 className="size-3.5" />} loading={discard.isPending} onClick={() => discard.mutate()}>
-              Discard
-            </Btn>
-            {canRunEvals && (
-              <Btn size="sm" variant="ghost" icon={<FlaskConical className="size-3.5" />} loading={runEvals.isPending} onClick={() => runEvals.mutate()}>
-                Run evals on branch
-              </Btn>
-            )}
-          </>
+          <Btn size="sm" icon={<GitMerge className="size-3.5" />} loading={merge.isPending} disabled={!p.validation?.ok} onClick={() => (wt.state.dirty.size ? setMergeAsk(true) : merge.mutate(false))}>
+            Merge
+          </Btn>
+        )}
+        {live && (
+          <Btn size="sm" variant="ghost" icon={<Trash2 className="size-3.5" />} loading={discard.isPending} onClick={() => discard.mutate()}>
+            Discard
+          </Btn>
         )}
         {p.status === 'merged' && p.merged_commit && <span className="text-[11px] text-fg-subtle">merged as {shortCommit(p.merged_commit)}</span>}
       </div>
@@ -125,12 +128,12 @@ export function ProposalCard({ proposalId, canRunEvals, onRevise, busy, amended 
       {allRuns.length > 0 && (
         <div className="space-y-1 border-t border-line px-3 py-2">
           {allRuns.map((id) => (
-            <EvalRunSummary key={id} id={id} />
+            <EvalRunSummary key={id} id={id} baseline />
           ))}
         </div>
       )}
 
-      {open && (
+      {live && (
         <div className="border-t border-line px-3 py-2">
           <div className="flex gap-1.5">
             <TextAreaInput

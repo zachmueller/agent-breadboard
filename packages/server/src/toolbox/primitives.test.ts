@@ -116,6 +116,8 @@ function build(): PrimitivesImpl {
     config: fake('config', calls, {
       mergeProposal: (id: string) => ({ proposal_id: id, status: 'merged', merged_commit: 'm3rg3d', diff: '+big patch' }),
       discardProposal: (id: string) => ({ proposal_id: id, status: 'discarded', diff: '+big patch' }),
+      submitProposal: (id: string) => ({ proposal_id: id, status: 'open', diff: '+big patch' }),
+      getProposal: (id: string) => ({ proposal_id: id, status: id === 'prp_merged' ? 'merged' : 'draft', head_commit: 'b4anch', branch: `proposals/${id}` }),
       definition: (ref: string, _at?: string, opts?: { lenient?: boolean }) => {
         // A path to any file under a definition resolves to the definition, as the real lookup does.
         const uid = opts?.lenient && ref === 'lit-review' ? CIRCUIT : (/^(?:tools|circuits)\/([^/]+)\//.exec(ref)?.[1] ?? ref);
@@ -333,8 +335,21 @@ describe('run_circuit', () => {
     const out = await prims.call('run_circuit', { circuit: CIRCUIT, input: { q: 1 } }, p, { session_id: 'sess_parent', step_id: 'gather' });
     expect(out).toEqual({ session_id: 'sess_child', state: 'completed', exit: 'done', output: { answer: 42 } });
     const enq = callsTo('orchestrator', 'enqueue')[0]!.args[0];
-    expect(enq).toMatchObject({ circuit_uid: CIRCUIT, input: { q: 1 }, parent_session: 'sess_parent', parent_step_id: 'gather', created_by: p.actor });
+    // The child runs on its caller's commit, as the caller's own steps do.
+    expect(enq).toMatchObject({ circuit_uid: CIRCUIT, input: { q: 1 }, parent_session: 'sess_parent', parent_step_id: 'gather', created_by: p.actor, config_ref: 'c0ffee' });
     expect(callsTo('orchestrator', 'waitFor')).toHaveLength(1);
+  });
+
+  it("runs a proposal branch's head and records the proposal; a closed proposal is refused", async () => {
+    await prims.call('run_circuit', { circuit: CIRCUIT, input: {}, wait: false, proposal_id: 'prp_d' }, f.memberPrincipal);
+    expect(callsTo('orchestrator', 'enqueue')[0]!.args[0]).toMatchObject({ config_ref: 'b4anch', proposal_id: 'prp_d' });
+    await prims.call('run_circuit', { circuit: CIRCUIT, input: {}, wait: false, ref: 'abc123' }, f.memberPrincipal);
+    expect(callsTo('orchestrator', 'enqueue')[1]!.args[0]).toMatchObject({ config_ref: 'abc123' });
+    expect(callsTo('orchestrator', 'enqueue')[1]!.args[0].proposal_id).toBeUndefined();
+    expect(await codeOf(prims.call('run_circuit', { circuit: CIRCUIT, input: {}, proposal_id: 'prp_merged' }, f.memberPrincipal))).toBe('invalid-state');
+    // A member's own run (no commit of its own) still resolves main at admission.
+    await prims.call('run_circuit', { circuit: CIRCUIT, input: {}, wait: false }, f.memberPrincipal);
+    expect(callsTo('orchestrator', 'enqueue')[2]!.args[0].config_ref).toBeUndefined();
   });
 
   it('wait: false returns immediately', async () => {
@@ -405,14 +420,14 @@ describe('specsFor by principal kind', () => {
   it('users/services get everything except the tool-code-only primitives; human-only ones are for users, admin ones for admins', () => {
     const names = prims.specsFor(f.memberPrincipal).map((s) => s.name);
     for (const n of ['broker_fetch', 'run_tool', 'model_converse', 'merge_proposal', 'record_gate_verdict']) expect(names).not.toContain(n);
-    expect(names).toContain('discard_proposal');
+    expect(names).toEqual(expect.arrayContaining(['discard_proposal', 'submit_proposal']));
     expect(names.length).toBe(prims.names.length - 5);
     const admin = prims.specsFor(f.adminPrincipal).map((s) => s.name);
-    expect(admin).toEqual(expect.arrayContaining(['merge_proposal', 'record_gate_verdict', 'discard_proposal']));
+    expect(admin).toEqual(expect.arrayContaining(['merge_proposal', 'record_gate_verdict', 'discard_proposal', 'submit_proposal']));
     expect(admin.length).toBe(prims.names.length - 3);
     // A service has no person behind it, admin or not.
     const service = prims.specsFor(f.servicePrincipal).map((s) => s.name);
-    expect(service).toEqual(names.filter((n) => n !== 'discard_proposal'));
+    expect(service).toEqual(names.filter((n) => n !== 'discard_proposal' && n !== 'submit_proposal'));
   });
 
   it('subagents get granted primitives ∩ catalog, plus read_node, never broker_fetch', () => {
@@ -422,12 +437,12 @@ describe('specsFor by principal kind', () => {
 
   it('tool code (code-step or execution key) gets everything except the human-only primitives', () => {
     const codeStep: Principal = { ...f.servicePrincipal, actor: { kind: 'code-step', id: TOOL, session_id: 'S' }, is_admin: false, token_kind: 'actor' };
-    expect(prims.specsFor(codeStep)).toHaveLength(prims.names.length - 3);
+    expect(prims.specsFor(codeStep)).toHaveLength(prims.names.length - 4);
     const toolUnderSubagent = subagentPrincipal(f, grants(), { execution_key: 'S:step:1:0', token_kind: 'actor' });
-    expect(prims.specsFor(toolUnderSubagent)).toHaveLength(prims.names.length - 3);
+    expect(prims.specsFor(toolUnderSubagent)).toHaveLength(prims.names.length - 4);
     // Tool code a user's call started acts as that user, and still may not merge or approve.
     const toolUnderAdmin: Principal = { ...f.adminPrincipal, execution_key: 'S:mcp:1:0', token_kind: 'actor' };
-    for (const n of ['merge_proposal', 'discard_proposal', 'record_gate_verdict']) expect(prims.specsFor(toolUnderAdmin).map((s) => s.name)).not.toContain(n);
+    for (const n of ['merge_proposal', 'discard_proposal', 'submit_proposal', 'record_gate_verdict']) expect(prims.specsFor(toolUnderAdmin).map((s) => s.name)).not.toContain(n);
   });
 });
 
@@ -469,7 +484,8 @@ describe('broker_fetch, run_tool, config', () => {
   it('run_tool increments depth and returns the tool output', async () => {
     const toolCode = subagentPrincipal(f, grants(), { execution_key: 'exec-1', token_kind: 'actor' });
     expect(await prims.call('run_tool', { tool: TOOL, input: { a: 1 } }, toolCode, { session_id: 'S', depth: 2 })).toEqual({ echoed: { a: 1 } });
-    expect(callsTo('toolbox', 'invoke')[0]!.args[0]).toMatchObject({ tool_uid: TOOL, depth: 3, ambient: { invocation: 'tool-call' } });
+    // The nested tool runs at its caller's commit (a branch run tries the branch's tools).
+    expect(callsTo('toolbox', 'invoke')[0]!.args[0]).toMatchObject({ tool_uid: TOOL, depth: 3, ambient: { invocation: 'tool-call' }, commit: 'c0ffee' });
     expect(await codeOf(prims.call('run_tool', { tool: TOOL, input: {} }, f.memberPrincipal))).toBe('grant-denied');
   });
 
@@ -572,15 +588,16 @@ describe('proposal merges and gate verdicts (token tiers, [12] §3)', () => {
     }
     expect(await codeOf(prims.call('record_gate_verdict', { uid: TOOL, request_id: 'nir_1', verdict: 'approve' }, editorOf(f.adminPrincipal)))).toBe('forbidden');
     expect(await prims.call('discard_proposal', { proposal_id: 'prp_2' }, editorOf(f.memberPrincipal))).toEqual({ proposal_id: 'prp_2', status: 'discarded' });
+    expect(await prims.call('submit_proposal', { proposal_id: 'prp_3' }, editorOf(f.memberPrincipal))).toEqual({ proposal_id: 'prp_3', status: 'open' });
     expect(callsTo('config', 'mergeProposal')).toHaveLength(0);
   });
 
   it("a member's own sign-in, a subagent granted them and tool code are refused", async () => {
     expect(await codeOf(prims.call('merge_proposal', { proposal_id: 'prp_1' }, f.memberPrincipal))).toBe('forbidden');
     expect(await codeOf(prims.call('record_gate_verdict', { uid: TOOL, request_id: 'nir_1', verdict: 'approve' }, f.memberPrincipal))).toBe('forbidden');
-    const designer = subagentPrincipal(f, grants({ primitives: ['merge_proposal', 'discard_proposal', 'record_gate_verdict', 'propose_config_change'] }));
+    const designer = subagentPrincipal(f, grants({ primitives: ['merge_proposal', 'discard_proposal', 'submit_proposal', 'record_gate_verdict', 'propose_config_change'] }));
     expect(prims.specsFor(designer).map((s) => s.name).sort()).toEqual(['propose_config_change', 'read_node']);
-    for (const n of ['merge_proposal', 'discard_proposal']) expect(await codeOf(prims.call(n, { proposal_id: 'prp_1' }, designer))).toBe('grant-denied');
+    for (const n of ['merge_proposal', 'discard_proposal', 'submit_proposal']) expect(await codeOf(prims.call(n, { proposal_id: 'prp_1' }, designer))).toBe('grant-denied');
     const toolCode = subagentPrincipal(f, grants(), { execution_key: 'exec-1', token_kind: 'actor' });
     expect(await codeOf(prims.call('merge_proposal', { proposal_id: 'prp_1' }, toolCode))).toBe('grant-denied');
     expect(await codeOf(prims.call('merge_proposal', { proposal_id: 'prp_1' }, f.servicePrincipal))).toBe('grant-denied');
@@ -637,11 +654,16 @@ describe('inspection primitives', () => {
         listed = filter;
         return { items: [session('sess_parent', 'running'), session('sess_other', 'completed')], next_cursor: 'c2' };
       },
-      costIncludingChildren: () => 0.25,
+      costsIncludingChildren: (ids: string[]) => new Map(ids.map((id) => [id, 0.25])),
     });
     const p2 = createPrimitives({ ...(prims as any).deps, sessions: sessionsFake });
     const r = (await p2.call('list_sessions', { kind: ['circuit-run'], created_by: 'me', limit: 5 }, f.memberPrincipal)) as any;
     expect(listed).toMatchObject({ kind: ['circuit-run'], created_by: f.member.user_id, limit: 5, cursor: null });
+    expect(r.total).toBeUndefined();
+    // Offset paging, a window, oldest first and branch runs pass through; a malformed time is refused before SQL.
+    await p2.call('list_sessions', { offset: 40, order: 'asc', proposal_id: 'prp_1', created_after: '2026-01-01', created_before: '2026-02-01T00:00:00Z' }, f.memberPrincipal);
+    expect(listed).toMatchObject({ offset: 40, order: 'asc', proposal: 'prp_1', created_after: '2026-01-01T00:00:00.000Z', created_before: '2026-02-01T00:00:00.000Z' });
+    expect(await codeOf(p2.call('list_sessions', { created_after: 'last tuesday' }, f.memberPrincipal))).toBe('validation-failed');
     expect(r.sessions.map((s: any) => [s.session_id, s.cost_usd])).toEqual([
       ['sess_parent', 0.25],
       ['sess_other', 0.25],
@@ -814,12 +836,14 @@ describe('inspection primitives', () => {
 
   it('knowledge domains, evals and events pass through with their gates', async () => {
     const knowledge = fake<PrimitivesDeps['knowledge']>('knowledge', calls, { domains: () => [{ slug: 'eng', description: '', note_count: 2 }, { slug: 'ops', description: '', note_count: 1 }] });
-    const evals = fake<PrimitivesDeps['evals']>('evals', calls, { listRuns: (o: any) => [o], getRun: (id: string) => ({ eval_run_id: id }), analysis: (c: string, v: string, o: any) => ({ c, v, o }) });
+    const evals = fake<PrimitivesDeps['evals']>('evals', calls, { pageRuns: (o: any) => ({ items: [o], total: 7 }), getRun: (id: string) => ({ eval_run_id: id }), analysis: (c: string, v: string, o: any) => ({ c, v, o }) });
     const p2 = createPrimitives({ ...(prims as any).deps, knowledge, evals });
     expect(((await p2.call('list_knowledge_domains', {}, f.memberPrincipal)) as any).domains).toHaveLength(2);
     const sub = subagentPrincipal(f, grants({ primitives: ['list_knowledge_domains'] }));
     expect(((await p2.call('list_knowledge_domains', {}, sub)) as any).domains.map((x: any) => x.slug)).toEqual(['eng']);
-    expect(((await p2.call('list_eval_runs', { circuit: CIRCUIT }, f.memberPrincipal)) as any).runs).toEqual([{ circuit: CIRCUIT, status: undefined, limit: 20 }]);
+    const runs = (await p2.call('list_eval_runs', { circuit: CIRCUIT, proposal_id: 'none' }, f.memberPrincipal)) as any;
+    expect(runs.runs).toEqual([{ circuit: CIRCUIT, status: undefined, proposal: 'none', limit: 20, offset: 0 }]);
+    expect([runs.total, runs.next_offset]).toEqual([7, 1]);
     expect(await p2.call('read_eval_run', { eval_run_id: 'evr_1' }, f.memberPrincipal)).toEqual({ eval_run_id: 'evr_1' });
     expect(await p2.call('get_eval_analysis', { circuit_uid: CIRCUIT, view: 'trend', variant: 'v' }, f.memberPrincipal)).toEqual({ c: CIRCUIT, v: 'trend', o: { base: undefined, head: undefined, circuit_commit: undefined, variant: 'v' } });
     expect(await codeOf(p2.call('get_eval_analysis', { circuit_uid: CIRCUIT, view: 'nope' }, f.memberPrincipal))).toBe('validation-failed');

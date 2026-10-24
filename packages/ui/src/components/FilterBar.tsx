@@ -5,7 +5,9 @@ import { cn } from './cn';
 export type FilterDef =
   | { key: string; label: string; type: 'select'; options: Array<{ value: string; label: string }>; allLabel?: string }
   | { key: string; label: string; type: 'text'; placeholder?: string; mono?: boolean }
-  | { key: string; label: string; type: 'date' };
+  | { key: string; label: string; type: 'date' }
+  /** A From/To day range stored under two keys (`YYYY-MM-DD`, both inclusive). */
+  | { key: string; label: string; type: 'daterange'; fromKey: string; toKey: string };
 
 export type FilterValues = Record<string, string | undefined>;
 
@@ -24,13 +26,17 @@ export interface FilterBarProps {
 export function FilterBar({ filters, value, onChange, search = false, trailing, className }: FilterBarProps) {
   const set = (k: string, v: string | undefined) => onChange({ ...value, [k]: v || undefined });
   const searchKey = search ? (search.key ?? 'q') : null;
-  const active = filters.filter((f) => value[f.key]).length + (searchKey && value[searchKey] ? 1 : 0);
+  const active = filters.filter((f) => (f.type === 'daterange' ? value[f.fromKey] || value[f.toKey] : value[f.key])).length + (searchKey && value[searchKey] ? 1 : 0);
   return (
     <div className={cn('flex flex-wrap items-center gap-2', className)} role="group" aria-label="Filters">
       {search && searchKey && <SearchInput value={value[searchKey] ?? ''} onChange={(v) => set(searchKey, v)} placeholder={search.placeholder ?? 'Search…'} />}
-      {filters.map((f) => (
-        <FilterControl key={f.key} def={f} value={value[f.key]} onChange={(v) => set(f.key, v)} />
-      ))}
+      {filters.map((f) =>
+        f.type === 'daterange' ? (
+          <DateRangeFilter key={f.key} def={f} from={value[f.fromKey]} to={value[f.toKey]} onChange={(from, to) => onChange({ ...value, [f.fromKey]: from || undefined, [f.toKey]: to || undefined })} />
+        ) : (
+          <FilterControl key={f.key} def={f} value={value[f.key]} onChange={(v) => set(f.key, v)} />
+        ),
+      )}
       {active > 0 && (
         <button
           type="button"
@@ -47,7 +53,27 @@ export function FilterBar({ filters, value, onChange, search = false, trailing, 
 
 const chip = 'h-7 rounded-md border text-[13px] transition-colors focus-within:border-accent';
 
-function FilterControl({ def, value, onChange }: { def: FilterDef; value: string | undefined; onChange: (v: string | undefined) => void }) {
+/** From/To days in one chip; each bound is optional, and a To before the From is swapped rather than refused. */
+function DateRangeFilter({ def, from, to, onChange }: { def: Extract<FilterDef, { type: 'daterange' }>; from: string | undefined; to: string | undefined; onChange: (from: string | undefined, to: string | undefined) => void }) {
+  const on = !!(from || to);
+  const set = (f: string | undefined, t: string | undefined) => (f && t && t < f ? onChange(t, f) : onChange(f, t));
+  const input = 'bg-transparent text-fg outline-none [color-scheme:inherit]';
+  return (
+    <div role="group" aria-label={def.label} className={cn(chip, 'inline-flex items-center gap-1.5 px-2.5', on ? 'border-accent/50 bg-accent-soft text-accent-text' : 'border-line-strong bg-surface text-fg-muted')}>
+      <span className="font-medium">{def.label}</span>
+      <input type="date" aria-label={`${def.label} from`} value={from?.slice(0, 10) ?? ''} max={to?.slice(0, 10)} onChange={(e) => set(e.target.value || undefined, to)} className={input} />
+      <span aria-hidden>–</span>
+      <input type="date" aria-label={`${def.label} to`} value={to?.slice(0, 10) ?? ''} min={from?.slice(0, 10)} onChange={(e) => set(from, e.target.value || undefined)} className={input} />
+      {on && (
+        <button type="button" onClick={() => onChange(undefined, undefined)} aria-label={`Clear ${def.label}`} className="rounded hover:bg-hover">
+          <X size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function FilterControl({ def, value, onChange }: { def: Exclude<FilterDef, { type: 'daterange' }>; value: string | undefined; onChange: (v: string | undefined) => void }) {
   const on = !!value;
   if (def.type === 'select') {
     const current = def.options.find((o) => o.value === value);

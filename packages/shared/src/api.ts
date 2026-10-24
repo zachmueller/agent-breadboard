@@ -6,6 +6,8 @@ import type { SessionRecord, SessionEvent, Turn } from './sessions.js';
 export interface Page<T> {
   items: T[];
   next_cursor: string | null;
+  /** Matching rows across all pages; set in offset mode (`?offset=`) ([11] §2). */
+  total?: number;
 }
 
 export interface ApiError {
@@ -81,13 +83,17 @@ export interface ConfigDefinitionDto {
   referenced_by: ConfigTreeEntry[];
 }
 
+/** `draft`: a staging branch that runs and evaluates but is not yet in the review queue; `open`: awaiting review. */
+export const PROPOSAL_STATUSES = ['draft', 'open', 'merged', 'discarded'] as const;
+export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
+
 export interface ProposalDto {
   proposal_id: string;
   branch: string;
   base_commit: string;
   head_commit: string;
   message: string;
-  status: 'open' | 'merged' | 'discarded';
+  status: ProposalStatus;
   created_by: unknown;
   created_at: string;
   /** The conversation that opened it (designer chat), if any. */
@@ -97,6 +103,17 @@ export interface ProposalDto {
   diff: string;
   validation: { ok: boolean; errors: string[]; warnings: string[] };
   eval_runs: string[];
+}
+
+/** A circuit whose behaviour a proposal can change, directly or through a tool, subagent, preset or tenets ([04] §7). */
+export interface AffectedCircuitDto {
+  uid: string;
+  slug: string | null;
+  title: string | null;
+  /** Fixtures at the proposal's head; 0 means there is nothing to evaluate. */
+  fixtures: number;
+  /** Why it is affected: `changed`, or the changed definition it reaches it through (e.g. `tool search-scholarly`). */
+  via: string[];
 }
 
 /** Static CI for each tool a proposal touches, at its head commit ([06] §6). */

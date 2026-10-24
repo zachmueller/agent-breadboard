@@ -2,12 +2,13 @@
  * Eval run launcher, runs table, run detail (fixture × dimension), and score trend ([04] §4, §6, §8).
  */
 import { useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Play, X } from 'lucide-react';
 import { useWorkingTree } from '../../model/workingTree';
 import { Btn, Pill, SelectInput, Field, ErrorBox, Spin, errorMessage, notify, type Tone } from '../../ui';
 import { AppLink } from '../../components/AppLink';
-import { evalsApi, qk, latestFirst, isRunTerminal, useHistory, usePresets, type EvalRunDto, type EvalResultRow } from '../../lib/configApi';
+import { Pager } from '../../../../components';
+import { evalsApi, qk, isRunTerminal, useHistory, usePresets, type EvalRunDto, type EvalResultRow } from '../../lib/configApi';
 import { shortCommit, fmtRelative, fmtDate, fmtUsd, fmtPct, fmtScore } from '../../lib/format';
 import { parseYamlValue } from '../../lib/yamlDoc';
 import { fixturesPathOf, showValue, passOf } from './shared';
@@ -29,20 +30,23 @@ export function variantLabel(run: Pick<EvalRunDto, 'model_overrides' | 'raw'>): 
   return Object.keys(o).sort().map((k) => `${k}=${o[k]}`).join(',');
 }
 
+const RUNS_PAGE = 25;
+
 export function RunsPanel({ selected, onSelect }: { selected: string | null; onSelect: (id: string | null) => void }) {
   const wt = useWorkingTree();
+  const [page, setPage] = useState(1);
   const runsQ = useQuery({
-    queryKey: qk.runs(wt.uid),
-    queryFn: () => evalsApi.runs(wt.uid),
-    select: latestFirst,
-    refetchInterval: (q) => ((q.state.data ?? []).some((r: EvalRunDto) => !isRunTerminal(r.status)) ? 3000 : false),
+    queryKey: [...qk.runs(wt.uid), 'page', page],
+    queryFn: () => evalsApi.runPage({ circuit: wt.uid, limit: RUNS_PAGE }, (page - 1) * RUNS_PAGE),
+    placeholderData: keepPreviousData,
+    refetchInterval: (q) => ((q.state.data?.items ?? []).some((r: EvalRunDto) => !isRunTerminal(r.status)) ? 3000 : false),
   });
   const trendQ = useQuery({
     queryKey: ['evals', 'analysis', wt.uid, 'trend', runsQ.dataUpdatedAt],
     queryFn: () => evalsApi.analysis<{ variants: string[]; points: TrendPoint[] }>(wt.uid, 'trend'),
     retry: false,
   });
-  const runs = runsQ.data ?? [];
+  const runs = runsQ.data?.items ?? [];
 
   return (
     <div className="space-y-4">
@@ -113,6 +117,7 @@ export function RunsPanel({ selected, onSelect }: { selected: string | null; onS
             </table>
           </div>
         )}
+        {(runsQ.data?.total ?? 0) > RUNS_PAGE && <Pager page={page} size={RUNS_PAGE} total={runsQ.data!.total} shown={runs.length} loading={runsQ.isPlaceholderData} onPage={setPage} />}
       </section>
       {selected && <RunDetail id={selected} onClose={() => onSelect(null)} />}
     </div>

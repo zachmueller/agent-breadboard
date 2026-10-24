@@ -17,7 +17,7 @@
 - Base path `/api/v1`. JSON bodies; `snake_case` fields.
 - **Auth:** `Authorization: Bearer <token>` — user session tokens (OIDC or local login), **personal access tokens** a member mints for their own tools (optionally read-only), service tokens for API callers, internal actor tokens for sandbox/tool calls ([12](12-security-deployment.md) §3). Every request resolves to an **actor** (`user | subagent | code-step | service`) recorded on all writes. This is the **single actor taxonomy** system-wide: `created_by`/authorship fields use the same four kinds ([09](09-content.md) §2.2 aligns to this; `service` replaces the earlier `system` label — server-internal writes such as connector syncs record `service` with the internal component as the ID).
 - **Service-token scoping:** service tokens carry **named capability scopes** (OAuth-style strings: `tasks:write`, `sessions:read`, `config:propose`, `mcp:call`, …), enforced by a middleware map of endpoint → required scope. Scopes are human-readable in the admin UI and are the designated substrate for future federation grants (e.g., `federation:incoming` scoped by circuit tags) — no endpoint-pattern grammar needed.
-- **Pagination:** cursor-based (`?cursor=…&limit=…`, default 50, max 200); responses carry `next_cursor`.
+- **Pagination:** cursor-based (`?cursor=…&limit=…`, default 50, max 200); responses carry `next_cursor`. Growing lists (sessions, nodes and tasks, proposals, eval runs, conversations) also take **offset mode**: `?offset=…&limit=…` returns `{items, total, next_cursor: null}`, where `total` counts every row matching the same filters, so a UI can show numbered pages ("1–50 of 3,214"). Lists ordered by creation take `?order=asc|desc` (default newest first). Time-window filters (`created_after`, `created_before`, both inclusive) must be ISO dates or timestamps; anything else is `validation-failed`.
 - **Filtering:** query params per resource (documented per endpoint); repeated params OR within a field, distinct params AND across fields.
 - **Errors:** `{error: {code, message, detail?}}` with stable machine-readable `code`s (e.g. `grant-denied`, `base-revision-too-old`, `validation-failed`). Typed failure codes match the ones named in component specs.
 - **Idempotency:** mutating endpoints accept `Idempotency-Key`; retried keys return the original result.
@@ -73,7 +73,8 @@ POST   /conversations/:id/messages   {text, context?}   (`Prefer: respond-async`
 
 ### Sessions & orchestrator ([02](02-sessions-orchestrator.md))
 ```
-GET    /sessions                     ?state=&kind=&circuit=&task=&created_after=
+GET    /sessions                     ?state=&kind=&circuit=&task=&parent=&created_by=&proposal=&created_after=&created_before=&order=
+                                     cursor or offset paging (§2); `proposal`: runs on that proposal's branch
 GET    /sessions/:id                 summary (incl. cost aggregates, parent/children)
 GET    /sessions/:id/events          ?after_seq=
 GET    /sessions/:id/steps/:step/turns
@@ -87,20 +88,25 @@ GET    /config/tree                  ?ref=commit|branch      list definitions (u
 GET    /config/search                ?q=          search definitions by slug/title (backs global search, [10] §2)
 GET    /config/definitions/:uid      parsed + validated definition, resolved by direct UID-derived path
                                      ([01] §6.1–6.2; same shape for circuits, subagents, tools, mcp, presets, tenets)
-POST   /config/proposals             {changes: [{path, content}], message, session_id?}  → branch + proposal id
-GET    /config/proposals             ?status=open|merged|discarded&session_id=&definition=<uid>&limit=
+POST   /config/proposals             {changes: [{path, content}], message, session_id?, draft?}  → branch + proposal id
+                                     (`draft: true` stages it outside the review queue until submitted, [01] §6.3)
+GET    /config/proposals             ?status=draft|open|merged|discarded&session_id=&definition=<uid>&limit=&offset=
+                                     (a bare array without `offset`; a page with `total` with it)
 GET    /config/proposals/:id         diff, validation results, eval results, session_id (the conversation that opened it)
 GET    /config/proposals/:id/checks  tool CI per touched tool at the head: manifest, TypeScript/Python syntax ([06] §6)
-POST   /config/proposals/:id/amend   {changes, message}  (another commit on the same branch; same id)
-POST   /config/proposals/:id/merge | discard
+GET    /config/proposals/:id/affected-circuits  circuits its changes reach (edited, or through a changed tool,
+                                     subagent, preset tier or tenets) with fixture counts: what to evaluate ([04] §7)
+POST   /config/proposals/:id/amend   {changes, message}  (another commit on the same branch; same id; draft or open)
+POST   /config/proposals/:id/submit  draft → open: it joins the review queue
+POST   /config/proposals/:id/merge | discard   (merge refuses a draft: submit it first)
 POST   /config/revert                {path, to_commit}
 GET    /config/history               ?path=
 ```
 
 ### Evals ([04](04-evals.md))
 ```
-POST   /evals/runs                   {circuit, ref?, fixture_tags?, model_overrides?}
-GET    /evals/runs                   ?circuit=;  GET /evals/runs/:id  (results incl. per-dimension)
+POST   /evals/runs                   {circuit, ref?, proposal_id?, fixture_tags?, model_overrides?}
+GET    /evals/runs                   ?circuit=&status=&proposal=<id>|none&offset=;  GET /evals/runs/:id  (results incl. per-dimension)
 GET    /evals/analysis/:circuit      ?view=model-regression|cheapest-model|circuit-regression|trend
 ```
 
@@ -119,19 +125,19 @@ A built-in MCP server exposing Breadboard to LLM consumers — both **internal**
 | `tag_need_input`, `resolve_need_input` | Review signaling (per-request IDs, [09](09-content.md) §3) |
 | `query_knowledge`, `read_note`, `propose_note_edit`, `create_note` | Knowledge incl. the reconcile path and AI note creation ([07](07-knowledge.md) §5) |
 | `search_repo`, `read_repo_file` | Repository mirrors: grep and read over git repositories the server mirrors, citing the commit; a subagent needs a `repos` grant ([06](06-toolbox.md) §7.1) |
-| `run_circuit`, `get_session_summary` | Session composition (grant-gated) |
+| `run_circuit`, `get_session_summary` | Session composition (grant-gated). `run_circuit {proposal_id \| ref}` runs a proposal branch's configuration instead of main; a nested run inherits its caller's commit |
 | `start_eval_run`, `record_score`, `get_rubric` | Evals MCP ([04](04-evals.md) §5): starting a run (mirrors `POST /evals/runs`, an execute grant on the circuit) and judge capture |
 | `propose_config_change`, `read_config`, `search_config`, `validate_config` | Designer chats / meta-operation (lookup by UID, slug, or path; `read_config` and `search_config` take an optional `commit`) |
-| `discard_proposal`, `merge_proposal`, `record_gate_verdict` | Closing the loop from a harness: discard (`config:propose`), merge (`config:merge`, as the proposal page does) and a gate verdict (`gates:verdict`, targeted reviewers only, [02](02-sessions-orchestrator.md) §5.4). Callable only by a person, never by a subagent or tool code. Merge and verdict also need admin rights, so only an admin's full token or sign-in lists them ([12](12-security-deployment.md) §3) |
+| `submit_proposal`, `discard_proposal`, `merge_proposal`, `record_gate_verdict` | Closing the loop from a harness: submit a draft for review and discard (`config:propose`), merge (`config:merge`, as the proposal page does) and a gate verdict (`gates:verdict`, targeted reviewers only, [02](02-sessions-orchestrator.md) §5.4). Callable only by a person, never by a subagent or tool code. Merge and verdict also need admin rights, so only an admin's full token or sign-in lists them ([12](12-security-deployment.md) §3) |
 
 **Inspection catalog** (read-only; the deep-dive surface for a team member's local harness, and grantable to subagents like any primitive). Each tool is a thin wrapper over the service method its REST route calls, so scope, session visibility and knowledge grants are enforced identically:
 
 | Tool | Reads |
 |---|---|
 | `whoami`, `get_breadboard_overview`, `list_users`, `list_recent_events` | The connection's identity; instance health, capacity, spend, counts (the dashboard, plus config and knowledge facts, and the repository mirrors the caller can read); the roster; the event stream's recent events |
-| `list_sessions`, `read_session_transcript`, `read_session_events`, `list_session_executions` | Sessions by state/kind/circuit/task/creator/definition; every turn with tool calls, results, model, tokens and cost; the orchestrator event log; the tool journal. `get_session_summary` adds `proposals`, `busy`, `last_error`, `draft_task` for chats |
+| `list_sessions`, `read_session_transcript`, `read_session_events`, `list_session_executions` | Sessions by state/kind/circuit/task/creator/definition/proposal and a `created_after`/`created_before` window, by `cursor` or `offset` (with `total`); every turn with tool calls, results, model, tokens and cost; the orchestrator event log; the tool journal. `get_session_summary` adds `proposals`, `busy`, `last_error`, `draft_task` for chats |
 | `search_nodes`, `inspect_node`, `get_review_queue` | Nodes by type, text, tags, status, need-input and time (bodies via `read_node`); revisions, edges, comments and lineage of one node; the caller's review queue |
-| `get_config_history`, `list_proposals`, `read_proposal`, `diff_config` | Commits touching a definition or path; proposals with diff, validation and tool checks; the patch between two refs |
+| `get_config_history`, `list_proposals`, `read_proposal`, `diff_config` | Commits touching a definition or path; proposals (drafts included) with diff, validation, tool checks and `affected_circuits`; the patch between two refs |
 | `list_knowledge_domains`, `list_eval_runs`, `read_eval_run`, `get_eval_analysis` | Domains with note counts; eval runs, one run's per-fixture results, the analysis views |
 
 Long values are clipped by default (`max_chars`; a clipped value carries `truncated: true` and `total_chars`), with `turn_id` + `max_chars: 0` to read one turn in full. The `initialize` result carries `instructions` that walk a model through a run investigation (overview → sessions → summary → transcript / events / executions → the config at the run's commit).
@@ -145,7 +151,7 @@ External connections authenticate per-user with an explicit bearer credential: a
 Push channel for state changes (the UI's live updates and teams' automation hooks):
 
 - **SSE** `GET /api/v1/events?topics=…` (UI, simple consumers) and **webhooks** (`config/breadboard.yaml` registrations with HMAC signing) for server-to-server.
-- Topics: `session.state` (queued/running/suspended-gate/suspended-error/completed/cancelled transitions — gate suspensions are the flagship use), `task.status`, `need-input.tagged` / `need-input.resolved`, `config.committed`, `eval.run-completed`, `user.admin-changed` (an admin granted or revoked the flag, [12](12-security-deployment.md) §4).
+- Topics: `session.state` (queued/running/suspended-gate/suspended-error/completed/cancelled transitions — gate suspensions are the flagship use), `task.status`, `need-input.tagged` / `need-input.resolved`, `config.committed`, `proposal.state` (a proposal opened, drafted, submitted, merged or discarded: `{proposal_id, status, prior}`), `eval.run-completed`, `user.admin-changed` (an admin granted or revoked the flag, [12](12-security-deployment.md) §4).
 - **Scope-filtered per subscriber:** SSE events are filtered against the subscriber's visibility before delivery — events about `session`-scoped nodes or Sessions the subscriber can't read are not delivered, consistent with "scope enforced on every read path" ([12](12-security-deployment.md) §4). Webhook registrations are admin-configured and receive team-visible events only.
 - Payloads carry IDs + minimal summary; consumers fetch detail via REST (where grants are enforced again). Delivery is at-least-once; consumers dedupe on event id.
 

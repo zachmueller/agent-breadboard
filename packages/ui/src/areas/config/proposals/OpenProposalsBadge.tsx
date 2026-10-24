@@ -24,3 +24,16 @@ export function OpenProposalsBadge({ uid, compact }: { uid: string; compact?: bo
     </AppLink>
   );
 }
+
+/** A quiet "N drafts" link in an editor header, so an author finds the drafts they are still evaluating. */
+export function DraftProposalsLink({ uid }: { uid: string }) {
+  const q = useOpenProposalsFor(uid, 'draft');
+  const n = q.data.length;
+  if (!n) return null;
+  const href = n === 1 ? proposalPath(q.data[0]!.proposal_id) : `/proposals?status=draft&definition=${uid}`;
+  return (
+    <AppLink href={href} title={`Drafts not yet submitted for review: ${q.data.map((p) => p.message).join('; ')}`} className="text-xs whitespace-nowrap text-fg-muted hover:text-fg">
+      {n} draft{n === 1 ? '' : 's'}
+    </AppLink>
+  );
+}

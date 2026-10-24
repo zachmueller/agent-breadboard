@@ -16,6 +16,9 @@ system_prompt: |
   - After `propose_config_change` returns a `proposal_id`, end your reply with the id and where to review it: the
     Review changes button on the proposal card below your reply, or `/proposals/<id>`. If the call fails, say
     plainly that no proposal was opened and why. Never describe a change as proposed without a returned id.
+  - When the change reaches a circuit that has fixtures (the circuit itself, or one using the definition you are
+    changing), pass `draft: true`. A draft runs and evaluates like any proposal but stays out of the review queue.
+    Tell the user to use Run evals on the proposal card, then Submit for review once the scores look right.
 
   Design guidance:
   - System prompts are written for the model: state the role, the method as numbered steps, explicit rules, and the
@@ -35,7 +38,7 @@ system_prompt: |
     takes a slug, or `<kind>:<slug>` (e.g. `tool:check-citations`) when kinds share one.
   - Refer to other definitions by UID only, and never invent a UID. Files are addressed by UID-derived paths.
     To create a new subagent, ask the user to use the editor's New action, which mints the UID, then propose its
-    contents. Changes are `{path, content}` file entries; amend an open proposal by passing its `proposal_id`.
+    contents. Changes are `{path, content}` file entries; amend a draft or open proposal by passing its `proposal_id`.
 
   When the observed problem is really in a circuit's step prompt or a tool, say so instead of overloading the
   system prompt.

@@ -62,12 +62,19 @@ export class MemorySessionStore {
     return s;
   }
 
-  async list(f: SessionFilter): Promise<{ items: SessionRecord[]; next_cursor: string | null }> {
+  async list(f: SessionFilter): Promise<{ items: SessionRecord[]; next_cursor: string | null; total?: number }> {
     let items = [...this.sessions.values()];
+    const detail = (s: SessionRecord) => (s.state_detail ?? {}) as { context?: { definition_uid?: string }; started_by?: { id?: string }; proposal_id?: string };
     if (f.kind?.length) items = items.filter((s) => f.kind!.includes(s.kind));
     if (f.state?.length) items = items.filter((s) => f.state!.includes(s.state));
+    if (f.definition) items = items.filter((s) => detail(s).context?.definition_uid === f.definition);
+    if (f.created_by) items = items.filter((s) => s.created_by?.id === f.created_by || detail(s).started_by?.id === f.created_by);
+    if (f.proposal) items = items.filter((s) => detail(s).proposal_id === f.proposal);
     items.sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return { items: items.slice(0, f.limit ?? 50).map((s) => structuredClone(s)), next_cursor: null };
+    if (f.order === 'asc') items.reverse();
+    const offset = f.offset ?? 0;
+    const page = items.slice(offset, offset + (f.limit ?? 50)).map((s) => structuredClone(s));
+    return { items: page, next_cursor: null, ...(f.offset !== undefined && f.offset !== null ? { total: items.length } : {}) };
   }
 
   async update(id: string, patch: Partial<SessionRecord>): Promise<SessionRecord> {
@@ -115,6 +122,10 @@ export class MemorySessionStore {
     let total = (await this.cost(id)).cost_usd;
     for (const s of this.sessions.values()) if (s.parent_session === id) total += await this.costIncludingChildren(s.session_id);
     return total;
+  }
+
+  async costsIncludingChildren(ids: string[]): Promise<Map<string, number>> {
+    return new Map(await Promise.all(ids.map(async (id) => [id, await this.costIncludingChildren(id)] as [string, number])));
   }
 
   async countByState(state: string, kinds?: SessionKind[]): Promise<number> {

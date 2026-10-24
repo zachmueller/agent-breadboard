@@ -172,7 +172,7 @@ Every circuit run gets **its own Session ID** — whether initiated top-level, t
 
 ## 7. API surface (summary — full contract in [11 — API & MCP](11-api-mcp.md))
 
-- `GET /sessions` (filter: state, kind, circuit, task, date), `GET /sessions/:id`, `GET /sessions/:id/events`, `GET /sessions/:id/steps/:stepId/turns`
+- `GET /sessions` (filter: state, kind, circuit, task, creator, proposal branch, a created-at window; cursor or numbered-page paging, newest or oldest first), `GET /sessions/:id`, `GET /sessions/:id/events`, `GET /sessions/:id/steps/:stepId/turns`
 - `POST /nodes/:uid/gate-verdict` (per-artifact `{verdict: approve|request-changes, comment?, edits?}` from a targeted reviewer; gate auto-resolves when verdicts complete — §5.4)
 - `POST /sessions/:id/retry`, `POST /sessions/:id/cancel`, `POST /sessions/:id/resume` (post-budget-raise)
 - Event stream: session state changes and gate suspensions are published on the Breadboard event stream (webhooks/SSE).
@@ -180,7 +180,7 @@ Every circuit run gets **its own Session ID** — whether initiated top-level, t
 
 ## 8. UI
 
-- **Sessions history:** searchable/filterable listing of all past Sessions (state, kind, circuit, task, date, cost). Entry point for deep dives.
+- **Sessions history:** searchable/filterable listing of all past Sessions (state, kind, circuit, task, a From/To date range, cost), in numbered pages with the total and a newest/oldest-first order, so a long-ago window is a filter away rather than a long scroll. Entry point for deep dives.
 - **Session explorer:** the detailed execution view.
   - First layer: Session overview showing the steps taken (the executed path through the circuit graph), with per-step status, attempts, cost, and duration. Sessions suspended at a hard gate are prominently flagged so users can go unblock them.
   - Clicking a step dives into its execution details: full chat log for LLM steps (turn-by-turn, tool calls expandable), code logs for code steps.

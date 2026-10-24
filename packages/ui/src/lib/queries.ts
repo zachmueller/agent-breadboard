@@ -89,6 +89,22 @@ function useCursorList<T>(key: readonly unknown[], path: string, query: Query, o
   return { ...q, items };
 }
 
+/** Shared numbered-page plumbing for offset-mode endpoints (`?offset=` → `{items, total}`, [11] §2). */
+export function useOffsetList<T>(key: readonly unknown[], path: string, query: Query, paging: { offset: number; size: number }, opts: { enabled?: boolean; refetchInterval?: number | false } = {}) {
+  const q = useQuery({
+    queryKey: [...key, { offset: paging.offset, size: paging.size }],
+    queryFn: async ({ signal }) => {
+      const r = await get<unknown>(path, { ...query, limit: paging.size, offset: paging.offset }, { signal });
+      const page = asPage<T>(r);
+      return { items: page.items, total: typeof (r as { total?: unknown })?.total === 'number' ? (r as { total: number }).total : page.items.length };
+    },
+    enabled: opts.enabled ?? true,
+    placeholderData: keepPreviousData,
+    refetchInterval: opts.refetchInterval,
+  });
+  return { ...q, items: q.data?.items ?? [], total: q.data?.total ?? 0 };
+}
+
 // ------------------------------------------------------------------ auth ---
 
 export function useAuthMode() {
@@ -138,6 +154,11 @@ export function useNode(uid: string | null | undefined, opts: Partial<UseQueryOp
 
 export function useNodes(filter: NodeFilter, opts: { enabled?: boolean; limit?: number } = {}) {
   return useCursorList<NodeDto>(qk.nodes(filter), '/nodes', filter, opts);
+}
+
+/** `useNodes` as numbered pages with a total. */
+export function useNodePage(filter: NodeFilter, paging: { offset: number; size: number }, opts: { enabled?: boolean } = {}) {
+  return useOffsetList<NodeDto>(qk.nodes(filter), '/nodes', filter, paging, opts);
 }
 
 export function useNodeRevisions(uid: string, enabled = true) {
@@ -231,6 +252,9 @@ export interface SessionFilter {
   circuit?: string;
   task?: string;
   created_after?: string;
+  created_before?: string;
+  order?: 'asc' | 'desc';
+  proposal?: string;
   [k: string]: Query[string];
 }
 
@@ -274,8 +298,9 @@ export function useSession(id: string | null | undefined, opts: { live?: boolean
   return q;
 }
 
-export function useSessions(filter: SessionFilter, opts: { enabled?: boolean; live?: boolean; limit?: number } = {}) {
-  const list = useCursorList<SessionSummaryDto>(qk.sessions(filter), '/sessions', filter, opts);
+/** One numbered page of sessions; live updates refetch only the page on screen. */
+export function useSessions(filter: SessionFilter, paging: { offset: number; size: number }, opts: { enabled?: boolean; live?: boolean } = {}) {
+  const list = useOffsetList<SessionSummaryDto>(qk.sessions(filter), '/sessions', filter, paging, opts);
   const invalidate = useThrottledInvalidate(1000);
   useLiveEvents(['session.state'], () => invalidate(['sessions']), opts.live ?? true);
   return list;
@@ -386,8 +411,10 @@ export function useReviewCount(enabled = true) {
 export function useGlobalLiveInvalidation(active: boolean) {
   const invalidate = useThrottledInvalidate(800);
   useLiveEvents(
-    ['need-input.tagged', 'need-input.resolved', 'session.state', 'node.updated', 'task.status'],
+    ['need-input.tagged', 'need-input.resolved', 'session.state', 'node.updated', 'task.status', 'proposal.state'],
     (e: StreamEvent) => {
+      // Badges, the nav count and open review pages follow drafts being opened, submitted, merged or discarded.
+      if (e.topic === 'proposal.state') invalidate(['config', 'proposals'], ['config', 'proposal']);
       if (e.topic.startsWith('need-input') || e.topic === 'session.state') invalidate(qk.reviewQueue, qk.dashboard);
       if (e.topic === 'node.updated' || e.topic.startsWith('need-input')) {
         const uid = payloadNodeUid(e);
@@ -463,11 +490,15 @@ export function useConfigIndex() {
 }
 
 /**
- * Config proposals ([10] §4). The keys and response shape match the config area's `useProposals` queries, so the
- * nav count, editor badges and inventory badges share one fetch of the open list.
+ * Config proposals ([10] §4): the nav count is the server's `total` of open proposals, so drafts never count and a
+ * long queue is never capped at one page.
  */
 export function useOpenProposalCount() {
-  return useQuery({ queryKey: ['config', 'proposals', { status: 'open' }], queryFn: () => get<ProposalDto[]>('/config/proposals', { status: 'open' }), staleTime: 15_000, select: (r) => r.length });
+  return useQuery({
+    queryKey: ['config', 'proposals', 'count', 'open'],
+    queryFn: async () => ((await get<{ total?: number }>('/config/proposals', { status: 'open', offset: 0, limit: 1 })).total ?? 0),
+    staleTime: 15_000,
+  });
 }
 
 /** Proposals a conversation (designer chat) opened, any status. */

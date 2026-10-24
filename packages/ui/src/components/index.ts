@@ -17,6 +17,7 @@ export { PageHeader, PageBody, Panel, MetaList } from './PageHeader';
 export { DataTable, type Column } from './DataTable';
 export { FilterBar, SearchInput, type FilterDef, type FilterValues } from './FilterBar';
 export { Pagination } from './Pagination';
+export { Pager, type PagerProps } from './Pager';
 export { TimeAgo, useNow } from './TimeAgo';
 export { CostInline } from './CostInline';
 export { StateBadge, StepStatusBadge, TaskStatusBadge } from './StateBadge';

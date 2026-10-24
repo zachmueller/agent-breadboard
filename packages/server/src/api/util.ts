@@ -24,6 +24,30 @@ export function intParam(v: unknown, def?: number): number | undefined {
   return Number.isFinite(n) ? n : def;
 }
 
+/** An ISO date/timestamp query param; a malformed one is a 400, not a SQL cast error. */
+export function dateParam(v: unknown, name: string): string | undefined {
+  const s = strParam(v);
+  if (s === undefined) return undefined;
+  if (Number.isNaN(Date.parse(s))) throw new BreadboardError('validation-failed', `${name} must be an ISO date or timestamp`);
+  return new Date(s).toISOString();
+}
+
+/** `?offset=` switches a list to offset paging with a `total` ([11] §2); absent means cursor paging. */
+export function offsetParam(v: unknown): number | undefined {
+  const s = strParam(v);
+  if (s === undefined) return undefined;
+  const n = Number(s);
+  if (!Number.isInteger(n) || n < 0) throw new BreadboardError('validation-failed', 'offset must be a non-negative integer');
+  return n;
+}
+
+export function orderParam(v: unknown): 'asc' | 'desc' | undefined {
+  const s = strParam(v);
+  if (s === undefined) return undefined;
+  if (s !== 'asc' && s !== 'desc') throw new BreadboardError('validation-failed', 'order must be asc or desc');
+  return s;
+}
+
 export function boolParam(v: unknown): boolean | undefined {
   const s = strParam(v);
   if (s === undefined) return undefined;

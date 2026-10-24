@@ -32,7 +32,7 @@ export const MODEL_CAPABILITY = 'model';
 /** Always available to subagent principals. */
 const ALWAYS_FOR_SUBAGENTS = new Set(['read_node']);
 /** Primitives only a signed-in person may call, never a subagent or tool code: humans shape, AI proposes ([00] §1.2). */
-const HUMAN_ONLY = new Set(['merge_proposal', 'discard_proposal', 'record_gate_verdict']);
+const HUMAN_ONLY = new Set(['merge_proposal', 'discard_proposal', 'submit_proposal', 'record_gate_verdict']);
 /** Human-only primitives that also need admin rights ([12] §3: an admin's full-access token, or an admin's own sign-in). */
 const ADMIN_ONLY = new Set(['merge_proposal', 'record_gate_verdict']);
 
@@ -424,11 +424,13 @@ export class PrimitivesImpl implements Primitives {
         name: 'run_circuit',
         scope: 'sessions:write',
         description:
-          'Run a circuit as a child session of the current one. Requires an execute grant on the circuit. With `wait: true` (default) blocks until the child finishes and returns its exit and output; with `wait: false` returns the queued session id immediately (poll with `get_session_summary`).',
+          "Run a circuit as a child session of the current one. Requires an execute grant on the circuit. With `wait: true` (default) blocks until the child finishes and returns its exit and output; with `wait: false` returns the queued session id immediately (poll with `get_session_summary`). `proposal_id` (or `ref`) runs the proposal branch's configuration (circuit, subagents, tools, presets) instead of main, e.g. to try a draft; such runs are listed with `list_sessions {proposal_id}`. Inside a run, the child uses the caller's configuration commit.",
         input_schema: obj(
           {
             circuit: { type: 'string', minLength: 1, description: 'Circuit UID.' },
             input: { description: "Circuit input, matching the circuit's input schema." },
+            proposal_id: { type: 'string', description: "Run on this draft or open proposal's branch head." },
+            ref: { type: 'string', description: 'Run at this branch or commit instead of main.' },
             wait: { type: 'boolean', default: true, description: 'Wait for completion (default true).' },
             budget: obj({ max_cost_usd: { type: 'number', minimum: 0, description: 'Cost ceiling (USD).' }, max_tokens: { type: 'integer', minimum: 0, description: 'Token ceiling.' } }),
           },
@@ -439,6 +441,16 @@ export class PrimitivesImpl implements Primitives {
           if (p.actor.kind === 'subagent' && !p.grants?.circuits.execute.has(a.circuit)) {
             throw new BreadboardError('grant-denied', `no execute grant for circuit ${a.circuit}`);
           }
+          let config_ref: string | undefined = a.ref;
+          let proposal_id: string | undefined;
+          if (a.proposal_id) {
+            const prp = await d.config.getProposal(a.proposal_id);
+            if (prp.status !== 'draft' && prp.status !== 'open') throw new BreadboardError('invalid-state', `proposal ${a.proposal_id} is ${prp.status}`);
+            config_ref ??= prp.head_commit;
+            proposal_id = prp.proposal_id;
+          }
+          // A nested run follows the configuration its caller runs on (a branch run stays on the branch).
+          config_ref ??= p.config_commit ?? undefined;
           const s = await d.orchestrator.enqueue({
             circuit_uid: a.circuit,
             input: a.input ?? {},
@@ -446,6 +458,8 @@ export class PrimitivesImpl implements Primitives {
             parent_step_id: ctx.step_id ?? p.actor.step_id ?? null,
             budget: a.budget ?? null,
             created_by: p.actor,
+            ...(config_ref ? { config_ref } : {}),
+            ...(proposal_id ? { proposal_id } : {}),
           });
           if (a.wait === false) return { session_id: s.session_id, state: s.state };
           const done = await d.orchestrator.waitFor(s.session_id);
@@ -487,6 +501,8 @@ export class PrimitivesImpl implements Primitives {
             tool_uid: a.tool,
             input: a.input ?? {},
             settings: a.settings,
+            // The nested tool runs at its caller's commit, so a branch run tries the branch's tools.
+            ...(p.config_commit ? { commit: p.config_commit } : {}),
             principal: p,
             ambient: { invocation: 'tool-call', session_id: ctx.session_id ?? p.session_id ?? null, step_id: ctx.step_id ?? null },
             session_id: ctx.session_id ?? p.session_id ?? null,
@@ -569,6 +585,7 @@ export class PrimitivesImpl implements Primitives {
             effort: a.effort,
             force_tool: a.force_tool,
             model_overrides: session.model_overrides ?? null,
+            config_commit: commit ?? p.config_commit ?? undefined,
             session_id,
             step_id: step_id!,
           });
@@ -710,35 +727,46 @@ export class PrimitivesImpl implements Primitives {
         name: 'propose_config_change',
         scope: 'config:propose',
         description:
-          'Propose a configuration change for human review: writes a branch and opens (or, with `proposal_id`, amends) a proposal. Nothing reaches main until a human merges it. For tool changes the result includes `tool_checks` (manifest, TypeScript/Python syntax) at the proposal head; fix failures with an amendment.',
+          'Propose a configuration change for human review: writes a branch and opens (or, with `proposal_id`, amends) a proposal. Nothing reaches main until a human merges it. With `draft: true` the branch is staged outside the review queue: it runs and evaluates like any proposal (`start_eval_run {proposal_id}`, `run_circuit {proposal_id}`) and enters review once submitted (`submit_proposal`, or the card\'s "Submit for review"). For tool changes the result includes `tool_checks` (manifest, TypeScript/Python syntax) at the proposal head; fix failures with an amendment.',
         input_schema: obj(
           {
             changes: FILE_CHANGES,
             message: { type: 'string', minLength: 1, description: 'Commit/proposal message explaining the change and why.' },
-            proposal_id: { type: 'string', description: 'Amend this open proposal instead of opening a new one.' },
+            proposal_id: { type: 'string', description: 'Amend this draft or open proposal instead of opening a new one.' },
             base: { type: 'string', description: 'Base branch or commit for a new proposal (default main).' },
+            draft: { type: 'boolean', default: false, description: 'Stage a new proposal as a draft: runnable and evaluable, but not in the review queue until submitted.' },
           },
           ['changes', 'message'],
         ),
         handler: async (a, p, ctx) => {
           const dto = a.proposal_id
             ? await d.config.amendProposal(a.proposal_id, a.changes, a.message, p)
-            : await d.config.propose({ changes: a.changes, message: a.message, by: p, base: a.base, session_id: ctx.session_id ?? p.session_id ?? null });
+            : await d.config.propose({ changes: a.changes, message: a.message, by: p, base: a.base, session_id: ctx.session_id ?? p.session_id ?? null, draft: a.draft === true });
           // The patch only repeats the caller's own changes, and every later turn would carry it again.
           const { diff: _diff, ...rest } = dto;
           const checks = await proposalToolChecks(d.toolbox(), dto);
           return {
             ...rest,
             ...(checks.tools.length ? { tool_checks: checks.tools } : {}),
-            review: `Not merged. The user reviews it from the proposal card in the chat, or at /proposals/${dto.proposal_id}, then merges or discards it.`,
+            review:
+              dto.status === 'draft'
+                ? `Draft, not in the review queue yet. Run its evals (\`start_eval_run {proposal_id}\`, or "Run evals" on the card or at /proposals/${dto.proposal_id}), then submit it for review.`
+                : `Not merged. The user reviews it from the proposal card in the chat, or at /proposals/${dto.proposal_id}, then merges or discards it.`,
           };
         },
       },
 
       {
+        name: 'submit_proposal',
+        scope: 'config:propose',
+        description: 'Submit a draft configuration proposal for review: it joins the review queue (open proposals, the nav count, editor badges). Do this once its evals or test runs show the change behaves as intended.',
+        input_schema: obj({ proposal_id: { type: 'string', minLength: 1, description: 'The `prp_…` id of a draft proposal.' } }, ['proposal_id']),
+        handler: async (a, p) => proposalOutcome(await d.config.submitProposal(a.proposal_id, p)),
+      },
+      {
         name: 'discard_proposal',
         scope: 'config:propose',
-        description: 'Discard an open configuration proposal (its branch is kept for history; main is untouched).',
+        description: 'Discard a draft or open configuration proposal (its branch is kept for history; main is untouched).',
         input_schema: obj({ proposal_id: { type: 'string', minLength: 1, description: 'The `prp_…` proposal id.' } }, ['proposal_id']),
         handler: async (a, p) => proposalOutcome(await d.config.discardProposal(a.proposal_id, p)),
       },
@@ -746,7 +774,7 @@ export class PrimitivesImpl implements Primitives {
         name: 'merge_proposal',
         scope: 'config:merge',
         description:
-          'Merge an open configuration proposal into main, exactly as its review page does: the branch head is validated, then replayed over current main, and a conflict or failed check refuses the merge. Admins only. Read it first (`read_proposal`, and an eval run on its branch with `start_eval_run {proposal_id}` where the circuit has fixtures).',
+          'Merge an open configuration proposal into main, exactly as its review page does: the branch head is validated, then replayed over current main, and a conflict or failed check refuses the merge. A draft must be submitted first (`submit_proposal`). Admins only. Read it first (`read_proposal`, and an eval run on its branch with `start_eval_run {proposal_id}` where the circuit has fixtures).',
         input_schema: obj({ proposal_id: { type: 'string', minLength: 1, description: 'The `prp_…` proposal id.' } }, ['proposal_id']),
         handler: async (a, p) => proposalOutcome(await d.config.mergeProposal(a.proposal_id, p)),
       },

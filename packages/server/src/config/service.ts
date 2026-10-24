@@ -38,7 +38,9 @@ import {
   type Fixtures,
   type McpServer,
   type Presets,
+  type AffectedCircuitDto,
   type ProposalDto,
+  type ProposalStatus,
   type Rubric,
   type Step,
   type Subagent,
@@ -780,6 +782,9 @@ function lenientLookup(model: TreeModel, key: string, commit: string): DefEntry 
 
 type RepoDiff = Awaited<ReturnType<ConfigRepo['diff']>>;
 
+/** Proposals a branch run or amendment may still change: `draft` (staging, not yet in review) and `open`. */
+const LIVE_PROPOSAL = new Set<ProposalStatus>(['draft', 'open']);
+
 interface ProposalRow {
   proposal_id: string;
   team_id: string;
@@ -787,7 +792,7 @@ interface ProposalRow {
   base_commit: string;
   head_commit: string;
   message: string;
-  status: 'open' | 'merged' | 'discarded';
+  status: ProposalStatus;
   created_by: unknown;
   created_at: string | Date;
   session_id: string | null;
@@ -1129,7 +1134,16 @@ export class ConfigServiceImpl implements ConfigService {
     });
   }
 
-  async propose(opts: { changes: FileChange[]; message: string; by: Principal; base?: string; session_id?: string | null }): Promise<ProposalDto> {
+  private async publishProposal(row: Pick<ProposalRow, 'proposal_id' | 'branch' | 'message'>, status: ProposalStatus, by: Principal, prior: ProposalStatus | null): Promise<void> {
+    if (!this.events) return;
+    try {
+      await this.events.publish('proposal.state', { proposal_id: row.proposal_id, branch: row.branch, message: row.message, status, prior, by: by.actor }, { scope: 'team' });
+    } catch (e) {
+      this.log.warn({ err: e }, 'failed to publish proposal.state');
+    }
+  }
+
+  async propose(opts: { changes: FileChange[]; message: string; by: Principal; base?: string; session_id?: string | null; draft?: boolean }): Promise<ProposalDto> {
     return this.writes.run(async () => {
       const base = await this.repo.resolve(opts.base ?? DEFAULT_BRANCH);
       const { report } = await this.validateOverlay(base, opts.changes, { nonMain: true });
@@ -1137,12 +1151,14 @@ export class ConfigServiceImpl implements ConfigService {
       if (opts.changes.length === 0) throw new BreadboardError('validation-failed', 'a proposal needs at least one change');
       const id = mintProposalId();
       const branch = `${PROPOSAL_BRANCH_PREFIX}${id}`;
+      const status: ProposalStatus = opts.draft ? 'draft' : 'open';
       const head = await this.repo.commit({ branch, base, changes: opts.changes, message: opts.message, author: this.authorOf(opts.by) });
       await this.db.query(
-        `INSERT INTO config_proposals (proposal_id, team_id, branch, base_commit, head_commit, message, status, created_by, session_id) VALUES ($1,$2,$3,$4,$5,$6,'open',$7,$8)`,
-        [id, this.teamId, branch, base, head, opts.message, JSON.stringify(opts.by.actor), opts.session_id ?? null],
+        `INSERT INTO config_proposals (proposal_id, team_id, branch, base_commit, head_commit, message, status, created_by, session_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [id, this.teamId, branch, base, head, opts.message, status, JSON.stringify(opts.by.actor), opts.session_id ?? null],
       );
-      this.log.info({ proposal: id, branch, head }, 'config proposal opened');
+      this.log.info({ proposal: id, branch, head, status }, status === 'draft' ? 'config proposal drafted' : 'config proposal opened');
+      await this.publishProposal({ proposal_id: id, branch, message: opts.message }, status, opts.by, null);
       return this.getProposal(id);
     });
   }
@@ -1167,7 +1183,7 @@ export class ConfigServiceImpl implements ConfigService {
     const diff = (known === undefined ? await this.rowDiff(row) : known) ?? { patch: '', files: [] };
     let validation: ValidationReport = { ok: true, errors: [], warnings: [] };
     try {
-      validation = await this.validateTree(row.head_commit, { nonMain: row.status === 'open' });
+      validation = await this.validateTree(row.head_commit, { nonMain: LIVE_PROPOSAL.has(row.status) });
     } catch (e) {
       this.log.debug({ err: e, proposal: row.proposal_id }, 'proposal validation unavailable');
     }
@@ -1193,16 +1209,17 @@ export class ConfigServiceImpl implements ConfigService {
     return this.toDto(await this.row(id));
   }
 
-  async listProposals(opts: { status?: string; limit?: number; session_id?: string; definition?: string } = {}): Promise<ProposalDto[]> {
+  async listProposals(opts: { status?: string | string[]; limit?: number; session_id?: string; definition?: string } = {}): Promise<ProposalDto[]> {
     return (await this.pageProposals(opts)).proposals;
   }
 
-  async pageProposals(opts: { status?: string; limit?: number; offset?: number; session_id?: string; definition?: string } = {}): Promise<{ total: number; proposals: ProposalDto[] }> {
+  async pageProposals(opts: { status?: string | string[]; limit?: number; offset?: number; session_id?: string; definition?: string } = {}): Promise<{ total: number; proposals: ProposalDto[] }> {
     const params: unknown[] = [this.teamId];
     let where = `team_id=$1`;
-    if (opts.status) {
-      params.push(opts.status);
-      where += ` AND status=$${params.length}`;
+    const statuses = (Array.isArray(opts.status) ? opts.status : opts.status ? [opts.status] : []).filter(Boolean);
+    if (statuses.length) {
+      params.push(statuses);
+      where += ` AND status = ANY($${params.length}::text[])`;
     }
     if (opts.session_id) {
       params.push(opts.session_id);
@@ -1228,7 +1245,7 @@ export class ConfigServiceImpl implements ConfigService {
   async amendProposal(id: string, changes: FileChange[], message: string, by: Principal): Promise<ProposalDto> {
     return this.writes.run(async () => {
       const row = await this.row(id);
-      if (row.status !== 'open') throw new BreadboardError('invalid-state', `proposal ${id} is ${row.status}`);
+      if (!LIVE_PROPOSAL.has(row.status)) throw new BreadboardError('invalid-state', `proposal ${id} is ${row.status}`);
       const { report } = await this.validateOverlay(row.head_commit, changes, { nonMain: true });
       if (!report.ok) throw new BreadboardError('validation-failed', `amendment rejected: ${report.errors[0]}`, report);
       const head = await this.repo.commit({ branch: row.branch, changes, message, author: this.authorOf(by) });
@@ -1240,6 +1257,7 @@ export class ConfigServiceImpl implements ConfigService {
   async mergeProposal(id: string, by: Principal): Promise<ProposalDto> {
     return this.writes.run(async () => {
       const row = await this.row(id);
+      if (row.status === 'draft') throw new BreadboardError('invalid-state', `proposal ${id} is a draft: submit it for review first`);
       if (row.status !== 'open') throw new BreadboardError('invalid-state', `proposal ${id} is ${row.status}`);
       const head = await this.repo.resolve(row.branch);
       const main = await this.repo.resolve(DEFAULT_BRANCH);
@@ -1276,6 +1294,7 @@ export class ConfigServiceImpl implements ConfigService {
       await this.repo.deleteBranch(row.branch).catch((e) => this.log.warn({ err: e, branch: row.branch }, 'could not delete merged proposal branch'));
       this.log.info({ proposal: id, commit: final }, 'config proposal merged');
       await this.publishCommitted({ commit: final, message: row.message, by: by.actor, proposal_id: id, kind: 'merge' });
+      await this.publishProposal(row, 'merged', by, row.status);
       return this.getProposal(id);
     });
   }
@@ -1300,12 +1319,79 @@ export class ConfigServiceImpl implements ConfigService {
   async discardProposal(id: string, by: Principal): Promise<ProposalDto> {
     return this.writes.run(async () => {
       const row = await this.row(id);
-      if (row.status !== 'open') throw new BreadboardError('invalid-state', `proposal ${id} is ${row.status}`);
+      if (!LIVE_PROPOSAL.has(row.status)) throw new BreadboardError('invalid-state', `proposal ${id} is ${row.status}`);
       await this.repo.deleteBranch(row.branch);
       await this.db.query(`UPDATE config_proposals SET status='discarded', discarded_at=now(), merged_by=$2 WHERE proposal_id=$1`, [id, JSON.stringify(by.actor)]);
       this.log.info({ proposal: id, by: actorLabel(by.actor) }, 'config proposal discarded');
+      await this.publishProposal(row, 'discarded', by, row.status);
       return this.getProposal(id);
     });
+  }
+
+  async submitProposal(id: string, by: Principal): Promise<ProposalDto> {
+    return this.writes.run(async () => {
+      const row = await this.row(id);
+      if (row.status !== 'draft') throw new BreadboardError('invalid-state', `proposal ${id} is ${row.status}, not a draft`);
+      await this.db.query(`UPDATE config_proposals SET status='open' WHERE proposal_id=$1`, [id]);
+      this.log.info({ proposal: id, by: actorLabel(by.actor) }, 'config proposal submitted for review');
+      await this.publishProposal(row, 'open', by, 'draft');
+      return this.getProposal(id);
+    });
+  }
+
+  async affectedCircuits(id: string): Promise<AffectedCircuitDto[]> {
+    const row = await this.row(id);
+    const diff = await this.rowDiff(row);
+    if (!diff) return [];
+    const head = await this.model(row.head_commit);
+    const base = await this.model(row.base_commit).catch(() => null);
+    const out = new Map<string, AffectedCircuitDto>();
+    const hit = (uid: string, via: string) => {
+      const def = head.byUid.get(uid);
+      if (!def || def.kind !== 'circuit') return;
+      const cur = out.get(uid) ?? { uid, slug: def.slug, title: def.title, fixtures: 0, via: [] };
+      if (!cur.via.includes(via)) cur.via.push(via);
+      out.set(uid, cur);
+    };
+    // Changed definitions seed a walk up the reference graph: tool → subagent → circuit, sub-circuit → parent.
+    const queue: Array<{ uid: string; via: string }> = [];
+    let allCircuits: string | null = null;
+    const changedTiers = new Set<string>();
+    for (const f of diff.files) {
+      const owner = owningDefinition(f.path);
+      if (owner) {
+        queue.push({ uid: owner.uid, via: owner.kind === 'circuit' ? 'changed' : `${KIND_LABEL[owner.kind]} ${head.byUid.get(owner.uid)?.slug ?? owner.uid}` });
+        continue;
+      }
+      const kind = parseConfigPath(f.path)?.kind;
+      if (kind === 'tenets') allCircuits = 'tenets';
+      if (kind === 'presets') {
+        const a = base?.presets?.presets ?? {};
+        const b = head.presets?.presets ?? {};
+        for (const tier of new Set([...Object.keys(a), ...Object.keys(b)])) if (JSON.stringify(a[tier] ?? null) !== JSON.stringify(b[tier] ?? null)) changedTiers.add(tier);
+      }
+    }
+    for (const tier of changedTiers) {
+      for (const d of head.defs) if (d.kind === 'subagent' && d.uid && (d.parsed as Subagent | null)?.model_preset === tier) queue.push({ uid: d.uid, via: `preset ${tier}` });
+    }
+    const seen = new Set<string>();
+    while (queue.length) {
+      const { uid, via } = queue.shift()!;
+      const key = `${uid}|${via}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hit(uid, via);
+      for (const r of head.refs) {
+        if (r.to !== uid || !r.from.uid || r.from.uid === uid) continue;
+        if (r.from.kind === 'circuit' || r.from.kind === 'subagent' || r.from.kind === 'tool') queue.push({ uid: r.from.uid, via });
+      }
+    }
+    if (allCircuits) for (const d of head.defs) if (d.kind === 'circuit' && d.uid) hit(d.uid, allCircuits);
+    for (const c of out.values()) {
+      const fx = await this.fixtures(c.uid, row.head_commit).catch(() => null);
+      c.fixtures = fx?.fixtures?.length ?? 0;
+    }
+    return [...out.values()].sort((a, b) => b.fixtures - a.fixtures || (a.slug ?? a.uid).localeCompare(b.slug ?? b.uid));
   }
 
   async attachEvalRun(proposalId: string, evalRunId: string): Promise<void> {

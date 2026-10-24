@@ -1,11 +1,12 @@
 /** Task inventory ([08] §7.2): the queue and everything that has passed through it, with review actions for AI/API-originated tasks. */
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowUpCircle, Check, Copy, ListTodo, MessagesSquare, MoreHorizontal, Plus, XCircle } from 'lucide-react';
 import { TASK_PRIORITIES, TASK_STATUSES, type NodeDto, type SessionSummaryDto } from '@breadboard/shared';
 import { asPage, get, post } from '../../lib/api';
-import { qk, useConfigTree } from '../../lib/queries';
+import { qk, useConfigTree, useOffsetList } from '../../lib/queries';
+import { pageState } from '../../lib/paging';
 import { useLiveEvents } from '../../lib/live';
 import { useUrlSearch } from '../../lib/url';
 import { toast } from '../../lib/toast';
@@ -27,7 +28,7 @@ import {
   Menu,
   PageBody,
   PageHeader,
-  Pagination,
+  Pager,
   Select,
   SessionChip,
   TaskStatusBadge,
@@ -43,7 +44,6 @@ import {
   isTerminalTask,
   originKinds,
   possibleDuplicates,
-  priorityRank,
   queueAgeTone,
   raisedPriority,
   taskListQuery,
@@ -51,7 +51,7 @@ import {
   taskStatus,
 } from './lib';
 
-type Search = { status?: string; priority?: string; origin?: string; tag?: string; circuit?: string; created_after?: string; q?: string };
+type Search = { status?: string; priority?: string; origin?: string; tag?: string; circuit?: string; created_after?: string; created_before?: string; order?: string; q?: string; page?: string; size?: string };
 type TaskRow = NodeDto & { queue_age_s?: number | null };
 
 type Action = { kind: 'promote' | 'reject' | 'mark-reviewed'; task: TaskRow };
@@ -66,7 +66,8 @@ export function TaskInventoryPage() {
   const [creating, setCreating] = useState(false);
 
   const query = taskListQuery(search);
-  const list = useTasks(query);
+  const paging = pageState(search);
+  const list = useTasks(query, paging);
   const rows = list.items as TaskRow[];
 
   const circuitOptions = useMemo(
@@ -84,7 +85,8 @@ export function TaskInventoryPage() {
     { key: 'origin', label: 'Origin', type: 'select', options: ['user', 'subagent', 'api'].map((o) => ({ value: o, label: humanize(o) })) },
     { key: 'tag', label: 'Tag', type: 'text', placeholder: 'e.g. reviewed', mono: true },
     { key: 'circuit', label: 'Circuit', type: 'select', options: circuitOptions },
-    { key: 'created_after', label: 'Since', type: 'date' },
+    { key: 'created', label: 'Created', type: 'daterange', fromKey: 'created_after', toKey: 'created_before' },
+    { key: 'order', label: 'Order', type: 'select', allLabel: 'Newest first', options: [{ value: 'asc', label: 'Oldest first' }] },
   ];
 
   const columns: Column<TaskRow>[] = [
@@ -103,9 +105,8 @@ export function TaskInventoryPage() {
           )}
         </span>
       ),
-      sortValue: (t) => t.title.toLowerCase(),
     },
-    { key: 'status', header: 'Status', cell: (t) => <TaskStatusBadge status={taskStatus(t)} size="xs" />, sortValue: (t) => TASK_STATUSES.indexOf(taskStatus(t) as never), width: '7.5rem' },
+    { key: 'status', header: 'Status', cell: (t) => <TaskStatusBadge status={taskStatus(t)} size="xs" />, width: '7.5rem' },
     {
       key: 'priority',
       header: 'Priority',
@@ -119,7 +120,6 @@ export function TaskInventoryPage() {
           <span className="text-fg-subtle">—</span>
         );
       },
-      sortValue: (t) => priorityRank(taskPriority(t)),
       width: '5.5rem',
     },
     {
@@ -164,7 +164,6 @@ export function TaskInventoryPage() {
           </span>
         );
       },
-      sortValue: (t) => t.queue_age_s ?? -1,
       width: '6rem',
       align: 'right',
     },
@@ -197,7 +196,7 @@ export function TaskInventoryPage() {
           </>
         }
       >
-        <FilterBar filters={filters} value={search} search={{ placeholder: 'Search tasks…' }} onChange={(v) => setSearch(v)} />
+        <FilterBar filters={filters} value={search} search={{ placeholder: 'Search tasks…' }} onChange={(v) => setSearch({ ...v, page: undefined, size: search.size })} />
       </PageHeader>
       <PageBody wide>
         {list.isPending ? (
@@ -229,7 +228,15 @@ export function TaskInventoryPage() {
                 )
               }
             />
-            <Pagination hasMore={!!list.hasNextPage} loading={list.isFetchingNextPage} onLoadMore={() => list.fetchNextPage()} shown={rows.length} />
+            <Pager
+              page={paging.page}
+              size={paging.size}
+              total={list.total}
+              shown={rows.length}
+              loading={list.isPlaceholderData}
+              onPage={(p) => setSearch({ page: p > 1 ? String(p) : undefined })}
+              onSize={(n) => setSearch({ size: String(n), page: undefined })}
+            />
           </>
         )}
       </PageBody>
@@ -242,20 +249,14 @@ export function TaskInventoryPage() {
 
 const tasksKey = (q: Record<string, unknown>) => ['tasks', q] as const;
 
-/** `GET /tasks` (not `/nodes`): adds `queue_age_s` and the live-queue status default; cursor-paged. */
-function useTasks(query: Record<string, string | string[] | undefined>) {
+/** `GET /tasks` (not `/nodes`): adds `queue_age_s` and the live-queue status default; numbered pages. */
+function useTasks(query: Record<string, string | string[] | undefined>, paging: { offset: number; size: number }) {
   const qc = useQueryClient();
-  const q = useInfiniteQuery({
-    queryKey: tasksKey(query),
-    queryFn: async ({ pageParam, signal }) => asPage<TaskRow>(await get('/tasks', { ...query, limit: 50, cursor: pageParam ?? undefined }, { signal })),
-    initialPageParam: null as string | null,
-    getNextPageParam: (last) => last.next_cursor ?? undefined,
-    placeholderData: keepPreviousData,
-  });
+  const q = useOffsetList<TaskRow>(tasksKey(query), '/tasks', query, paging);
   useLiveEvents(['node.updated'], (e) => {
     if ((e.payload as { type?: string }).type === 'task') void qc.invalidateQueries({ queryKey: ['tasks'] });
   });
-  return { ...q, items: q.data?.pages.flatMap((p) => p.items) ?? [] };
+  return q;
 }
 
 function LatestSession({ uid }: { uid: string }) {

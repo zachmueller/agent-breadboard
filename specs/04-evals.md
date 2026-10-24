@@ -85,6 +85,7 @@ CREATE TABLE eval_runs (
   eval_run_id    char(24) PRIMARY KEY,
   circuit_uid    char(20) NOT NULL,       -- config UID ([01] §6.2)
   circuit_commit text NOT NULL,           -- text, not char(40): SHA-256 git repos use 64-char hashes
+  proposal_id    char(24),                -- set when run on a proposal's branch (§7)
   rubric_commit  text NOT NULL,
   model_overrides jsonb,                 -- preset/model substitutions for comparison runs
   judge_model_id text NOT NULL,
@@ -128,7 +129,11 @@ Built-in queries/views over the results store:
 
 ## 7. Evals as merge checks
 
-AI-proposed configuration changes (circuits, prompts, tools — [01](01-data-model.md) §6.2) surface as reviewable diffs. The review view offers **"run evals against this branch"**: fixtures execute at the proposed commit and results render side-by-side with the current main-commit baseline. Teams may mark a circuit's eval as **required** for merging changes touching that circuit's directory.
+AI-proposed configuration changes (circuits, prompts, tools — [01](01-data-model.md) §6.2) surface as reviewable diffs. The review view offers **"run evals against this branch"**: fixtures execute at the proposed commit and each run shows beside the circuit's latest completed main-line run (`GET /evals/runs?proposal=none`). Teams may mark a circuit's eval as **required** for merging changes touching that circuit's directory (not yet built).
+
+**Which circuits to evaluate.** A proposal's **affected circuits** (`GET /config/proposals/:id/affected-circuits`, `read_proposal.affected_circuits`) are those its changes reach at the head commit: a circuit it edits, any circuit using a tool, subagent or sub-circuit it changes (walking references upward), every circuit whose subagents run on a preset tier it changes, and every circuit when it changes tenets. Each carries its fixture count and the change it is reached through; "Run evals" offers the ones with fixtures.
+
+**Try before review.** An author who wants evidence before asking for review opens the proposal as a **draft** ([01](01-data-model.md) §6.3): it runs and evaluates on its branch but stays out of the review queue until submitted. Designer chats open a draft when the change reaches a circuit with fixtures; the user runs evals from the proposal card and submits. An agent over MCP does the same with `propose_config_change {draft: true}` → `start_eval_run {proposal_id}` → `read_eval_run` → `submit_proposal`.
 
 ## 8. UI
 

@@ -260,21 +260,25 @@ function SessionProposals({ id }: { id: string }) {
   const items = q.data ?? [];
   if (!items.length) return null;
   const open = items.filter((p) => p.status === 'open').length;
+  const drafts = items.filter((p) => p.status === 'draft').length;
   return (
-    <Callout icon={<GitPullRequest size={15} />} title={`${pluralize2(items.length, 'configuration proposal')} from this conversation${open ? `, ${open} waiting for review` : ''}`}>
+    <Callout
+      icon={<GitPullRequest size={15} />}
+      title={`${pluralize2(items.length, 'configuration proposal')} from this conversation${open ? `, ${open} waiting for review` : ''}${drafts ? `, ${pluralize2(drafts, 'draft')}` : ''}`}
+    >
       <ul className="mt-1.5 flex flex-col gap-1">
         {items.map((p) => (
           <li key={p.proposal_id} className="flex flex-wrap items-center gap-2">
             <Link to={proposalPath(p.proposal_id)} className="font-medium text-accent-text hover:underline">
               {p.message || 'Proposed change'}
             </Link>
-            <Badge size="xs" tone={p.status === 'open' ? 'info' : p.status === 'merged' ? 'ok' : 'neutral'}>
+            <Badge size="xs" tone={p.status === 'open' ? 'info' : p.status === 'draft' ? 'warn' : p.status === 'merged' ? 'ok' : 'neutral'}>
               {p.status}
             </Badge>
             <span className="font-mono text-[11.5px] text-fg-subtle">{p.proposal_id}</span>
-            {p.status === 'open' && (
+            {(p.status === 'open' || p.status === 'draft') && (
               <Link to={proposalPath(p.proposal_id)} className={buttonClasses('primary', 'xs')}>
-                Review <ArrowRight size={12} />
+                {p.status === 'draft' ? 'Open draft' : 'Review'} <ArrowRight size={12} />
               </Link>
             )}
           </li>

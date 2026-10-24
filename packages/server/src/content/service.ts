@@ -127,6 +127,30 @@ function assertScope(s: unknown): asserts s is Scope {
   if (!(SCOPES as readonly string[]).includes(String(s))) throw validationFailed(`invalid scope '${String(s)}' (allowed: ${SCOPES.join(', ')})`);
 }
 
+/** A list-filter timestamp; malformed values are a 400 rather than a SQL cast error. */
+function isoFilter(v: unknown, name: string): string | undefined {
+  const s = str(v);
+  if (s === undefined) return undefined;
+  if (Number.isNaN(Date.parse(s))) throw validationFailed(`${name} must be an ISO date or timestamp`);
+  return new Date(s).toISOString();
+}
+
+/** `offset` switches a list to offset paging with a `total` ([11] §2). */
+function offsetFilter(v: unknown): number | undefined {
+  const s = str(v);
+  if (s === undefined) return undefined;
+  const n = Number(s);
+  if (!Number.isInteger(n) || n < 0) throw validationFailed('offset must be a non-negative integer');
+  return n;
+}
+
+function orderFilter(v: unknown): 'asc' | 'desc' | undefined {
+  const s = str(v);
+  if (s === undefined) return undefined;
+  if (s !== 'asc' && s !== 'desc') throw validationFailed('order must be asc or desc');
+  return s;
+}
+
 function stripRevision(r: NodeRevision & Record<string, unknown>): NodeRevision {
   const { ydoc_state_buf: _a, ydoc_vector_buf: _b, ...rest } = r as any;
   return rest as NodeRevision;
@@ -372,8 +396,8 @@ export class ContentServiceImpl implements ContentService {
       tag: arr(filter.tag),
       scope: arr(filter.scope),
       q: str(filter.q),
-      created_after: str(filter.created_after),
-      created_before: str(filter.created_before),
+      created_after: isoFilter(filter.created_after, 'created_after'),
+      created_before: isoFilter(filter.created_before, 'created_before'),
       need_input_role: str(filter.need_input_role),
       need_input_username: str(filter.need_input_username),
       need_input_open: bool(filter.need_input) ?? bool(filter.need_input_open),
@@ -384,6 +408,8 @@ export class ContentServiceImpl implements ContentService {
       domains: arr(filter.domain) ?? arr(filter.domains),
       session_id,
       cursor: str(filter.cursor) ?? null,
+      offset: offsetFilter(filter.offset),
+      order: orderFilter(filter.order),
       limit: filter.limit === undefined ? undefined : Number(str(filter.limit)),
     };
     // [01] §3.4: session scratch is excluded from cross-session list/search unless the caller names the session.
@@ -391,7 +417,7 @@ export class ContentServiceImpl implements ContentService {
     else if (!session_id) f.visible_sessions = [];
     const page = await this.nodes.list(f);
     const items = page.items.filter((n) => this.isVisible(n, by));
-    return { items: await this.dtos(items), next_cursor: page.next_cursor };
+    return { items: await this.dtos(items), next_cursor: page.next_cursor, ...(page.total !== undefined ? { total: page.total } : {}) };
   }
 
   async createNode(input: Parameters<ContentService['createNode']>[0]): Promise<NodeDto> {

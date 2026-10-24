@@ -1,22 +1,30 @@
 /** Intake conversations ([08] §4, §7.1): idea-shaping chats that produce well-formed Tasks. */
 import { useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ListTodo, MessagesSquare, Plus } from 'lucide-react';
 import type { Actor, SessionRecord } from '@breadboard/shared';
 import { asPage, get, post } from '../../lib/api';
 import { useLiveEvents } from '../../lib/live';
 import { toast } from '../../lib/toast';
-import { ActorLabel, Badge, Button, buttonClasses, DataTable, EmptyState, ErrorState, Loading, PageBody, PageHeader, SearchInput, StateBadge, TimeAgo, type Column } from '../../components';
+import { ActorLabel, Badge, Button, buttonClasses, DataTable, EmptyState, ErrorState, Loading, PageBody, PageHeader, Pager, SearchInput, StateBadge, TimeAgo, type Column } from '../../components';
+import { useUrlSearch } from '../../lib/url';
+import { pageState } from '../../lib/paging';
 import { conversationTitle, normalizeDraft } from './lib';
 
 export const intakeListKey = ['conversations', 'intake'] as const;
 
-export function useIntakeConversations() {
+/** One numbered page of intake conversations, newest first, with the total. */
+export function useIntakeConversations(paging: { offset: number; size: number }) {
   const qc = useQueryClient();
   const q = useQuery({
-    queryKey: intakeListKey,
-    queryFn: async ({ signal }) => asPage<SessionRecord>(await get('/conversations', { kind: 'intake', limit: 100 }, { signal })).items,
+    queryKey: [...intakeListKey, paging],
+    queryFn: async ({ signal }) => {
+      const r = await get<{ total?: number }>('/conversations', { kind: 'intake', limit: paging.size, offset: paging.offset }, { signal });
+      const items = asPage<SessionRecord>(r).items;
+      return { items, total: r?.total ?? items.length };
+    },
+    placeholderData: keepPreviousData,
   });
   useLiveEvents(['session.state'], (e) => {
     const p = (e.payload ?? {}) as { kind?: string };
@@ -47,12 +55,14 @@ export function useStartIntake() {
 }
 
 export function IntakeConversationsPage() {
-  const list = useIntakeConversations();
+  const [search, setSearch] = useUrlSearch<{ page?: string; size?: string }>();
+  const paging = pageState(search);
+  const list = useIntakeConversations(paging);
   const navigate = useNavigate();
   const { start, pending } = useStartIntake();
   const [filter, setFilter] = useState('');
 
-  const rows = (list.data ?? []).filter((s) => !filter.trim() || conversationTitle(s).toLowerCase().includes(filter.trim().toLowerCase()));
+  const rows = (list.data?.items ?? []).filter((s) => !filter.trim() || conversationTitle(s).toLowerCase().includes(filter.trim().toLowerCase()));
 
   const columns: Column<SessionRecord>[] = [
     {
@@ -64,7 +74,6 @@ export function IntakeConversationsPage() {
           <span className="truncate font-medium text-fg">{conversationTitle(s)}</span>
         </span>
       ),
-      sortValue: (s) => conversationTitle(s).toLowerCase(),
     },
     {
       key: 'draft',
@@ -87,9 +96,9 @@ export function IntakeConversationsPage() {
       },
       hideBelow: 'md',
     },
-    { key: 'state', header: 'State', cell: (s) => <StateBadge state={s.state} size="xs" />, sortValue: (s) => s.state, width: '8rem' },
+    { key: 'state', header: 'State', cell: (s) => <StateBadge state={s.state} size="xs" />, width: '8rem' },
     { key: 'by', header: 'Started by', cell: (s) => <ActorLabel actor={((s.state_detail as { started_by?: Actor })?.started_by ?? s.created_by) as Actor | undefined} className="text-[12.5px]" />, hideBelow: 'lg' },
-    { key: 'created', header: 'Started', cell: (s) => <TimeAgo at={s.created_at} className="text-fg-muted" />, sortValue: (s) => s.created_at, width: '7rem' },
+    { key: 'created', header: 'Started', cell: (s) => <TimeAgo at={s.created_at} className="text-fg-muted" />, width: '7rem' },
   ];
 
   return (
@@ -109,7 +118,7 @@ export function IntakeConversationsPage() {
           </>
         }
       >
-        <SearchInput value={filter} onChange={setFilter} placeholder="Filter conversations…" />
+        <SearchInput value={filter} onChange={setFilter} placeholder="Filter this page by title…" />
       </PageHeader>
       <PageBody wide>
         {list.isPending ? (
@@ -123,7 +132,6 @@ export function IntakeConversationsPage() {
             rows={rows}
             rowKey={(s) => s.session_id}
             onRowClick={(s) => navigate({ to: '/intake/$id', params: { id: s.session_id } })}
-            initialSort={{ key: 'created', dir: 'desc' }}
             empty={
               filter.trim() ? (
                 <EmptyState compact icon={<MessagesSquare size={20} />} title="No matching conversations" description="Try a different filter." />
@@ -140,6 +148,17 @@ export function IntakeConversationsPage() {
                 />
               )
             }
+          />
+        )}
+        {list.data && (
+          <Pager
+            page={paging.page}
+            size={paging.size}
+            total={list.data.total}
+            shown={list.data.items.length}
+            loading={list.isPlaceholderData}
+            onPage={(p) => setSearch({ page: p > 1 ? String(p) : undefined })}
+            onSize={(n) => setSearch({ size: String(n), page: undefined })}
           />
         )}
       </PageBody>

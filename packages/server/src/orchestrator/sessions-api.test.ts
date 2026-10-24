@@ -57,6 +57,18 @@ describe('sessions REST', () => {
     expect(list.statusCode).toBe(200);
     expect(list.json().items.map((s: any) => s.session_id)).toEqual([sessionId]);
     expect(list.json().items[0].cost_usd).toBeCloseTo(0.01, 6);
+    expect(list.json().total).toBeUndefined();
+
+    // Offset mode: a numbered page with the total; a date window and order are validated before SQL.
+    const paged = await app.inject({ method: 'GET', url: '/api/v1/sessions?state=completed&offset=0&limit=1&order=asc&created_after=2000-01-01' });
+    expect(paged.statusCode).toBe(200);
+    expect(paged.json()).toMatchObject({ total: 1, next_cursor: null });
+    expect(paged.json().items[0].cost_usd).toBeCloseTo(0.01, 6);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/sessions?state=completed&offset=0&created_before=2000-01-01' })).json()).toMatchObject({ items: [], total: 0 });
+    for (const bad of ['created_after=yesterday', 'offset=-1', 'order=sideways']) {
+      const r = await app.inject({ method: 'GET', url: `/api/v1/sessions?${bad}` });
+      expect([bad, r.statusCode, r.json().error.code]).toEqual([bad, 400, 'validation-failed']);
+    }
 
     const one = await app.inject({ method: 'GET', url: `/api/v1/sessions/${sessionId}` });
     expect(one.statusCode).toBe(200);

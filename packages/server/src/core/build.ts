@@ -98,7 +98,7 @@ export async function buildServices(opts: BuildOptions): Promise<BuiltServices> 
   const events = createEventBus({ db, log, settings, sessions: () => sessions });
   eventsLazy.set(events);
   const providers = createProviders(env, log);
-  const gateway = createModelGateway({ providers, presets: () => config.presets(), log, onFallback: (e) => log.warn(e, 'model fallback') });
+  const gateway = createModelGateway({ providers, presets: (commit) => config.presets(commit), log, onFallback: (e) => log.warn(e, 'model fallback') });
   // In mock-only mode the gateway routes `provider: bedrock` preset entries to the mock, so the config
   // validator must accept them too (the shipped seed is Bedrock-internal by construction, [05] §4).
   gatewayProviderNames = () => (env.MODEL_PROVIDER === 'mock' ? [...new Set([...gateway.providers(), 'bedrock'])] : gateway.providers());

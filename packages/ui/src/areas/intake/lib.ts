@@ -1,6 +1,7 @@
 /** Pure helpers for the Intake area ([08] §2, §4, §7). */
 import { TASK_PRIORITIES, TASK_STATUSES, type NodeDto, type SessionRecord, type TaskStatus, type Turn } from '@breadboard/shared';
 import { toBlocks } from '../sessions/TurnView';
+import { dayEndIso, dayStartIso } from '../../lib/paging';
 
 /** `GET /tasks` default ([08] §7.2): the live queue. */
 export const DEFAULT_TASK_STATUSES: readonly TaskStatus[] = ['queued', 'triaging', 'active', 'gated'];
@@ -83,15 +84,20 @@ export function raisedPriority(p: string | null | undefined): string {
   return TASK_PRIORITIES[Math.max(0, r - 1)];
 }
 
-/** URL search → `GET /tasks` query. */
-export function taskListQuery(s: { status?: string; priority?: string; origin?: string; tag?: string; circuit?: string; created_after?: string; q?: string }): Record<string, string | string[] | undefined> {
+/** URL search → `GET /tasks` query. Days are the viewer's local days; the To day is inclusive. */
+export function taskListQuery(s: { status?: string; priority?: string; origin?: string; tag?: string; circuit?: string; created_after?: string; created_before?: string; order?: string; q?: string }): Record<string, string | string[] | undefined> {
   const status = !s.status ? [...DEFAULT_TASK_STATUSES] : s.status === ALL_STATUSES ? [...TASK_STATUSES] : [s.status];
-  let created_after: string | undefined;
-  if (s.created_after) {
-    const d = new Date(s.created_after);
-    created_after = Number.isNaN(d.getTime()) ? undefined : d.toISOString();
-  }
-  return { status, priority: s.priority || undefined, origin: s.origin || undefined, tag: s.tag || undefined, circuit: s.circuit || undefined, created_after, q: s.q || undefined };
+  return {
+    status,
+    priority: s.priority || undefined,
+    origin: s.origin || undefined,
+    tag: s.tag || undefined,
+    circuit: s.circuit || undefined,
+    created_after: dayStartIso(s.created_after),
+    created_before: dayEndIso(s.created_before),
+    order: s.order === 'asc' ? 'asc' : undefined,
+    q: s.q || undefined,
+  };
 }
 
 // ----------------------------------------------------------- conversations ---

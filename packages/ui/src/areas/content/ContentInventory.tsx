@@ -3,8 +3,9 @@ import { useMemo } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { FileText, Inbox, MessageSquareReply } from 'lucide-react';
 import { NODE_TYPES, isNeedInputTag, type NodeDto } from '@breadboard/shared';
-import { useConfigTree, useNodes, useReviewCount, useRoles } from '../../lib/queries';
+import { useConfigTree, useNodePage, useReviewCount, useRoles } from '../../lib/queries';
 import { useUrlSearch } from '../../lib/url';
+import { dayEndIso, dayStartIso, pageState } from '../../lib/paging';
 import { humanize } from '../../lib/format';
 import { cn } from '../../components/cn';
 import {
@@ -19,14 +20,14 @@ import {
   NodeTypeIcon,
   PageBody,
   PageHeader,
-  Pagination,
+  Pager,
   TagChip,
   TimeAgo,
   type Column,
   type FilterDef,
 } from '../../components';
 
-type Search = { type?: string; tag?: string; need_input_role?: string; circuit?: string; created_after?: string; q?: string };
+type Search = { type?: string; tag?: string; need_input_role?: string; circuit?: string; created_after?: string; created_before?: string; order?: string; q?: string; page?: string; size?: string };
 
 /** Sentinels so "no filter" survives the default (artifact + deliverable). */
 const ALL = 'all';
@@ -77,7 +78,8 @@ export function ContentInventory() {
     { key: 'tag', label: 'Tag', type: 'text', placeholder: 'e.g. deliverable', mono: true },
     { key: 'need_input_role', label: 'Needs input from', type: 'select', options: (roles.data ?? []).map((r) => ({ value: r.slug, label: r.slug })) },
     { key: 'circuit', label: 'Circuit', type: 'select', options: circuitOptions },
-    { key: 'created_after', label: 'Since', type: 'date' },
+    { key: 'created', label: 'Created', type: 'daterange', fromKey: 'created_after', toKey: 'created_before' },
+    { key: 'order', label: 'Order', type: 'select', allLabel: 'Newest first', options: [{ value: 'asc', label: 'Oldest first' }] },
   ];
 
   const filterValue = { ...search, type: type === ALL ? undefined : type, tag: tag === ANY ? undefined : tag };
@@ -86,10 +88,13 @@ export function ContentInventory() {
     tag: tag === ANY ? undefined : tag,
     need_input_role: search.need_input_role,
     circuit: search.circuit,
-    created_after: search.created_after ? new Date(search.created_after).toISOString() : undefined,
+    created_after: dayStartIso(search.created_after),
+    created_before: dayEndIso(search.created_before),
+    order: search.order === 'asc' ? 'asc' : undefined,
     q: search.q,
   };
-  const list = useNodes(query, { limit: 50 });
+  const paging = pageState(search);
+  const list = useNodePage(query, paging);
   const rows = list.items as NodeDto[];
 
   const columns: Column<NodeDto>[] = [
@@ -102,9 +107,8 @@ export function ContentInventory() {
           <span className="truncate font-medium text-fg">{n.title || <span className="text-fg-subtle italic">Untitled</span>}</span>
         </span>
       ),
-      sortValue: (n) => n.title.toLowerCase(),
     },
-    { key: 'type', header: 'Type', cell: (n) => <Badge size="xs">{n.type}</Badge>, sortValue: (n) => n.type, width: '6.5rem' },
+    { key: 'type', header: 'Type', cell: (n) => <Badge size="xs">{n.type}</Badge>, width: '6.5rem' },
     {
       key: 'tags',
       header: 'Tags',
@@ -129,10 +133,11 @@ export function ContentInventory() {
     },
     { key: 'scope', header: 'Scope', cell: (n) => <span className="text-[12.5px] text-fg-muted">{n.scope}</span>, width: '5.5rem', hideBelow: 'xl' },
     { key: 'by', header: 'Created by', cell: (n) => <ActorLabel actor={n.created_by} className="text-[12.5px]" />, hideBelow: 'lg' },
-    { key: 'updated', header: 'Updated', cell: (n) => <TimeAgo at={n.updated_at} className="text-fg-muted" />, sortValue: (n) => n.updated_at, width: '7rem' },
+    { key: 'updated', header: 'Updated', cell: (n) => <TimeAgo at={n.updated_at} className="text-fg-muted" />, width: '7rem', hideBelow: 'lg' },
+    { key: 'created', header: 'Created', cell: (n) => <TimeAgo at={n.created_at} className="text-fg-muted" />, width: '7rem' },
   ];
 
-  const anyFilter = !isDefault || !!(search.need_input_role || search.circuit || search.created_after || search.q);
+  const anyFilter = !isDefault || !!(search.need_input_role || search.circuit || search.created_after || search.created_before || search.order || search.q);
 
   return (
     <>
@@ -150,16 +155,19 @@ export function ContentInventory() {
               need_input_role: v.need_input_role,
               circuit: v.circuit,
               created_after: v.created_after,
+              created_before: v.created_before,
+              order: v.order,
               q: v.q,
+              page: undefined,
             })
           }
           trailing={
             !isDefault ? (
-              <button type="button" className={buttonClasses('ghost', 'xs')} onClick={() => setSearch({ type: undefined, tag: undefined })}>
+              <button type="button" className={buttonClasses('ghost', 'xs')} onClick={() => setSearch({ type: undefined, tag: undefined, page: undefined })}>
                 Deliverables only
               </button>
             ) : (
-              <button type="button" className={buttonClasses('ghost', 'xs')} onClick={() => setSearch({ type: ALL, tag: ANY })}>
+              <button type="button" className={buttonClasses('ghost', 'xs')} onClick={() => setSearch({ type: ALL, tag: ANY, page: undefined })}>
                 Show all content
               </button>
             )
@@ -188,7 +196,15 @@ export function ContentInventory() {
                 />
               }
             />
-            <Pagination hasMore={!!list.hasNextPage} loading={list.isFetchingNextPage} onLoadMore={() => list.fetchNextPage()} shown={rows.length} />
+            <Pager
+              page={paging.page}
+              size={paging.size}
+              total={list.total}
+              shown={rows.length}
+              loading={list.isPlaceholderData}
+              onPage={(p) => setSearch({ page: p > 1 ? String(p) : undefined })}
+              onSize={(n) => setSearch({ size: String(n), page: undefined })}
+            />
           </>
         )}
       </PageBody>

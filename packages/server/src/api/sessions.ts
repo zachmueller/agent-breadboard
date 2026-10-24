@@ -3,7 +3,7 @@ import { notFound, validationFailed, type SessionRecord } from '@breadboard/shar
 import type { Services } from '../core/services.js';
 import { canSeeSession, requireScope, type Principal } from '../core/principal.js';
 import { API_PREFIX } from '../app.js';
-import { arrayParam, intParam, principalOf, requireBody, requireField, strParam, withIdempotency } from './util.js';
+import { arrayParam, dateParam, intParam, offsetParam, orderParam, principalOf, requireBody, requireField, strParam, withIdempotency } from './util.js';
 
 const STATES = ['queued', 'running', 'suspended-gate', 'suspended-error', 'completed', 'cancelled'];
 const KINDS = ['circuit-run', 'intake', 'conversation', 'eval-run'];
@@ -36,14 +36,19 @@ export async function register(app: FastifyInstance, services: Services): Promis
       circuit: strParam(q.circuit),
       task: strParam(q.task),
       parent: strParam(q.parent),
-      created_after: strParam(q.created_after),
-      created_before: strParam(q.created_before),
+      created_by: strParam(q.created_by),
+      proposal: strParam(q.proposal),
+      created_after: dateParam(q.created_after, 'created_after'),
+      created_before: dateParam(q.created_before, 'created_before'),
+      order: orderParam(q.order),
       cursor: strParam(q.cursor) ?? null,
+      offset: offsetParam(q.offset),
       limit,
     });
     const items = page.items.filter((s) => canSeeSession(by, s.session_id));
-    const withCost = await Promise.all(items.map(async (s) => ({ ...s, cost_usd: await services.sessions.costIncludingChildren(s.session_id) })));
-    return { items: withCost, next_cursor: page.next_cursor ?? null };
+    const costs = await services.sessions.costsIncludingChildren(items.map((s) => s.session_id));
+    const withCost = items.map((s) => ({ ...s, cost_usd: costs.get(s.session_id) ?? 0 }));
+    return { items: withCost, next_cursor: page.next_cursor ?? null, ...(page.total !== undefined ? { total: page.total } : {}) };
   });
 
   app.get(`${P}/:id`, async (req) => {

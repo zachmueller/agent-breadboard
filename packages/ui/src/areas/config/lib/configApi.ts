@@ -5,7 +5,7 @@
  */
 import { useMemo } from 'react';
 import { useQuery, useQueries } from '@tanstack/react-query';
-import { owningDefinition, type ConfigDefinitionDto, type ConfigTreeEntry, type ProposalChecksDto, type ProposalDto } from '@breadboard/shared';
+import { owningDefinition, type AffectedCircuitDto, type ConfigDefinitionDto, type ConfigTreeEntry, type ProposalChecksDto, type ProposalDto, type ProposalStatus } from '@breadboard/shared';
 import { api } from '../ui';
 
 export type Validation = { ok: boolean; errors: string[]; warnings: string[] };
@@ -194,11 +194,21 @@ export const configApi = {
   },
   revert: (to_commit: string, path?: string) => api.post<{ commit?: string }>('/config/revert', { to_commit, ...(path ? { path } : {}) }),
   proposals: async (filter: ProposalFilter = { status: 'open' }) => listOf<ProposalDto>(await api.get(`/config/proposals${q({ ...filter })}`), 'proposals'),
+  /** One numbered page of proposals with the total over the filter ([11] §2 offset mode). */
+  proposalPage: async (filter: ProposalFilter, offset: number): Promise<{ items: ProposalDto[]; total: number }> => {
+    const r: any = await api.get(`/config/proposals${q({ ...filter, offset })}`);
+    const items = listOf<ProposalDto>(r, 'proposals');
+    return { items, total: typeof r?.total === 'number' ? r.total : items.length };
+  },
+  /** Circuits a proposal's changes reach, with fixture counts: what "Run evals" offers ([04] §7). */
+  affectedCircuits: async (id: string) => listOf<AffectedCircuitDto>(await api.get(`/config/proposals/${enc(id)}/affected-circuits`)),
   proposal: async (id: string): Promise<ProposalDto> => {
     const r: any = await api.get(`/config/proposals/${enc(id)}`);
     return (r?.proposal ?? r) as ProposalDto;
   },
-  createProposal: (changes: FileChange[], message: string) => api.post<ProposalDto>('/config/proposals', { changes, message }),
+  createProposal: (changes: FileChange[], message: string, opts: { draft?: boolean } = {}) => api.post<ProposalDto>('/config/proposals', { changes, message, ...(opts.draft ? { draft: true } : {}) }),
+  /** Draft → open: the proposal joins the review queue. */
+  submit: (id: string) => api.post<ProposalDto>(`/config/proposals/${enc(id)}/submit`, {}),
   merge: (id: string) => api.post<unknown>(`/config/proposals/${enc(id)}/merge`, {}),
   discard: (id: string) => api.post<unknown>(`/config/proposals/${enc(id)}/discard`, {}),
   amend: (id: string, changes: FileChange[], message: string) => api.post<ProposalDto>(`/config/proposals/${enc(id)}/amend`, { changes, message }),
@@ -207,7 +217,7 @@ export const configApi = {
 };
 
 export interface ProposalFilter {
-  status?: 'open' | 'merged' | 'discarded';
+  status?: ProposalStatus;
   session_id?: string;
   /** Definition UID: proposals changing its files. */
   definition?: string;
@@ -220,6 +230,12 @@ export { proposalPath } from '../../../lib/paths';
 export const evalsApi = {
   launch: async (body: { circuit: string; ref?: string; fixture_tags?: string[]; model_overrides?: Record<string, string>; proposal_id?: string }) => normalizeRun(await api.post('/evals/runs', body)),
   runs: async (circuit: string) => listOf<any>(await api.get(`/evals/runs${q({ circuit })}`), 'runs').map(normalizeRun),
+  /** One numbered page of a circuit's runs; `proposal: 'none'` keeps only runs not made on a proposal branch. */
+  runPage: async (filter: { circuit: string; proposal?: string; limit: number }, offset: number): Promise<{ items: EvalRunDto[]; total: number }> => {
+    const r: any = await api.get(`/evals/runs${q({ ...filter, offset })}`);
+    const items = listOf<any>(r, 'runs').map(normalizeRun);
+    return { items, total: typeof r?.total === 'number' ? r.total : items.length };
+  },
   run: async (id: string) => normalizeRun(await api.get(`/evals/runs/${enc(id)}`)),
   analysis: <T = any>(circuit: string, view: string, params: Record<string, string | undefined> = {}) => api.get<T>(`/evals/analysis/${enc(circuit)}${q({ view, ...params })}`),
   /** "Promote to fixture" ([04] §3): commits the session's input into fixtures.yaml on main. */
@@ -358,10 +374,14 @@ export function proposalDefinitions(p: Pick<ProposalDto, 'changes'>): Array<{ ki
 }
 
 /** Open proposals touching a definition. One shared query of all open proposals backs every badge on a page. */
-export function useOpenProposalsFor(uid: string | null | undefined) {
-  const all = useProposals({ status: 'open' }, { enabled: !!uid });
+export function useOpenProposalsFor(uid: string | null | undefined, status: 'open' | 'draft' = 'open') {
+  const all = useProposals({ status }, { enabled: !!uid });
   const data = useMemo(() => (uid ? (all.data ?? []).filter((p) => proposalDefinitions(p).some((d) => d.uid === uid)) : []), [all.data, uid]);
   return { ...all, data };
+}
+
+export function useAffectedCircuits(id: string | null | undefined, enabled = true) {
+  return useQuery({ queryKey: [...qk.proposal(id ?? ''), 'affected-circuits'], queryFn: () => configApi.affectedCircuits(id!), enabled: enabled && !!id, staleTime: 30_000, retry: false });
 }
 
 export function useHistory(path: string | null, limit = 50) {

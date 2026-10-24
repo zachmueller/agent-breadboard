@@ -334,6 +334,8 @@ export class SubagentRuntimeImpl implements SubagentRuntime {
         requires: tools.length ? ['tool-use'] : undefined,
         ...(effort ? { effort } : {}),
         model_overrides: input.model_overrides ?? null,
+        // Presets are read at the subagent's commit, so a branch run uses the branch's presets.
+        config_commit: subagent.commit,
         session_id,
         step_id,
       });

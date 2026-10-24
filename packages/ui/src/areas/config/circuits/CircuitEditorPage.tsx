@@ -67,7 +67,7 @@ function CircuitEditor() {
       onTab={onTab}
       defaultCommitMessage={`Update circuit ${c?.slug ?? wt.uid}`}
       history={(close) => <HistorySidebar onClose={close} renderDiff={circuitDiffRenderer} canRunEvals />}
-      chat={<DesignerChatPanel kind="circuit" canRunEvals placeholder="Describe a change to this circuit…" />}
+      chat={<DesignerChatPanel kind="circuit" placeholder="Describe a change to this circuit…" />}
     >
       {tab === 'flow' && <FlowTab />}
       {tab === 'yaml' && <YamlTab />}

@@ -248,6 +248,54 @@ describe('end-to-end against the shipped seed', () => {
     expect((history.json.items ?? history.json).length).toBeGreaterThanOrEqual(2);
   }, 60_000);
 
+  it('config plane: a draft runs on its branch (prompt, preset), stays out of review until submitted', async () => {
+    const mock = (services.gateway as any).byName.get('mock') as MockProvider;
+    const editor = await api('GET', '/config/definitions/01J8SAKN0WED1T0R0000'); // knowledge-editor, preset medium
+    const presets = await api('GET', `/config/definitions/${encodeURIComponent('presets/models.yaml')}`);
+    expect([editor.status, presets.status]).toEqual([200, 200]);
+    const marker = 'BRANCH-PROMPT-7F3';
+    const branchModel = 'us.anthropic.claude-branch-test';
+    const mainMedium = (await services.config.presets()).presets.medium![0]!.model_id;
+    const changes = [
+      { path: editor.json.path, content: (editor.json.raw as string).replace('system_prompt: |\n', `system_prompt: |\n  ${marker}\n`) },
+      { path: presets.json.path, content: (presets.json.raw as string).replace(`model_id: ${mainMedium}`, `model_id: ${branchModel}`) },
+    ];
+    const draft = await api('POST', '/config/proposals', MEMBER, { changes, message: 'Try a new editor prompt on a new model', draft: true });
+    expect(draft.status, JSON.stringify(draft.json)).toBe(201);
+    expect(draft.json.status).toBe('draft');
+    const id = draft.json.proposal_id;
+    const open = await api('GET', '/config/proposals?status=open');
+    expect(open.json.map((p: any) => p.proposal_id)).not.toContain(id);
+    const drafts = await api('GET', '/config/proposals?status=draft&offset=0&limit=5');
+    expect(drafts.json.total).toBeGreaterThanOrEqual(1);
+    expect(drafts.json.items.map((p: any) => p.proposal_id)).toContain(id);
+    const affected = await api('GET', `/config/proposals/${id}/affected-circuits`);
+    const ku = affected.json.items.find((c: any) => c.uid === '01J8CRKN0WVPDATE0000');
+    expect(ku?.via).toEqual(expect.arrayContaining(['subagent knowledge-editor', 'preset medium']));
+
+    const from = mock.calls.length;
+    const run = await api('POST', '/primitives/run_circuit', MEMBER, { circuit: '01J8CRKN0WVPDATE0000', input: { title: 'Add a glossary entry for idempotency key' }, wait: false, proposal_id: id });
+    expect(run.status, JSON.stringify(run.json)).toBeLessThan(300);
+    const sid = run.json.session_id;
+    await waitUntil(async () => !['queued', 'running'].includes((await api('GET', `/sessions/${sid}`)).json.state), 90_000);
+    const session = (await api('GET', `/sessions/${sid}`)).json;
+    expect(session.config_commit).toBe(draft.json.head_commit);
+    expect(session.state_detail.proposal_id).toBe(id);
+    const branchCalls = mock.calls.slice(from).filter((c) => c.system.includes(marker));
+    expect(branchCalls.length).toBeGreaterThan(0);
+    expect(new Set(branchCalls.map((c) => c.model_id))).toEqual(new Set([branchModel]));
+    expect((await api('GET', `/sessions?proposal=${id}`)).json.items.map((x: any) => x.session_id)).toEqual([sid]);
+    // Main is untouched.
+    expect((await services.config.presets()).presets.medium![0]!.model_id).toBe(mainMedium);
+    expect((await services.config.subagent('01J8SAKN0WED1T0R0000')).system_prompt).not.toContain(marker);
+
+    expect((await api('POST', `/config/proposals/${id}/merge`, ADMIN)).json.error.code).toBe('invalid-state');
+    const submitted = await api('POST', `/config/proposals/${id}/submit`, MEMBER);
+    expect(submitted.json.status).toBe('open');
+    expect((await api('GET', '/config/proposals?status=open')).json.map((p: any) => p.proposal_id)).toContain(id);
+    expect((await api('POST', `/config/proposals/${id}/discard`, MEMBER)).json.status).toBe('discarded');
+  }, 120_000);
+
   it('designer chat: an async message is accepted at once and the reply lands on the session', async () => {
     const settings = await api('GET', '/config/definitions/breadboard');
     const designer: string = settings.json.definition.designers.tool;

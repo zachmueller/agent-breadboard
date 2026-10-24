@@ -86,12 +86,16 @@ describe('taskListQuery', () => {
     expect(taskListQuery({ status: ALL_STATUSES }).status).toContain('rejected');
     expect(taskListQuery({ status: 'draft' }).status).toEqual(['draft']);
   });
-  it('normalizes dates and drops blanks', () => {
-    const q = taskListQuery({ created_after: '2026-09-01', tag: '', priority: 'p0' });
-    expect(q.created_after).toBe(new Date('2026-09-01').toISOString());
+  it('turns the From/To days into a local, inclusive window and drops blanks', () => {
+    const q = taskListQuery({ created_after: '2026-09-01', created_before: '2026-09-30', tag: '', priority: 'p0', order: 'asc' });
+    // Local midnight, not UTC midnight: `new Date('2026-09-01')` would be the evening before west of UTC.
+    expect(q.created_after).toBe(new Date(2026, 8, 1).toISOString());
+    expect(q.created_before).toBe(new Date(2026, 9, 1, 0, 0, 0, -1).toISOString());
+    expect(q.order).toBe('asc');
     expect(q.tag).toBeUndefined();
     expect(q.priority).toBe('p0');
     expect(taskListQuery({ created_after: 'nope' }).created_after).toBeUndefined();
+    expect(taskListQuery({ order: 'sideways' }).order).toBeUndefined();
   });
 });
 

@@ -59,6 +59,10 @@ export interface ListNodesFilter {
   /** Restrict to nodes whose properties.domains overlaps these. */
   domains?: string[];
   cursor?: string | null;
+  /** Offset paging: the page also carries `total` ([11] §2). */
+  offset?: number | null;
+  /** Newest first (default) or oldest first; ignored for full-text search, which ranks. */
+  order?: 'asc' | 'desc';
   limit?: number;
   /** Visibility: include `session`-scoped nodes only from these sessions (null = all, [] = none). */
   visible_sessions?: string[] | null;
@@ -247,26 +251,40 @@ export class NodeStore {
       where.push(`(n.scope <> 'session' OR n.session_id = ANY(${p(f.visible_sessions)}::text[]))`);
     }
     const limit = clampLimit(f.limit);
+    const dir = f.order === 'asc' ? 'ASC' : 'DESC';
     let rankSel = '';
-    let order = 'n.created_at DESC, n.uid DESC';
+    let order = `n.created_at ${dir}, n.uid ${dir}`;
     if (f.q && f.q.trim()) {
       const tsq = p(f.q.trim());
       where.push(`to_tsvector('english', coalesce(n.title,'') || ' ' || coalesce(n.properties->>'aliases','') || ' ' || coalesce(n.body_text,'')) @@ websearch_to_tsquery('english', ${tsq})`);
       rankSel = `, ts_rank(to_tsvector('english', coalesce(n.title,'') || ' ' || coalesce(n.properties->>'aliases','') || ' ' || coalesce(n.body_text,'')), websearch_to_tsquery('english', ${tsq})) AS rank`;
       order = 'rank DESC, n.created_at DESC, n.uid DESC';
     }
-    const cur = decodeCursor(f.cursor);
-    if (cur && !f.q) where.push(`(n.created_at, n.uid) < (${p(cur.created_at)}::timestamptz, ${p(cur.key)})`);
-    const offset = cur && f.q ? Number(cur.key) || 0 : 0;
-    const sql = `SELECT ${NODE_COLS.split(', ')
+    const cols = NODE_COLS.split(', ')
       .map((c) => 'n.' + c)
-      .join(', ')}${rankSel} FROM nodes n WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ${limit + 1}${offset ? ` OFFSET ${offset}` : ''}`;
+      .join(', ');
+    // Offset mode ([11] §2): numbered pages with a total over the same filters.
+    if (f.offset !== undefined && f.offset !== null) {
+      const offset = Math.max(0, Math.floor(Number(f.offset) || 0));
+      const cond = where.join(' AND ');
+      const [r, count] = await Promise.all([
+        q.query(`SELECT ${cols}${rankSel} FROM nodes n WHERE ${cond} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`, params),
+        q.query(`SELECT count(*)::int AS n FROM nodes n WHERE ${cond}`, params),
+      ]);
+      return { items: r.rows.map((row: any) => ({ ...rowToNode(row), rank: row.rank })), next_cursor: null, total: Number(count.rows[0]?.n ?? 0) };
+    }
+    const cur = decodeCursor(f.cursor);
+    if (cur && !f.q) where.push(`(n.created_at, n.uid) ${dir === 'ASC' ? '>' : '<'} (${p(cur.created_at)}::timestamptz, ${p(cur.key)})`);
+    const offset = cur && f.q ? Number(cur.key) || 0 : 0;
+    const sql = `SELECT ${cols}${rankSel}, n.created_at::text AS cursor_ts FROM nodes n WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ${limit + 1}${offset ? ` OFFSET ${offset}` : ''}`;
     const r = await q.query(sql, params);
-    const rows = r.rows.slice(0, limit).map((row: any) => ({ ...rowToNode(row), rank: row.rank }));
+    const page = r.rows.slice(0, limit);
+    const rows = page.map((row: any) => ({ ...rowToNode(row), rank: row.rank }));
     let next_cursor: string | null = null;
     if (r.rows.length > limit) {
-      const last = rows[rows.length - 1]!;
-      next_cursor = f.q ? encodeCursor({ created_at: '', key: String(offset + limit) }) : encodeCursor({ created_at: last.created_at, key: last.uid });
+      const last = page[page.length - 1]!;
+      // Full microsecond precision, so rows sharing a millisecond are not skipped.
+      next_cursor = f.q ? encodeCursor({ created_at: '', key: String(offset + limit) }) : encodeCursor({ created_at: String(last.cursor_ts), key: String(last.uid) });
     }
     return { items: rows, next_cursor };
   }

@@ -4,7 +4,7 @@ import type { Services } from '../core/services.js';
 import { requireScope } from '../core/principal.js';
 import { API_PREFIX } from '../app.js';
 import { ANALYSIS_VIEWS, type AnalysisOptions, type AnalysisView } from '../evals/analysis.js';
-import { arrayParam, intParam, principalOf, requireBody, requireField, strParam, withIdempotency } from './util.js';
+import { arrayParam, intParam, offsetParam, principalOf, requireBody, requireField, strParam, withIdempotency } from './util.js';
 
 /** Evals REST surface ([11] §3 Evals, [04] §5 record_score mirror). */
 export async function register(app: FastifyInstance, services: Services): Promise<void> {
@@ -36,8 +36,11 @@ export async function register(app: FastifyInstance, services: Services): Promis
     const by = principalOf(req);
     requireScope(by, 'evals:read');
     const q = req.query as Record<string, unknown>;
-    const items = await services.evals.listRuns({ circuit: strParam(q.circuit), status: strParam(q.status), limit: intParam(q.limit, 50) });
-    return { items, next_cursor: null };
+    const filter = { circuit: strParam(q.circuit), status: strParam(q.status), proposal: strParam(q.proposal), limit: intParam(q.limit, 50) };
+    const offset = offsetParam(q.offset);
+    if (offset === undefined) return { items: await services.evals.listRuns(filter), next_cursor: null };
+    const page = await services.evals.pageRuns({ ...filter, offset });
+    return { items: page.items, next_cursor: null, total: page.total };
   });
 
   app.get(`${P}/runs/:id`, async (req) => {

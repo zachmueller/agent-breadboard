@@ -74,7 +74,7 @@ export const ORCHESTRATED_KINDS: readonly string[] = ['circuit-run', 'eval-run']
 export const isOrchestrated = (s: { kind: string }): boolean => ORCHESTRATED_KINDS.includes(s.kind);
 const LIVE_STATES: readonly SessionState[] = ['queued', 'running'];
 /** state_detail keys that survive every state transition (admission parameters). */
-const PRESERVED_KEYS = ['config_ref', 'pinned_context'] as const;
+const PRESERVED_KEYS = ['config_ref', 'proposal_id', 'pinned_context'] as const;
 const LOG_CAP = 50;
 
 /** A step attempt failed; consumes one retry attempt (or suspends immediately when not retryable). */
@@ -229,6 +229,7 @@ export class OrchestratorImpl implements Orchestrator {
     }
     const detail: Record<string, unknown> = {};
     if (input.config_ref) detail.config_ref = input.config_ref;
+    if (input.config_ref && input.proposal_id) detail.proposal_id = input.proposal_id;
     if (input.pinned_context?.length) detail.pinned_context = input.pinned_context;
     const s = await this.d.sessions.create({
       kind: input.kind ?? 'circuit-run',

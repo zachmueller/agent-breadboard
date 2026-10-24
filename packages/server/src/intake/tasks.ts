@@ -302,6 +302,8 @@ export class TaskServiceImpl implements TaskService {
         q: filter.q,
         session_id: filter.session_id,
         cursor: filter.cursor,
+        offset: filter.offset,
+        order: filter.order,
         limit: filter.limit,
       },
       by,
@@ -315,6 +317,7 @@ export class TaskServiceImpl implements TaskService {
         return { ...n, queue_age_s: Math.max(0, Math.floor((now - new Date(since).getTime()) / 1000)) };
       }),
       next_cursor: page.next_cursor,
+      ...(page.total !== undefined ? { total: page.total } : {}),
     };
   }
 

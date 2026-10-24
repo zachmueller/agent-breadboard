@@ -109,7 +109,7 @@ Any MCP client that supports Streamable HTTP will work. Point it at the endpoint
 | Configuration | `search_config` (by slug, title, path or description; several words rank by how many match; pages with `offset`), `read_config` (by UID, slug or path; at main or at any `commit`), `get_config_history`, `diff_config`, `list_proposals`, `read_proposal`, `validate_config` |
 | Evals | `list_eval_runs`, `read_eval_run`, `get_eval_analysis`, `get_rubric`, `get_fixture_output` |
 
-**Working tools** (an editor or full token): `create_task`, `create_artifact`, `update_artifact`, `add_comment`, `emit_edge`, `tag_need_input`, `resolve_need_input`, `propose_note_edit`, `create_note`, `run_circuit`, `start_eval_run`, `record_score`, `propose_config_change`, `discard_proposal`.
+**Working tools** (an editor or full token): `create_task`, `create_artifact`, `update_artifact`, `add_comment`, `emit_edge`, `tag_need_input`, `resolve_need_input`, `propose_note_edit`, `create_note`, `run_circuit`, `start_eval_run`, `record_score`, `propose_config_change`, `submit_proposal`, `discard_proposal`.
 
 **Closing the loop** (an admin's full token only): `merge_proposal` (the same validation and replay over main as the proposal page) and `record_gate_verdict` (`approve`, or `request-changes` with a comment and `edits`, on a gate request that targets you by handle or review role; there is no admin bypass). A subagent can never be granted these, and tool code cannot call them. Tool code alone can call `run_tool`, `broker_fetch` and `model_converse`, so the MCP server never exposes them.
 
@@ -124,12 +124,13 @@ The server also lists **team tool extensions** that opt in with `exposure.extern
 ## 6. Investigating a run
 
 1. `get_breadboard_overview`: what is running, queued, gated or failing, spend this hour, open proposals, what is waiting on you.
-2. `list_sessions {state: ["suspended-error"], kind: ["circuit-run"]}` (or by `circuit`, `task`, `created_by: "me"`, `created_after`) to find the session.
+2. `list_sessions {state: ["suspended-error"], kind: ["circuit-run"]}` (or by `circuit`, `task`, `created_by: "me"`, a `created_after`/`created_before` window; page with `offset` to get a `total`) to find the session.
 3. `get_session_summary`: the steps taken, their exits and attempts, cost, child sessions. For a designer or intake chat, also its proposals and last error.
 4. `read_session_transcript {session_id, step: "summarize"}`: every turn with its tool calls and results; `read_session_events` for retries, gates and the resolved config commit; `list_session_executions` for what a sandboxed tool actually did, with its logs.
 5. `read_config {ref: "lit-review", commit: <session.config_commit>}`: the circuit, subagent or tool exactly as it ran; `get_config_history` and `diff_config` for what changed since.
 6. `inspect_node` on the artifacts it produced (`search_nodes {session_id}` finds its scratch), `read_node` for a body.
 7. Fix the cause where it lives: the circuit, the subagent, the tool or the note. An editor token can `propose_config_change` (and `start_eval_run {proposal_id}` to test the branch); a human merges it in the browser, or an admin's full token with `merge_proposal`. A read-only token leaves all of it to the browser.
+8. To try a fix before anyone reviews it, open it as a draft: `propose_config_change {draft: true}` stages the branch outside the review queue. `read_proposal` lists its `affected_circuits` (the circuits the change reaches, with fixture counts). Run `start_eval_run {proposal_id}` on them, or `run_circuit {proposal_id}` for a one-off input, and compare with the main-line baseline (`list_eval_runs {circuit, proposal_id: "none"}`). Amend the draft with `propose_config_change {proposal_id}` until it behaves as intended, then `submit_proposal`, which puts it in the review queue.
 
 ## 7. Logging and attribution
 
