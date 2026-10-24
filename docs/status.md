@@ -305,7 +305,7 @@ Deployed to the instance behind a load balancer as server `53ad6d8`, sandboxes u
 - A comment-only draft stayed out of `list_proposals {status: open}` and the overview (`draft_proposals: 1`), and `read_proposal` listed its `affected_circuits`.
 - `start_eval_run {proposal_id}` ran its two fixtures at the draft's head ($0.25). `list_eval_runs {proposal_id: "none"}` found the baseline, and the draft was then discarded.
 
-The three designer prompts there were identical to the old seed. A proposal updating them to the new seed text waits for review.
+The three designer prompts there were identical to the old seed. A proposal updated them to the new seed text, and an admin's full token merged it over MCP (`merge_proposal`).
 
 Not yet exercised live: `run_circuit {proposal_id}`, or a preset change on a branch (both run end to end in the e2e suite), and the UI pager in a browser against that instance (checked on a local server with 300 seeded sessions).
 
